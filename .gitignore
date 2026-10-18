@@ -1,0 +1,5 @@
+/native/target/
+/release/
+/.tmp/
+/.tools/
+*.log

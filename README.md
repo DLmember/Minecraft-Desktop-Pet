@@ -1,0 +1,63 @@
+# Minecraft桌宠
+
+让一个 Minecraft 风格的小人待在桌面上，跟着鼠标转头，陪你敲键盘。
+
+**由GPT 6 Astra制作**
+
+> 本项目是独立粉丝作品，与 Mojang Studios 或 Microsoft 无关联，未获其授权、赞助或官方认可。Minecraft 名称及相关商标归其各自权利人所有。
+
+## 下载
+
+前往 [最新版本](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest)，下载 **Minecraft桌宠-2.4.9-Windows.zip**，解压后双击 **Minecraft桌宠.exe**。
+
+支持 **Windows 10/11 x64**。便携运行，不需要安装 Electron、Java 或额外运行环境。本次公开发布提供 Windows 版本。
+
+**首次启动默认开启完全鼠标穿透。** 请双击任务栏托盘图标打开控制台；想拖动桌宠时先取消“完全鼠标穿透”。图标可能收在任务栏的隐藏图标区域。
+
+## 可以做什么
+
+- 导入本地 PNG 皮肤，或输入 Java 版正版用户名 / UUID 获取皮肤；支持经典和纤细手臂、旧版及高清皮肤、皮肤外层。
+- 站立、坐下，或分别自定义站姿和坐姿。身体和四肢可以旋转，不做肘膝弯曲。
+- 头部跟随鼠标，水平与垂直方向的灵敏度、范围和中心点均可调整；整体角度也可调整。
+- 站立时按住 Shift 立即潜行；坐下时随全局键盘输入敲击键盘，支持精准位置和双手交替。
+- 长按按键保持手位，松开后自然回位。打字时短暂压低身体，幅度可调；快速敲字会重新播放动作。
+- 点击鼠标挥动主手，可切换左右手；连续点击会立即重新挥动。
+- 置顶、缩放、自由摆放和完全鼠标穿透。穿透时鼠标移到桌宠上，会在约 0.15 秒内淡至 25% 不透明度。
+- 可选 **hyp快速队伍聊天**：键盘输入半角 `#` 自动替换成 `/p chat `，不自动发送。
+- 30 / 60 / 90 / 120 / 144 / 165 / 240 FPS 七档，静止时停止绘制。设置和导入的皮肤自动保存。
+
+完整操作见 [使用说明](使用说明.md)，版本变化见 [更新记录](CHANGELOG.md)。
+
+## 默认设置
+
+首次启动使用内置「林间旅人」皮肤，自动放在当前屏幕工作区右下角。默认坐姿、纤细手臂、精准敲字、左手挥动、100% 大小、240 FPS 和 20% 打字压低。
+
+置顶、完全鼠标穿透、视线跟随、键盘互动、皮肤外层及 hyp快速队伍聊天默认开启。**聊天前缀替换会在其他应用中生效**，不需要时请在控制台取消勾选。若更在意功耗，可降低帧率。
+
+升级沿用已有偏好，不覆盖个人皮肤。设置位于 `%APPDATA%\minecraft-desktop-pet`；替换程序前请先从托盘退出旧版本。
+
+## 隐私与网络
+
+日常互动在本机处理，正式运行不记录输入文本、不上传按键。仅在主动获取正版皮肤时连接 Mojang 的账号资料及纹理服务，不需要提供账号密码。
+
+## 从源码构建
+
+Windows 原生 Rust + Win32 实现，使用 CPU 绘制透明方块模型，不包含浏览器运行时。
+
+1. 安装 Rust 的 `stable-x86_64-pc-windows-gnu` 工具链。
+2. 安装 x86_64 UCRT 版 [LLVM-MinGW](https://github.com/mstorsjo/llvm-mingw/releases)，其中需要 `windres.exe` 和 `x86_64-w64-mingw32-gcc.exe`。
+3. 建议将项目放在不含中文或空格的路径，运行：
+
+```powershell
+rustup toolchain install stable-x86_64-pc-windows-gnu
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -ToolchainBin C:\llvm-mingw\bin
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Action test -ToolchainBin C:\llvm-mingw\bin
+```
+
+产物：`native/target/release/minecraft-pet.exe`。脚本使用 Cargo.lock 锁定的依赖；首次构建需要网络下载依赖。可通过 `-RustToolchain` 选择已安装的 GNU 工具链版本。
+
+源码位于 `native/src`；首次启动预设位于 `native/default-settings.json`；内置皮肤及图标位于 `assets`。
+
+## 许可
+
+应用代码及项目原创示例皮肤采用 [MIT License](LICENSE)。依赖许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 `native/licenses/`。用户导入的皮肤不受本项目许可证覆盖，请尊重原作者授权。
