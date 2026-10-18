@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleName</key><string>Minecraft桌宠</string>
+<key>CFBundleDisplayName</key><string>Minecraft桌宠</string>
+<key>CFBundleIdentifier</key><string>com.dlmember.minecraft-desktop-pet.macos</string>
+<key>CFBundleExecutable</key><string>MinecraftPet</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>2.4.10</string>
+<key>CFBundleVersion</key><string>2.4.10.3</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
+<key>LSMinimumSystemVersion</key><string>12.0</string>
+<key>LSUIElement</key><true/>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSPrincipalClass</key><string>NSApplication</string>
+<key>NSSupportsAutomaticTermination</key><false/>
+<key>NSSupportsSuddenTermination</key><false/>
+<key>NSHumanReadableCopyright</key><string>MIT. Independent fan project; not affiliated with Mojang or Microsoft.</string>
+</dict></plist>
