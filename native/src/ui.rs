@@ -64,7 +64,7 @@ impl App {
             left: 0,
             top: 0,
             right: (760. * d) as i32,
-            bottom: (670. * d) as i32,
+            bottom: (750. * d) as i32,
         };
         AdjustWindowRectExForDpi(
             &mut rect,
@@ -235,6 +235,33 @@ impl App {
         self.control("STATIC", "打字压低", 0, 24, 588, 120, 24, 0);
         self.slider(211, 150, 584, 490, 0, 30);
         self.control("STATIC", "", SS_RIGHT, 650, 588, 84, 24, 611);
+        self.control("STATIC", "开机自启", 0, 24, 626, 90, 24, 0);
+        self.check("随 Windows 登录自动启动", 125, 622, 250, 160);
+        self.control("STATIC", "进程优先级", 0, 400, 626, 95, 24, 0);
+        self.combo(
+            161,
+            500,
+            622,
+            150,
+            &["空闲", "低于正常", "正常", "高于正常", "高"],
+            config::PRIORITY_OPTIONS
+                .iter()
+                .position(|&p| p == self.settings.startup_priority)
+                .unwrap_or(2),
+        );
+        self.control("STATIC", "启动延迟", 0, 24, 662, 90, 24, 0);
+        self.combo(
+            162,
+            125,
+            658,
+            150,
+            &["立即", "5 秒", "15 秒", "30 秒", "1 分钟", "2 分钟"],
+            config::AUTOSTART_DELAYS
+                .iter()
+                .position(|&d| d == self.settings.autostart_delay)
+                .unwrap_or(0),
+        );
+        self.control("STATIC", "延迟只对开机自启生效", 0, 295, 664, 250, 24, 0);
 
         self.building_page = 1;
         self.control("STATIC", "整体角度偏移", 0, 24, 78, 280, 24, 0);
@@ -352,7 +379,7 @@ impl App {
         );
 
         self.building_page = 3;
-        self.status = self.control("STATIC", "已保存", 0, 24, 618, 465, 24, 320);
+        self.status = self.control("STATIC", "已保存", 0, 24, 700, 465, 24, 320);
         self.control(
             "STATIC",
             "由GPT 6 Astra制作",
@@ -368,7 +395,7 @@ impl App {
             "拖动摆放 · 右键菜单 · 双击设置；关闭此窗口不会退出桌宠。",
             0,
             24,
-            643,
+            726,
             710,
             22,
             0,
@@ -412,7 +439,7 @@ impl App {
         info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
         GetMonitorInfoW(monitor, &mut info);
         dpi.min((info.rcWork.right - info.rcWork.left - 32) as f32 / 780.)
-            .min((info.rcWork.bottom - info.rcWork.top - 64) as f32 / 710.)
+            .min((info.rcWork.bottom - info.rcWork.top - 64) as f32 / 760.)
     }
     unsafe fn panel_dpi(&mut self, hwnd: HWND, w: WPARAM, l: LPARAM) {
         let p = *(l as *const RECT);
@@ -424,7 +451,7 @@ impl App {
             left: 0,
             top: 0,
             right: (760. * d) as i32,
-            bottom: (670. * d) as i32,
+            bottom: (750. * d) as i32,
         };
         AdjustWindowRectExForDpi(
             &mut rect,
@@ -498,6 +525,22 @@ impl App {
             id,
         );
     }
+    unsafe fn combo(&mut self, id: i32, x: i32, y: i32, w: i32, items: &[&str], selected: usize) {
+        let h = self.control(
+            "COMBOBOX",
+            "",
+            CBS_DROPDOWNLIST as u32 | WS_VSCROLL | WS_TABSTOP,
+            x,
+            y,
+            w,
+            200,
+            id,
+        );
+        for item in items {
+            SendMessageW(h, CB_ADDSTRING, 0, wide(item).as_ptr() as isize);
+        }
+        SendMessageW(h, CB_SETCURSEL, selected, 0);
+    }
     unsafe fn slider(&mut self, id: i32, x: i32, y: i32, w: i32, min: i32, max: i32) {
         let h = self.control(
             "msctls_trackbar32",
@@ -560,6 +603,7 @@ impl App {
             (137, self.settings.hyp_quick_chat),
             (123, self.settings.track_mouse),
             (124, self.settings.outer_layer),
+            (160, self.settings.autostart),
         ] {
             SendMessageW(
                 self.ctrl(id),
@@ -572,6 +616,24 @@ impl App {
                 0,
             );
         }
+        SendMessageW(
+            self.ctrl(161),
+            CB_SETCURSEL,
+            config::PRIORITY_OPTIONS
+                .iter()
+                .position(|&p| p == self.settings.startup_priority)
+                .unwrap_or(2),
+            0,
+        );
+        SendMessageW(
+            self.ctrl(162),
+            CB_SETCURSEL,
+            config::AUTOSTART_DELAYS
+                .iter()
+                .position(|&d| d == self.settings.autostart_delay)
+                .unwrap_or(0),
+            0,
+        );
         SetWindowTextW(self.ctrl(300), wide(&self.settings.skin_name).as_ptr());
         let values = [
             (self.settings.scale * 100.).round() as i32,
@@ -673,6 +735,37 @@ impl App {
             self.refresh_panel();
         }
     }
+    pub(super) unsafe fn combo_changed(&mut self, id: u32) {
+        let index = SendMessageW(self.ctrl(id as i32), CB_GETCURSEL, 0, 0) as usize;
+        match id {
+            161 => {
+                let Some(name) = config::PRIORITY_OPTIONS.get(index) else {
+                    return;
+                };
+                self.settings.startup_priority = (*name).into();
+                self.settings.clean();
+                self.notice = match autostart::apply_priority(name) {
+                    Ok(label) => format!("进程优先级已设为{label}"),
+                    Err(e) => e,
+                };
+            }
+            162 => {
+                let Some(delay) = config::AUTOSTART_DELAYS.get(index) else {
+                    return;
+                };
+                self.settings.autostart_delay = *delay;
+                self.settings.clean();
+                self.notice = if *delay == 0 {
+                    "开机自启将立即启动".into()
+                } else {
+                    format!("开机自启将延迟 {delay} 秒")
+                };
+            }
+            _ => return,
+        }
+        self.save();
+        self.refresh_panel();
+    }
     pub(super) unsafe fn fetch_skin(&mut self) {
         if self.download.is_some() {
             return;
@@ -768,7 +861,12 @@ pub(super) unsafe fn panel_proc(
 ) -> LRESULT {
     match msg {
         WM_COMMAND => {
-            a.command((w & 0xffff) as u32);
+            let id = (w & 0xffff) as u32;
+            if ((w >> 16) & 0xffff) as u32 == CBN_SELCHANGE {
+                a.combo_changed(id);
+            } else {
+                a.command(id);
+            }
             0
         }
         WM_HSCROLL => {
