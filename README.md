@@ -32,7 +32,21 @@
 
 日常互动在本机处理，正式运行不记录输入文本、不上传按键。仅在主动获取正版皮肤时连接 Mojang 的账号资料及纹理服务，不需要提供账号密码。
 
-## 从源码构建
+## macOS 移植版
+
+本地移植复用原始 Rust 渲染、皮肤与动画，通过 Swift / AppKit 提供透明窗口、菜单栏、控制台及全局键盘互动，以及可选的井号聊天前缀替换。
+支持 macOS 12+，包含 Apple Silicon / Intel 通用架构；支持需辅助功能授权的 hyp 快速队伍聊天。
+完整操作说明参见 [macOS 说明](macos/使用说明-macOS.md)。
+
+构建需要 Xcode Command Line Tools、Swift 和 Rust stable：
+
+    rustup target add aarch64-apple-darwin x86_64-apple-darwin
+    cargo test --manifest-path native/Cargo.toml --lib --locked
+    scripts/build-macos.sh /absolute/path/to/output
+
+默认产物为 release/macos/Minecraft桌宠.app 及 ZIP。构建脚本使用本地临时签名，未进行 Apple 公证。
+
+## 从源码构建（Windows）
 
 Windows 原生 Rust + Win32 实现，使用 CPU 绘制透明方块模型，不包含浏览器运行时。
 

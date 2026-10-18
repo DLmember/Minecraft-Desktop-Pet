@@ -3,3 +3,4 @@
 /.tmp/
 /.tools/
 *.log
+/macos/build/
