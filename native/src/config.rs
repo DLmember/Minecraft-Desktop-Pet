@@ -419,10 +419,11 @@ mod tests {
         let mut store = Store::new(dir.clone());
         assert_eq!(store.load(), expected);
         assert_eq!(expected.posture, "sitting");
-        assert_eq!(expected.fps, 240);
-        assert_eq!(expected.main_hand, "left");
+        assert_eq!(expected.fps, 120);
+        assert_eq!(expected.main_hand, "right");
         assert_eq!(expected.typing_squash, 20.);
-        assert!(expected.click_through && expected.hyp_quick_chat);
+        assert!(expected.click_through);
+        assert!(!expected.hyp_quick_chat);
         assert!(expected.skin_path.is_empty());
         assert_eq!(expected.skin_name, Settings::default().skin_name);
         assert!(expected.position.is_none());

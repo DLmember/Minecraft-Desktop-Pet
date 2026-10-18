@@ -2,8 +2,8 @@
 1 ICON "../assets/icon.ico"
 1 24 "app.manifest"
 1 VERSIONINFO
-FILEVERSION 2,4,9,0
-PRODUCTVERSION 2,4,9,0
+FILEVERSION 2,4,10,0
+PRODUCTVERSION 2,4,10,0
 FILEOS 0x40004
 FILETYPE 1
 BEGIN
@@ -13,8 +13,8 @@ BEGIN
   BEGIN
    VALUE "FileDescription", "Minecraft桌宠\0"
    VALUE "ProductName", "Minecraft桌宠\0"
-   VALUE "FileVersion", "2.4.9\0"
-   VALUE "ProductVersion", "2.4.9\0"
+   VALUE "FileVersion", "2.4.10\0"
+   VALUE "ProductVersion", "2.4.10\0"
    VALUE "OriginalFilename", "Minecraft桌宠.exe\0"
   END
  END

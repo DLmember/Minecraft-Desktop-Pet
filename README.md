@@ -8,7 +8,7 @@
 
 ## 下载
 
-前往 [最新版本](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest)，下载 **Minecraft桌宠-2.4.9-Windows.zip**，解压后双击 **Minecraft桌宠.exe**。
+前往 [最新版本](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest)，下载 **Minecraft桌宠-2.4.10-Windows.zip**，解压后双击 **Minecraft桌宠.exe**。
 
 支持 **Windows 10/11 x64**。便携运行，不需要安装 Electron、Java 或额外运行环境。本次公开发布提供 Windows 版本。
 
@@ -27,14 +27,6 @@
 - 30 / 60 / 90 / 120 / 144 / 165 / 240 FPS 七档，静止时停止绘制。设置和导入的皮肤自动保存。
 
 完整操作见 [使用说明](使用说明.md)，版本变化见 [更新记录](CHANGELOG.md)。
-
-## 默认设置
-
-首次启动使用内置「林间旅人」皮肤，自动放在当前屏幕工作区右下角。默认坐姿、纤细手臂、精准敲字、左手挥动、100% 大小、240 FPS 和 20% 打字压低。
-
-置顶、完全鼠标穿透、视线跟随、键盘互动、皮肤外层及 hyp快速队伍聊天默认开启。**聊天前缀替换会在其他应用中生效**，不需要时请在控制台取消勾选。若更在意功耗，可降低帧率。
-
-升级沿用已有偏好，不覆盖个人皮肤。设置位于 `%APPDATA%\minecraft-desktop-pet`；替换程序前请先从托盘退出旧版本。
 
 ## 隐私与网络
 
