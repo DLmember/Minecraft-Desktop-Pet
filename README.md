@@ -10,7 +10,7 @@
 
 前往 [最新版本](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest)，下载 **Minecraft桌宠-2.4.10-Windows.zip**，解压后双击 **Minecraft桌宠.exe**。
 
-支持 **Windows 10/11 x64**。便携运行，不需要安装 Electron、Java 或额外运行环境。本次公开发布提供 Windows 版本。
+支持 **Windows 10/11 x64 、 macOS 12+**。便携运行，不需要安装 Electron、Java 或额外运行环境。本次公开发布提供 Windows&macOS 版本。
 
 **首次启动默认开启完全鼠标穿透。** 请双击任务栏托盘图标打开控制台；想拖动桌宠时先取消“完全鼠标穿透”。图标可能收在任务栏的隐藏图标区域。
 
