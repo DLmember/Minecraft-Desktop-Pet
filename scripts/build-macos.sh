@@ -3,6 +3,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$ROOT/release/macos}"
 APP="$DEST/Minecraft桌宠.app"
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/native/Cargo.toml" | head -1)"
 mkdir -p "$DEST" "$ROOT/macos/build"
 export MACOSX_DEPLOYMENT_TARGET=12.0
 for PAIR in 'aarch64-apple-darwin arm64' 'x86_64-apple-darwin x86_64'; do
@@ -34,5 +35,5 @@ codesign --verify --deep --strict "$APP"
 plutil -lint "$APP/Contents/Info.plist"
 lipo -info "$APP/Contents/MacOS/MinecraftPet"
 cp "$ROOT/macos/使用说明-macOS.md" "$DEST/使用说明-macOS.md"
-ditto -c -k --sequesterRsrc --keepParent "$APP" "$DEST/Minecraft桌宠-2.4.10-mac.3-universal.zip"
+ditto -c -k --sequesterRsrc --keepParent "$APP" "$DEST/Minecraft桌宠-${VERSION}-mac-universal.zip"
 echo "Built: $APP"

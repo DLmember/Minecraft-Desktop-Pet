@@ -1,4 +1,5 @@
 #![windows_subsystem = "windows"]
+mod autostart;
 mod config;
 mod hyp_chat;
 mod keyboard;
@@ -8,7 +9,7 @@ mod ui;
 mod window_order;
 use config::{Position, Settings, Store};
 use glam::Vec2;
-use render::{Frame, Pose, Skin};
+use render::{Cape, Frame, Pose, Skin};
 use std::{
     path::PathBuf,
     ptr::{null, null_mut},
@@ -25,6 +26,7 @@ const KEY_MSG: u32 = WM_APP + 2;
 const CLICK_MSG: u32 = WM_APP + 3;
 const SHOW_MSG: u32 = WM_APP + 10;
 const SNAPSHOT_MSG: u32 = WM_APP + 11;
+const AUTOSTART_MSG: u32 = WM_APP + 13;
 static mut APP: *mut App = null_mut();
 static mut PET_HWND: HWND = null_mut();
 // Diagnostic runs can isolate their injected test events from the user's typing.
@@ -149,6 +151,7 @@ pub struct App {
     settings: Settings,
     store: Store,
     skin: Skin,
+    cape: Option<Cape>,
     pose: Pose,
     key_recovery: keyboard::KeyRecovery,
     frame: Frame,
@@ -206,12 +209,14 @@ impl App {
         let bytes =
             std::fs::read(&settings.skin_path).unwrap_or_else(|_| render::DEFAULT_SKIN.to_vec());
         let skin = Skin::load(&bytes).unwrap_or_else(|_| Skin::load(render::DEFAULT_SKIN).unwrap());
+        let cape = load_cape(&settings);
         let pose = Pose::new(&settings);
         let notice = store.notice.clone();
         Self {
             settings,
             store,
             skin,
+            cape,
             pose,
             key_recovery: keyboard::KeyRecovery::default(),
             frame: Frame::new(450, 525),
@@ -382,7 +387,8 @@ impl App {
             dt,
         );
         let raster_start = Instant::now();
-        self.frame.draw(&self.settings, &self.skin, &self.pose);
+        self.frame
+            .draw_ext(&self.settings, &self.skin, self.cape.as_ref(), &self.pose);
         self.advance_opacity();
         self.raster_us += raster_start.elapsed().as_micros() as u64;
         let present_start = Instant::now();
@@ -712,6 +718,10 @@ impl App {
                 self.settings.outer_layer = !self.settings.outer_layer;
                 self.changed();
             }
+            138 => {
+                self.settings.show_cape = !self.settings.show_cape;
+                self.changed();
+            }
             125 => {
                 self.settings.fps = 30;
                 self.changed();
@@ -719,6 +729,19 @@ impl App {
             126 => {
                 self.settings.fps = 60;
                 self.changed();
+            }
+            160 => {
+                let enabled = !self.settings.autostart;
+                match autostart::set_enabled(enabled, &self.store.dir) {
+                    Ok(()) => {
+                        self.settings.autostart = enabled;
+                        self.changed();
+                    }
+                    Err(e) => {
+                        self.notice = format!("开机自启设置失败：{e}");
+                        self.refresh_panel();
+                    }
+                }
             }
             130 => self.center(),
             131 => {
@@ -810,6 +833,7 @@ impl App {
             (121, "完全鼠标穿透", self.settings.click_through),
             (122, "全局键盘互动", self.settings.keyboard_enabled),
             (123, "视线跟随鼠标", self.settings.track_mouse),
+            (138, "显示正版披风", self.settings.show_cape),
             (0, "", false),
             (140, "大小 75%", (self.settings.scale - 0.75).abs() < 0.01),
             (141, "大小 100%", (self.settings.scale - 1.).abs() < 0.01),
@@ -825,6 +849,8 @@ impl App {
                 },
                 false,
             ),
+            (0, "", false),
+            (160, "随 Windows 登录启动", self.settings.autostart),
             (0, "", false),
             (199, "退出Minecraft桌宠", false),
         ];
@@ -1082,6 +1108,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             PostQuitMessage(0);
             0
         }
+        AUTOSTART_MSG => {
+            // 自启延迟结束：把桌宠显示出来。
+            a.hidden = false;
+            a.next_topmost_check = 0.;
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            a.wake();
+            0
+        }
         SHOW_MSG => {
             a.show_panel();
             0
@@ -1095,6 +1129,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
         _ => DefWindowProcW(hwnd, msg, w, l),
     }
 }
+/// 读取上次保存的披风文件；没有或损坏时返回 None。
+fn load_cape(settings: &Settings) -> Option<Cape> {
+    if settings.cape_path.is_empty() {
+        return None;
+    }
+    std::fs::read(&settings.cape_path)
+        .ok()
+        .and_then(|bytes| Cape::load(&bytes).ok())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--render-test") {
@@ -1108,12 +1152,18 @@ fn main() {
             PathBuf::from(std::env::var_os("APPDATA").unwrap()).join("minecraft-desktop-pet")
         });
     let diag = args.iter().any(|a| a == "--diagnostic");
+    let from_autostart = args.iter().any(|a| a == "--autostart");
     let first = !dir.join("settings.json").exists();
     let mut app = Box::new(App::new(dir.clone(), diag));
     if let Some(e) = &app.store.read_error {
         report_error(e);
         return;
     }
+    if let Err(e) = autostart::apply_priority(&app.settings.startup_priority) {
+        app.notice = e;
+    }
+    // 程序被移动或改名后，自启项会在下次启动时自动改写成当前路径。
+    autostart::sync(app.settings.autostart, &dir);
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         TEST_INPUT_ONLY = diag && args.iter().any(|a| a == "--test-input-only");
@@ -1185,7 +1235,22 @@ fn main() {
         app.draw(0., 0.05);
         app.constrain();
         app.move_to();
-        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        // 开机自启可以延迟出现，避免和别的启动项抢开机的头几秒。
+        let startup_delay = if from_autostart {
+            app.settings.autostart_delay
+        } else {
+            0
+        };
+        if startup_delay > 0 {
+            app.hidden = true;
+            let target = hwnd as usize;
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(startup_delay as u64));
+                PostMessageW(target as HWND, AUTOSTART_MSG, 0, 0);
+            });
+        } else {
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
         // Low-priority fallback for Windows-owned modal loops (menus/file picker).
         SetTimer(hwnd, 1, 16, None);
         app.save();

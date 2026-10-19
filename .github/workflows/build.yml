@@ -1,0 +1,46 @@
+name: build
+
+# Windows 在 Linux 上交叉编译；macOS 只能在 Apple 的机器上出 .app（需要 swiftc 与系统框架），
+# 所以放到 macOS runner 上跑仓库自带的 scripts/build-macos.sh。
+'on':
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          rustup target add x86_64-pc-windows-gnu
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-mingw-w64-x86-64
+      - name: Build
+        run: cargo build --manifest-path native/Cargo.toml --locked --release --target x86_64-pc-windows-gnu
+      - name: Package
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' native/Cargo.toml | head -1)
+          mkdir -p out
+          cp native/target/x86_64-pc-windows-gnu/release/minecraft-pet.exe "out/Minecraft桌宠.exe"
+          cp 使用说明.md CHANGELOG.md LICENSE out/
+          cd out && zip -q -r "../Minecraft桌宠-${VERSION}-Windows.zip" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: Minecraft桌宠-*-Windows.zip
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build
+        run: bash scripts/build-macos.sh "$RUNNER_TEMP/out"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: ${{ runner.temp }}/out/*.zip

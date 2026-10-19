@@ -2,6 +2,68 @@ use crate::config::Settings;
 use glam::{EulerRot, Mat4, Quat, Vec2, Vec3};
 use image::RgbaImage;
 pub const DEFAULT_SKIN: &[u8] = include_bytes!("../../assets/default-skin.png");
+/// 六个面的明暗查色表；皮肤和披风共用同一套光照。
+fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
+    let shades = [0.80, 0.80, 1., 0.62, 0.94, 0.86];
+    let mut lut = [[[0u8; 256]; 3]; 6];
+    for f in 0..6 {
+        for v in 0..256 {
+        let c = v as f32 / 255.;
+        let linear = if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        };
+        let l = linear * shades[f];
+        let out = if l <= 0.0031308 {
+            l * 12.92
+        } else {
+            1.055 * l.powf(1. / 2.4) - 0.055
+        };
+        for ch in 0..3 {
+            lut[f][ch][v] = (out * 255. + 0.5) as u8;
+        }
+        }
+    }
+    image
+        .pixels()
+        .map(|p| {
+            let mut c = [[0; 3]; 6];
+            for f in 0..6 {
+                for ch in 0..3 {
+                    c[f][ch] = lut[f][ch][p[ch] as usize];
+                }
+            }
+            c
+        })
+        .collect()
+}
+
+/// 官方披风纹理（64×32）。只有中间那张 10×16 的面是不透明的，
+/// 其余六个面的 UV 区域在官方纹理里本来就是透明的。
+pub struct Cape {
+    pub image: RgbaImage,
+    colors: Vec<[[u8; 3]; 6]>,
+}
+impl Cape {
+    pub fn load(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() > 2 * 1024 * 1024 {
+            return Err("披风文件不能超过 2 MB。".into());
+        }
+        if !bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) || bytes.len() < 24 {
+            return Err("披风不是有效的 PNG。".into());
+        }
+        let image = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
+            .map_err(|e| e.to_string())?
+            .into_rgba8();
+        if image.width() < 64 || image.width() % 64 != 0 || image.height() * 2 != image.width() {
+            return Err("披风纹理尺寸异常。".into());
+        }
+        let colors = colors_for(&image);
+        Ok(Self { image, colors })
+    }
+}
+
 pub struct Skin {
     pub image: RgbaImage,
     pub legacy: bool,
@@ -51,39 +113,7 @@ impl Skin {
                 }
             }
         }
-        let shades = [0.80, 0.80, 1., 0.62, 0.94, 0.86];
-        let mut lut = [[[0u8; 256]; 3]; 6];
-        for f in 0..6 {
-            for v in 0..256 {
-                let c = v as f32 / 255.;
-                let linear = if c <= 0.04045 {
-                    c / 12.92
-                } else {
-                    ((c + 0.055) / 1.055).powf(2.4)
-                };
-                let l = linear * shades[f];
-                let out = if l <= 0.0031308 {
-                    l * 12.92
-                } else {
-                    1.055 * l.powf(1. / 2.4) - 0.055
-                };
-                for ch in 0..3 {
-                    lut[f][ch][v] = (out * 255. + 0.5) as u8;
-                }
-            }
-        }
-        let colors = image
-            .pixels()
-            .map(|p| {
-                let mut c = [[0; 3]; 6];
-                for f in 0..6 {
-                    for ch in 0..3 {
-                        c[f][ch] = lut[f][ch][p[ch] as usize];
-                    }
-                }
-                c
-            })
-            .collect();
+        let colors = colors_for(&image);
         Ok(Self {
             image,
             legacy,
@@ -543,6 +573,17 @@ fn project(v: Vec3, width: f32, height: f32) -> Vec3 {
         -v.dot(forward),
     )
 }
+/// 绘制时用到的纹理视图：颜色查表和尺寸。
+#[derive(Clone, Copy)]
+struct Tex<'a> {
+    image: &'a RgbaImage,
+    colors: &'a [[[u8; 3]; 6]],
+}
+impl<'a> Tex<'a> {
+    fn of(image: &'a RgbaImage, colors: &'a [[[u8; 3]; 6]]) -> Self {
+        Self { image, colors }
+    }
+}
 #[derive(Clone)]
 struct BoxPart {
     size: Vec3,
@@ -551,8 +592,17 @@ struct BoxPart {
     inflate: f32,
     mirror: bool,
     keyboard: bool,
+    cape: bool,
 }
 fn parts(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
+    parts_with_cape(s, skin, pose, None)
+}
+fn parts_with_cape(
+    s: &Settings,
+    skin: &Skin,
+    pose: &Pose,
+    cape: Option<&Cape>,
+) -> Vec<BoxPart> {
     let custom = s.posture == "custom";
     let custom_body = if custom {
         Mat4::from_quat(degrees(&s.active_custom_pose().body))
@@ -575,6 +625,7 @@ fn parts(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
                 inflate: 0.,
                 mirror,
                 keyboard: false,
+                cape: false,
             });
             if s.outer_layer && (!skin.legacy || hat) {
                 v.push(BoxPart {
@@ -584,6 +635,7 @@ fn parts(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
                     inflate: if hat { 1. } else { 0.5 },
                     mirror,
                     keyboard: false,
+                    cape: false,
                 });
             }
         };
@@ -664,6 +716,23 @@ fn parts(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
             false,
         );
     }
+    if cape.is_some() {
+        // 10×16×1 的薄板挂在背后：UV 与方块面包裹一致，
+        // 中间那一面正好落在官方纹理的 (1,1)..(11,17)。
+        // 官方披风的图案画在“外壳”那一面，也就是 (-Z) 那一侧；
+        // 方块 UV 里 -Z 面的起点是 u + 2d + w，取 u = -11 正好落在 (1,1)。
+        v.push(BoxPart {
+            size: Vec3::new(10., 16., 1.),
+            uv: Vec2::new(-11., 0.),
+            transform: body
+                * Mat4::from_translation(Vec3::new(0., 3.6, -2.9))
+                * Mat4::from_rotation_x(0.14),
+            inflate: 0.,
+            mirror: false,
+            keyboard: false,
+            cape: true,
+        });
+    }
     // Squash only the character about its seated support height, never the keyboard
     // or native window. This cannot accumulate into the user-selected scale.
     let anchor = 6. * pose.sit;
@@ -683,6 +752,7 @@ fn parts(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
             inflate: 0.,
             mirror: false,
             keyboard: true,
+            cape: false,
         });
     }
     let global = model_transform(s);
@@ -721,14 +791,25 @@ impl Frame {
         }
     }
     pub fn draw(&mut self, s: &Settings, skin: &Skin, pose: &Pose) {
+        self.draw_ext(s, skin, None, pose);
+    }
+    /// 带披风的绘制；披风只在正版账号取到的时候才传进来。
+    pub fn draw_ext(&mut self, s: &Settings, skin: &Skin, cape: Option<&Cape>, pose: &Pose) {
         self.pixels.fill(0);
         self.depth.fill(f32::INFINITY);
         self.bounds = [self.width as i32, self.height as i32, 0, 0];
-        for part in parts(s, skin, pose) {
-            self.draw_box(&part, skin);
+        let cape = cape.filter(|_| s.show_cape);
+        for part in parts_with_cape(s, skin, pose, cape) {
+            if part.cape {
+                if let Some(c) = cape {
+                    self.draw_box(&part, Tex::of(&c.image, &c.colors));
+                }
+            } else {
+                self.draw_box(&part, Tex::of(&skin.image, &skin.colors));
+            }
         }
     }
-    fn draw_box(&mut self, b: &BoxPart, skin: &Skin) {
+    fn draw_box(&mut self, b: &BoxPart, skin: Tex) {
         let Vec3 { x: w, y: h, z: d } = b.size;
         let u = b.uv.x;
         let v = b.uv.y;
@@ -795,7 +876,7 @@ impl Frame {
             }
         }
     }
-    fn triangle(&mut self, p: [Vec3; 3], uv: [Vec2; 3], face: usize, b: &BoxPart, skin: &Skin) {
+    fn triangle(&mut self, p: [Vec3; 3], uv: [Vec2; 3], face: usize, b: &BoxPart, skin: Tex) {
         let area = edge(p[0], p[1], p[2]);
         if area.abs() < 0.0001 {
             return;
@@ -985,6 +1066,57 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn cape_renders_from_the_official_texture_region() {
+        use image::{ImageFormat, Rgba, RgbaImage};
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        // 官方披风纹理：只有 (1,1)-(11,17) 是有效面，别处全透明。
+        let mut tex = RgbaImage::from_pixel(64, 32, Rgba([0, 0, 0, 0]));
+        for y in 1..17 {
+            for x in 1..11 {
+                tex.put_pixel(x, y, Rgba([220, 30, 30, 255]));
+            }
+        }
+        let mut png = std::io::Cursor::new(Vec::new());
+        tex.write_to(&mut png, ImageFormat::Png).unwrap();
+        let cape = Cape::load(png.get_ref()).unwrap();
+
+        let mut s = Settings::default();
+        s.posture = "standing".into();
+        let red = |f: &Frame| {
+            f.rgba()
+                .chunks_exact(4)
+                .filter(|c| c[3] > 0 && c[0] > 120 && c[1] < 90 && c[2] < 90)
+                .count()
+        };
+
+        // 正面：披风在身后，几乎看不到。
+        let mut front = Frame::new(360, 420);
+        front.draw_ext(&s, &skin, Some(&cape), &Pose::new(&s));
+        assert!(red(&front) < 60, "正面不该大块露出披风");
+
+        // 背面：整片披风应该盖住后背。
+        s.model_rotation = [0., 180., 0.];
+        let back_pose = Pose::new(&s);
+        let mut back = Frame::new(360, 420);
+        back.draw_ext(&s, &skin, Some(&cape), &back_pose);
+        assert!(red(&back) > 2000, "转到背面应该看到整片披风");
+
+        // 关掉开关就不画。
+        s.show_cape = false;
+        let mut off = Frame::new(360, 420);
+        off.draw_ext(&s, &skin, Some(&cape), &back_pose);
+        assert_eq!(red(&off), 0, "关掉开关就不该画披风");
+
+        let _ = image::save_buffer(
+            std::env::temp_dir().join("cape-preview.png"),
+            &back.rgba(),
+            360,
+            420,
+            image::ColorType::Rgba8,
+        );
+    }
+
     fn head_axes(s: &Settings, p: &Pose, skin: &Skin) -> (Vec3, Vec3) {
         let boxes = parts(s, skin, p);
         let head = boxes
@@ -1337,6 +1469,7 @@ mod tests {
             inflate: 1.,
             mirror: false,
             keyboard: false,
+            cape: false,
         };
         let points = [
             Vec3::new(2.5, 2.5, 1.),
@@ -1356,7 +1489,7 @@ mod tests {
                     [Vec2::new(40., 8.); 3],
                     4,
                     &b,
-                    &skin,
+                    Tex::of(&skin.image, &skin.colors),
                 );
             }
             for y in 3..13 {
@@ -1424,9 +1557,10 @@ mod tests {
                             inflate: 0.,
                             mirror,
                             keyboard: false,
+                            cape: false,
                         };
                         let mut frame = Frame::new(450, 525);
-                        frame.draw_box(&part, &skin);
+                        frame.draw_box(&part, Tex::of(&skin.image, &skin.colors));
                         for a in [0.5, if face < 2 { d - 0.5 } else { w - 0.5 }] {
                             for b in [
                                 0.5,

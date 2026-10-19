@@ -9,6 +9,10 @@ use windows_sys::Win32::Storage::FileSystem::{
     MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
 };
 pub const FPS_OPTIONS: [u32; 7] = [30, 60, 90, 120, 144, 165, 240];
+/// 进程优先级档位，与 Windows 的 SetPriorityClass 一一对应。
+pub const PRIORITY_OPTIONS: [&str; 5] = ["idle", "below", "normal", "above", "high"];
+/// 开机自启的启动延迟档位（秒）；0 表示立即出现。
+pub const AUTOSTART_DELAYS: [u32; 6] = [0, 5, 15, 30, 60, 120];
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct CustomPose {
@@ -70,6 +74,11 @@ pub struct Settings {
     pub track_mouse: bool,
     pub keyboard_enabled: bool,
     pub hyp_quick_chat: bool,
+    pub autostart: bool,
+    pub show_cape: bool,
+    pub cape_path: String,
+    pub autostart_delay: u32,
+    pub startup_priority: String,
     pub outer_layer: bool,
     pub fps: u32,
     pub skin_name: String,
@@ -100,6 +109,11 @@ impl Default for Settings {
             track_mouse: true,
             keyboard_enabled: true,
             hyp_quick_chat: false,
+            autostart: false,
+            show_cape: true,
+            cape_path: String::new(),
+            autostart_delay: 0,
+            startup_priority: "normal".into(),
             outer_layer: true,
             fps: 60,
             skin_name: "内置 · 林间旅人".into(),
@@ -174,6 +188,13 @@ impl Settings {
         if self.main_hand != "left" {
             self.main_hand = "right".into();
         }
+        if !PRIORITY_OPTIONS.contains(&self.startup_priority.as_str()) {
+            self.startup_priority = "normal".into();
+        }
+        self.autostart_delay = *AUTOSTART_DELAYS
+            .iter()
+            .min_by_key(|&&delay| delay.abs_diff(self.autostart_delay))
+            .unwrap();
         for v in &mut self.model_rotation {
             *v = if v.is_finite() {
                 v.clamp(-180., 180.)
@@ -567,6 +588,26 @@ mod tests {
         assert!(store.save(&s).is_err());
         assert!(!dir.join("head-follow.json").exists());
         fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn autostart_preferences_default_off_and_clamp() {
+        let mut s = Settings::default();
+        assert!(!s.autostart);
+        assert_eq!(s.autostart_delay, 0);
+        assert_eq!(s.startup_priority, "normal");
+        s.autostart_delay = 40;
+        s.clean();
+        assert_eq!(s.autostart_delay, 30);
+        s.startup_priority = "bogus".into();
+        s.clean();
+        assert_eq!(s.startup_priority, "normal");
+        let dir = std::env::temp_dir().join(format!("pet-autostart-test-{}", std::process::id()));
+        s.autostart = true;
+        s.autostart_delay = 60;
+        s.startup_priority = "below".into();
+        Store::new(dir.clone()).save(&s).unwrap();
+        assert_eq!(Store::new(dir.clone()).load(), s);
+        let _ = fs::remove_dir_all(dir);
     }
     #[test]
     fn migrate() {
