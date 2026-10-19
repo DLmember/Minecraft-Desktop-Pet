@@ -10,6 +10,7 @@ const char *pet_error(PetCore *core);
 bool pet_apply(PetCore *core, const char *json);
 bool pet_preview(PetCore *core, const char *json);
 bool pet_import(PetCore *core, const char *path);
+bool pet_import_profile(PetCore *core, const char *skin_path, const char *cape_path, const char *name, const char *model);
 bool pet_reset(PetCore *core);
 void pet_key(PetCore *core, uint32_t key, bool down, float now);
 void pet_clear_keys(PetCore *core);

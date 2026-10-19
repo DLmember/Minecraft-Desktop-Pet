@@ -39,8 +39,7 @@ fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
         .collect()
 }
 
-/// 官方披风纹理（64×32）。只有中间那张 10×16 的面是不透明的，
-/// 其余六个面的 UV 区域在官方纹理里本来就是透明的。
+/// 官方披风纹理（64×32，支持有界的等比例高清纹理）。
 pub struct Cape {
     pub image: RgbaImage,
     colors: Vec<[[u8; 3]; 6]>,
@@ -52,6 +51,12 @@ impl Cape {
         }
         if !bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) || bytes.len() < 24 {
             return Err("披风不是有效的 PNG。".into());
+        }
+        // Reject oversized dimensions before the PNG decoder allocates pixels.
+        let w = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+        let h = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
+        if w < 64 || w > 1024 || w % 64 != 0 || h != w / 2 {
+            return Err("披风必须为 64×32 或等比例高清 PNG，最大 1024×512。".into());
         }
         let image = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
             .map_err(|e| e.to_string())?
@@ -717,16 +722,15 @@ fn parts_with_cape(
         );
     }
     if cape.is_some() {
-        // 10×16×1 的薄板挂在背后：UV 与方块面包裹一致，
-        // 中间那一面正好落在官方纹理的 (1,1)..(11,17)。
-        // 官方披风的图案画在“外壳”那一面，也就是 (-Z) 那一侧；
-        // 方块 UV 里 -Z 面的起点是 u + 2d + w，取 u = -11 正好落在 (1,1)。
+        // Use the full atlas with its patterned front face pointing away from
+        // the body. A negative U offset made the other five faces sample x=0.
         v.push(BoxPart {
             size: Vec3::new(10., 16., 1.),
-            uv: Vec2::new(-11., 0.),
+            uv: Vec2::ZERO,
             transform: body
                 * Mat4::from_translation(Vec3::new(0., 3.6, -2.9))
-                * Mat4::from_rotation_x(0.14),
+                * Mat4::from_rotation_x(0.14)
+                * Mat4::from_rotation_y(std::f32::consts::PI),
             inflate: 0.,
             mirror: false,
             keyboard: false,
@@ -1067,10 +1071,45 @@ mod tests {
         }
     }
     #[test]
+    fn cape_rejects_oversized_dimensions_before_decode() {
+        for (w,h) in [(2048u32,1024u32),(64,64),(63,32),(u32::MAX,32)] {
+            let mut bytes = vec![0u8; 24];
+            bytes[..8].copy_from_slice(&[137,80,78,71,13,10,26,10]);
+            bytes[16..20].copy_from_slice(&w.to_be_bytes());
+            bytes[20..24].copy_from_slice(&h.to_be_bytes());
+            assert!(Cape::load(&bytes).err().unwrap().contains("最大 1024×512"));
+        }
+        assert!(Cape::load(&[0;24]).is_err());
+        assert!(Cape::load(&vec![0;2*1024*1024+1]).is_err());
+    }
+    #[test]
+    fn cape_uses_all_six_atlas_faces_without_clamping() {
+        let mut tex = RgbaImage::new(64,32);
+        let regions = [(11,1,1,16),(0,1,1,16),(1,0,10,1),(11,0,10,1),(1,1,10,16),(12,1,10,16)];
+        let colors = [[255,0,0,255],[0,255,0,255],[0,0,255,255],
+            [255,255,0,255],[255,0,255,255],[0,255,255,255]];
+        for (i,(x,y,w,h)) in regions.into_iter().enumerate() {
+            for yy in y..y+h { for xx in x..x+w { tex.put_pixel(xx,yy,image::Rgba(colors[i])); } }
+        }
+        let mut png = std::io::Cursor::new(Vec::new());
+        tex.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let cape = Cape::load(png.get_ref()).unwrap();
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        let s = Settings::default(); let pose = Pose::new(&s);
+        let parts = parts_with_cape(&s,&skin,&pose,Some(&cape));
+        let part = parts.iter().find(|p| p.cape).unwrap();
+        assert_eq!(part.uv, Vec2::ZERO);
+        // +Z is the outward pattern after rotation; -Z is the lining.
+        let direction = part.transform.transform_vector3(Vec3::Z);
+        assert!(direction.z < -0.9);
+        assert_eq!(cape.image.get_pixel(5,8).0, colors[4]);
+        assert_eq!(cape.image.get_pixel(16,8).0, colors[5]);
+    }
+    #[test]
     fn cape_renders_from_the_official_texture_region() {
         use image::{ImageFormat, Rgba, RgbaImage};
         let skin = Skin::load(DEFAULT_SKIN).unwrap();
-        // 官方披风纹理：只有 (1,1)-(11,17) 是有效面，别处全透明。
+        // Isolate the outward pattern; other faces are tested separately.
         let mut tex = RgbaImage::from_pixel(64, 32, Rgba([0, 0, 0, 0]));
         for y in 1..17 {
             for x in 1..11 {
@@ -1506,6 +1545,7 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.tmp/uv-validation");
         std::fs::create_dir_all(&dir).unwrap();
         let cases = [
+            ("cape", 10., 16., 1., 0., 0.),
             ("head", 8., 8., 8., 0., 0.),
             ("hat", 8., 8., 8., 32., 0.),
             ("body", 8., 12., 4., 16., 16.),

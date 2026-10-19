@@ -69,6 +69,10 @@ final class Binding {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, NSTabViewDelegate {
+    var startupPending = true
+    var startupStatus: NSTextField?
+    let loginDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+    let network = URLSession(configuration: .ephemeral, delegate: OfficialSessionDelegate(), delegateQueue: nil)
     var core: OpaquePointer!
     var settings: [String: Any] = [:]
     var pet: PetPanel!
@@ -94,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     var permissionLabel: NSTextField?
     var onlineField: NSTextField?
     var onlineStatus: NSTextField?
+    var skinSummary: NSTextField?
     var lastCursor = NSPoint(x: -9999, y: -9999)
     var lastShift = false
     var lastDraw: Float = 0
@@ -133,7 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
         pet = PetPanel(contentRect: NSRect(origin: origin, size: NSSize(width: width, height: height)),
                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        pet.title = "Minecraft桌宠 2.4.10 · macOS 修订 3"
+        pet.title = "Minecraft桌宠 \(appVersion) · macOS"
         pet.isOpaque = false; pet.backgroundColor = .clear; pet.hasShadow = false
         pet.hidesOnDeactivate = false; pet.isReleasedWhenClosed = false
         pet.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
@@ -142,9 +147,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = status.button {
             button.image = NSImage(systemSymbolName: "cube.fill", accessibilityDescription: "Minecraft桌宠")
-            button.toolTip = "Minecraft桌宠 v2.4.10 · 点击打开菜单"
+            button.toolTip = "Minecraft桌宠 v\(appVersion) · 点击打开菜单"
         }
         let menu = NSMenu(); menu.delegate = self; status.menu = menu; buildMenu(menu)
+        if !smoke {
+            do {
+                if flag("autostart") { try syncLoginStartup() }
+                try RenderPriority.apply(settings["startupPriority"] as? String ?? "normal")
+            } catch { alert(error.localizedDescription) }
+        }
+        let delay = smoke ? 0 : LoginStartup.delay(arguments: CommandLine.arguments, enabled: flag("autostart"), seconds: Int(number("autostartDelay")))
+        if delay > 0 {
+            status.button?.toolTip = "Minecraft桌宠：登录启动等待 \(delay) 秒；打开控制台可立即启动"
+            DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(delay)) { [weak self] in self?.finishStartup() }
+        } else { finishStartup() }
+    }
+    func finishStartup() {
+        guard startupPending else { return }
+        startupPending = false
+        status.button?.toolTip = "Minecraft桌宠 v\(appVersion) · 点击打开菜单"
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
             self?.handleMousePress()
         }
@@ -193,6 +214,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             if let state { i.state = state ? .on : .off }; menu.addItem(i)
         }
         item("打开控制台…", #selector(showSettings), nil, ",")
+        if startupPending {
+            item("退出 Minecraft桌宠", #selector(quit), nil, "q")
+            return
+        }
         item("申请输入监控…", #selector(grantInput))
         item("申请辅助功能（快速聊天）…", #selector(grantAccessibility))
         item("hyp 快速聊天：# → /p chat ", #selector(toggleQuickChat), flag("hypQuickChat"))
@@ -316,7 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     @objc func restartApplication() {
         savePosition()
         let configuration = NSWorkspace.OpenConfiguration(); configuration.createsNewApplicationInstance = true
-        configuration.arguments = Array(CommandLine.arguments.dropFirst())
+        configuration.arguments = Array(CommandLine.arguments.dropFirst()).filter { $0 != "--autostart" }
         NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, error in
             DispatchQueue.main.async {
                 if let error { self.alert(error.localizedDescription) }
@@ -325,7 +350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
     }
     func applicationDidBecomeActive(_ notification: Notification) {
-        if core != nil && !smoke { configureInput() }
+        if core != nil && !smoke && !startupPending { configureInput() }
     }
     func updatePermission() {
         let listen = input.listeningAllowed, access = input.accessibilityAllowed
@@ -346,7 +371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showSettings(); return true }
     func applicationWillTerminate(_ notification: Notification) {
         guard core != nil else { return }
-        savePosition(); input.stop(); timer?.invalidate(); permissionTimer?.invalidate()
+        if pet != nil && !startupPending { savePosition() }; input.stop(); timer?.invalidate(); permissionTimer?.invalidate()
         if let monitor = mouseMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = localMouseMonitor { NSEvent.removeMonitor(monitor) }
         for token in sleepObservers { NSWorkspace.shared.notificationCenter.removeObserver(token) }
@@ -360,10 +385,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     @objc func showSettings() {
         guard core != nil else { return }
+        if startupPending { finishStartup() }
         if let panel { panel.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); updatePermission(); return }
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 630),
                          styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        w.title = "Minecraft桌宠 v2.4.10 · macOS 修订 3"; w.isReleasedWhenClosed = false; w.delegate = self
+        w.title = "Minecraft桌宠 v\(appVersion) · macOS"; w.isReleasedWhenClosed = false; w.delegate = self
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 660, height: 630)); w.contentView = root
         let title = NSTextField(labelWithString: "MINECRAFT  桌宠")
         title.font = .boldSystemFont(ofSize: 22); title.frame = NSRect(x: 24, y: 574, width: 560, height: 32); root.addSubview(title)
@@ -386,7 +412,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         _ = permissionButton(486, 140, "重启应用", #selector(restartApplication))
         let tabs = NSTabView(frame: NSRect(x: 16, y: 42, width: 628, height: 385)); root.addSubview(tabs)
         controlTabs = tabs; tabs.delegate = self
-        addGeneral(tabs); addInput(tabs); addHead(tabs); addPose(tabs); addSkins(tabs)
+        addGeneral(tabs); addInput(tabs); addHead(tabs); addPose(tabs); addSkins(tabs); addStartup(tabs)
         let hint = NSTextField(labelWithString: "穿透时请用菜单栏的方块图标控制桌宠；关闭窗口后仍在后台运行。")
         hint.textColor = .secondaryLabelColor; hint.font = .systemFont(ofSize: 11)
         hint.frame = NSRect(x: 24, y: 14, width: 610, height: 18); root.addSubview(hint)
@@ -462,7 +488,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if let s = sender as? NSSlider { setValue(b.key, s.doubleValue); b.label?.stringValue = String(format: "%.1f", s.doubleValue) }
         else if let p = sender as? NSPopUpButton { settings[b.key] = b.choices[p.indexOfSelectedItem] }
         else if let c = sender as? NSButton { settings[b.key] = c.state == .on }
+        if b.key == "autostart" || b.key == "startupPriority" {
+            do {
+                if !smoke {
+                    if b.key == "autostart" { try syncLoginStartup() }
+                    else { try RenderPriority.apply(settings["startupPriority"] as? String ?? "normal") }
+                }
+                startupStatus?.stringValue = "已应用。登录启动与延迟将在下次登录时生效。"
+            } catch {
+                loadSettings()
+                if let c = sender as? NSButton { c.state = flag(b.key) ? .on : .off }
+                if let p = sender as? NSPopUpButton, let index = b.choices.firstIndex(where: { String(describing: $0) == String(describing: settings[b.key] ?? "") }) { p.selectItem(at: index) }
+                startupStatus?.stringValue = error.localizedDescription
+                return
+            }
+        }
         changed()
+        if b.key == "autostart" || b.key == "startupPriority" { save() }
         if b.key == "keyboardEnabled" || b.key == "hypQuickChat" {
             save(); configureInput()
             if b.key == "keyboardEnabled" && flag("keyboardEnabled") && !input.running { grantInput() }
@@ -537,19 +579,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             y -= 22
         }
     }
+    func syncLoginStartup() throws {
+        try LoginStartup.setEnabled(flag("autostart"), app: Bundle.main.bundleURL, data: dataDir, directory: loginDirectory)
+    }
+    func addStartup(_ tabs: NSTabView) {
+        let d = page(tabs, "启动与性能", 400)
+        check(d, 350, "登录 macOS 后自动启动", "autostart")
+        popup(d, 302, "登录启动延迟", "autostartDelay", ["立即", "5 秒", "15 秒", "30 秒", "60 秒", "120 秒"], LoginStartup.delays)
+        note(d, 240, "仅登录自动启动时延迟，手动启动立即显示。移动应用后请手动打开一次，以更新启动路径。")
+        popup(d, 193, "渲染线程 QoS", "startupPriority", ["空闲（后台）", "较低（节能）", "正常（默认）", "较高（用户发起）", "高（交互）"], RenderPriority.values)
+        note(d, 124, "使用 macOS 的线程服务质量请求，对应五档性能偏好；不同于 Windows 进程优先级。实际调度由系统决定，不需要管理员权限。")
+        let label = NSTextField(wrappingLabelWithString: "通过当前用户 LaunchAgent 在下次登录时启动；不会关闭或重启当前应用。")
+        label.frame = NSRect(x: 24, y: 50, width: 540, height: 60); label.textColor = .secondaryLabelColor
+        d.addSubview(label); startupStatus = label
+    }
     func addSkins(_ tabs: NSTabView) {
-        let d = page(tabs, "皮肤与关于", 520)
-        note(d, 452, "当前皮肤：\(settings["skinName"] as? String ?? "内置")\n支持 64×64、64×32 及等比例高清 PNG（最大 1024×1024、8 MB）。")
+        let d = page(tabs, "皮肤与关于", 590)
+        check(d, 545, "显示正版披风（随正版皮肤一起获取）", "showCape")
+        let summary = NSTextField(wrappingLabelWithString: "")
+        summary.frame = NSRect(x: 22, y: 452, width: 546, height: 45)
+        summary.textColor = .secondaryLabelColor; summary.font = .systemFont(ofSize: 12)
+        d.addSubview(summary); skinSummary = summary; updateSkinSummary()
         button(d, 404, "导入本地 PNG 皮肤…", #selector(importSkin))
         let f = NSTextField(frame: NSRect(x: 24, y: 350, width: 340, height: 26)); f.placeholderString = "Java 版用户名或 UUID"; d.addSubview(f); onlineField = f
-        let b = NSButton(title: "获取正版皮肤", target: self, action: #selector(downloadSkin)); b.bezelStyle = .rounded; b.frame = NSRect(x: 374, y: 347, width: 175, height: 30); d.addSubview(b)
+        let b = NSButton(title: "获取皮肤与披风", target: self, action: #selector(downloadSkin)); b.bezelStyle = .rounded; b.frame = NSRect(x: 374, y: 347, width: 175, height: 30); d.addSubview(b)
         let s = NSTextField(wrappingLabelWithString: "仅主动获取时连接 Mojang 官方资料与纹理服务。")
         s.frame = NSRect(x: 24, y: 292, width: 530, height: 44); s.textColor = .secondaryLabelColor; d.addSubview(s); onlineStatus = s
         button(d, 240, "打开设置文件夹", #selector(openDataFolder))
         button(d, 198, "恢复默认设置和内置皮肤", #selector(resetSettings))
-        note(d, 120, "Minecraft桌宠 v2.4.10 · macOS 修订 3\n原版渲染与动画 · 输入权限引导 · hyp 快速聊天")
+        note(d, 120, "Minecraft桌宠 v\(appVersion) · macOS\n正版披风 · 登录启动与延迟 · 输入权限与快速聊天")
         note(d, 56, "独立粉丝作品，与 Mojang Studios / Microsoft 无关联。\n原项目 MIT 许可；项目与依赖许可随应用附带。")
         button(d, 12, "打开项目主页", #selector(openProject))
+    }
+    func updateSkinSummary() {
+        skinSummary?.stringValue = "当前皮肤：\(settings["skinName"] as? String ?? "内置")\n支持 64×64、64×32 及等比例高清 PNG（最大 1024×1024、8 MB）。"
     }
     @objc func importSkin() {
         let p = NSOpenPanel(); p.allowedContentTypes = [.png]; p.allowsMultipleSelection = false; p.canChooseDirectories = false
@@ -582,29 +645,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 let profile = try await fetchJSON("https://sessionserver.mojang.com/session/minecraft/profile/\(uuid)")
                 guard let props = profile["properties"] as? [[String: Any]], let encoded = props.first(where: { $0["name"] as? String == "textures" })?["value"] as? String,
                       let decoded = Data(base64Encoded: encoded), let payload = try JSONSerialization.jsonObject(with: decoded) as? [String: Any],
-                      let textures = payload["textures"] as? [String: Any], let skin = textures["SKIN"] as? [String: Any], let address = skin["url"] as? String,
-                      let url = URL(string: address), url.host == "textures.minecraft.net", url.path.hasPrefix("/texture/") else { throw PetError("该账号没有可用的官方皮肤。") }
-                let hash = String(url.path.dropFirst("/texture/".count))
-                guard !hash.isEmpty, hash.count <= 128, hash.allSatisfy({ $0.isHexDigit }) else { throw PetError("官方皮肤地址无效。") }
-                let bytes = try await fetchData("https://textures.minecraft.net/texture/\(hash)", limit: 8*1024*1024)
+                      let textures = payload["textures"] as? [String: Any], let skin = textures["SKIN"] as? [String: Any], let address = skin["url"] as? String else { throw PetError("该账号没有可用的官方皮肤。") }
+                let bytes = try await fetchData(OfficialTexture.address(address), limit: 8*1024*1024)
+                var capeBytes: Data?
+                if let rawCape = textures["CAPE"] {
+                    guard let cape = rawCape as? [String: Any], let address = cape["url"] as? String else { throw PetError("官方披风资料无效。") }
+                    capeBytes = try await fetchData(OfficialTexture.address(address), limit: 2*1024*1024)
+                }
                 guard requestID == downloadID else { return }
                 let tmp = dataDir.appendingPathComponent("download-\(requestID).png")
                 try bytes.write(to: tmp, options: .atomic)
-                defer { try? FileManager.default.removeItem(at: tmp) }
+                let capeTmp = dataDir.appendingPathComponent("cape-download-\(requestID).png")
+                defer {
+                    try? FileManager.default.removeItem(at: tmp)
+                    try? FileManager.default.removeItem(at: capeTmp)
+                }
+                if let capeBytes { try capeBytes.write(to: capeTmp, options: .atomic) }
                 save()
-                guard tmp.path.withCString({ pet_import(core, $0) }) else { throw PetError(pet_error(core).map { String(cString: $0) } ?? "皮肤无法识别。") }
-                loadSettings()
-                settings["skinName"] = profile["name"] as? String ?? input
-                settings["armModel"] = ((skin["metadata"] as? [String: Any])?["model"] as? String == "slim") ? "slim" : "classic"
-                save(); wake(); onlineStatus?.stringValue = "已载入：\(settings["skinName"] as? String ?? input)"
-            } catch { if requestID == downloadID { onlineStatus?.stringValue = error.localizedDescription } }
+                let name = profile["name"] as? String ?? input
+                let model = ((skin["metadata"] as? [String: Any])?["model"] as? String == "slim") ? "slim" : "classic"
+                let imported = tmp.path.withCString { skinPath in
+                    name.withCString { namePtr in model.withCString { modelPtr in
+                        if capeBytes != nil { return capeTmp.path.withCString { pet_import_profile(core, skinPath, $0, namePtr, modelPtr) } }
+                        return pet_import_profile(core, skinPath, nil, namePtr, modelPtr)
+                    } }
+                }
+                guard imported else { throw PetError(pet_error(core).map { String(cString: $0) } ?? "纹理无法识别。") }
+                loadSettings(); updateSkinSummary(); wake()
+                onlineStatus?.stringValue = "已载入：\(name) · \(capeBytes == nil ? "该账号未装备披风" : "皮肤与披风已保存")"
+            } catch { if requestID == downloadID { onlineStatus?.stringValue = "获取失败，保留原皮肤与披风：\(error.localizedDescription)" } }
         }
     }
     func fetchData(_ address: String, limit: Int) async throws -> Data {
         var request = URLRequest(url: URL(string: address)!); request.timeoutInterval = 25
-        request.setValue("MinecraftDesktopPet/2.4.10-macOS", forHTTPHeaderField: "User-Agent")
+        request.setValue("MinecraftDesktopPet/\(appVersion)-macOS", forHTTPHeaderField: "User-Agent")
         // A byte stream enforces the response limit before retaining a large body.
-        let (stream, response) = try await URLSession.shared.bytes(for: request)
+        let (stream, response) = try await network.bytes(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw PetError("官方服务返回错误，请检查用户名或稍后重试。") }
         guard response.url?.scheme == "https", response.url?.host == request.url?.host else { throw PetError("官方服务返回了意外的跳转。") }
         if response.expectedContentLength > Int64(limit) { throw PetError("官方服务返回的文件过大。") }
@@ -624,7 +700,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     @objc func openProject() { NSWorkspace.shared.open(URL(string: "https://github.com/DLmember/Minecraft-Desktop-Pet")!) }
     @objc func resetSettings() {
         downloadID = UUID(); saveTimer?.invalidate()
+        if !smoke && flag("autostart") {
+            do { try LoginStartup.setEnabled(false, app: Bundle.main.bundleURL, data: dataDir, directory: loginDirectory) }
+            catch { alert(error.localizedDescription); return }
+        }
         if !pet_reset(core) { showCoreError(); return }
+        if !smoke { try? RenderPriority.apply("normal") }
         loadSettings(); applyWindow(); restartTimer(); configureInput(); recenter(); wake(); panel = closePanel(); showSettings()
     }
     func runUIRegression() {
@@ -640,7 +721,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         precondition(mousePresses == before+2, "Each physical click must dispatch exactly one swing")
         loadSettings(); precondition(flag("hypQuickChat"), "Quick chat option must persist")
         precondition(inputRequestButton?.superview === panel?.contentView, "Permission request must stay outside scroll view")
-        precondition(controlTabs?.numberOfTabViewItems == 5)
+        precondition(controlTabs?.numberOfTabViewItems == 6)
         controlTabs?.selectTabViewItem(at: 1)
         if let field = diagnosticsField, let window = panel {
             window.makeFirstResponder(field)
@@ -650,7 +731,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             precondition(field.stringValue == QuickChat.text, "Injected Unicode events must insert exact text in AppKit")
             field.stringValue = ""
         }
+        // Exercise production control bindings, persistence and all page layouts.
+        func controls(_ view: NSView) -> [NSControl] {
+            (view as? NSControl).map { [$0] } ?? view.subviews.flatMap { controls($0) }
+        }
+        let all = controlTabs?.tabViewItems.flatMap { item in item.view.map { controls($0) } ?? [] } ?? []
+        for key in ["showCape", "autostart"] {
+            guard let toggle = all.compactMap({ $0 as? NSButton }).first(where: { bindings[ObjectIdentifier($0)]?.key == key }) else { preconditionFailure("Missing \(key) control") }
+            let expected = !flag(key); toggle.state = expected ? .on : .off
+            controlChanged(toggle); save(); loadSettings(); precondition(flag(key) == expected)
+        }
+        for key in ["autostartDelay", "startupPriority"] {
+            guard let popup = all.compactMap({ $0 as? NSPopUpButton }).first(where: { bindings[ObjectIdentifier($0)]?.key == key }) else { preconditionFailure("Missing \(key) control") }
+            popup.selectItem(at: popup.numberOfItems-1); controlChanged(popup); save(); loadSettings()
+        }
+        precondition(number("autostartDelay") == 120 && settings["startupPriority"] as? String == "high")
+        if let tabs = controlTabs, let content = panel?.contentView {
+            for index in 0..<tabs.numberOfTabViewItems {
+                tabs.selectTabViewItem(at: index); content.layoutSubtreeIfNeeded()
+                scrollPageToTop(tabs.selectedTabViewItem)
+                if let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+                    content.cacheDisplay(in: content.bounds, to: rep)
+                    if let png = rep.representation(using: .png, properties: [:]) {
+                        try? png.write(to: dataDir.appendingPathComponent("smoke-tab-\(index).png"))
+                    }
+                }
+            }
+        }
         settings = saved; changed(); save()
+        print("UI regression: cape/startup/delay/QoS bindings and all six tab layouts passed")
         print("UI regression: click de-duplication, nonblocking mouse-up, quick-chat persistence, AppKit text insertion and fixed permission controls passed")
     }
     func writeSmokeReport() {
@@ -661,7 +770,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
         let rep = NSBitmapImageRep(cgImage: bitmap)
         if let png = rep.representation(using: .png, properties: [:]) { try? png.write(to: dataDir.appendingPathComponent("smoke-frame.png")) }
-        let report: [String: Any] = ["version":"2.4.10-mac.3", "width":bitmap.width, "height":bitmap.height,
+        let report: [String: Any] = ["version":appVersion, "width":bitmap.width, "height":bitmap.height,
             "windowVisible":pet.isVisible, "settingsWindowVisible":panel?.isVisible ?? false,
             "clickThrough":pet.ignoresMouseEvents, "settings":settings,
             "permissionButtonsVisible":inputRequestButton?.window != nil && accessRequestButton?.window != nil,

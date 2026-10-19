@@ -6,18 +6,23 @@ APP="$DEST/Minecraft桌宠.app"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/native/Cargo.toml" | head -1)"
 mkdir -p "$DEST" "$ROOT/macos/build"
 export MACOSX_DEPLOYMENT_TARGET=12.0
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=/build-user"
 for PAIR in 'aarch64-apple-darwin arm64' 'x86_64-apple-darwin x86_64'; do
     read -r RUST_TARGET SWIFT_ARCH <<< "$PAIR"
     cargo build --manifest-path "$ROOT/native/Cargo.toml" --locked --release --lib --target "$RUST_TARGET"
-    swiftc -O -swift-version 5 -target "$SWIFT_ARCH-apple-macosx12.0" \
-        -import-objc-header "$ROOT/macos/PetCore.h" "$ROOT/macos/main.swift" "$ROOT/macos/InputController.swift" "$ROOT/macos/SelfTests.swift" \
+    swiftc -O -file-prefix-map "$HOME=/build-user" -swift-version 5 -target "$SWIFT_ARCH-apple-macosx12.0" \
+        -import-objc-header "$ROOT/macos/PetCore.h" "$ROOT/macos/main.swift" "$ROOT/macos/InputController.swift" "$ROOT/macos/PlatformSupport.swift" "$ROOT/macos/SelfTests.swift" \
         "$ROOT/native/target/$RUST_TARGET/release/libpet_core.a" \
         -framework Carbon -framework AppKit -framework ApplicationServices -framework Security -framework SystemConfiguration \
         -o "$ROOT/macos/build/MinecraftPet-$SWIFT_ARCH"
 done
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 lipo -create "$ROOT/macos/build/MinecraftPet-arm64" "$ROOT/macos/build/MinecraftPet-x86_64" -output "$APP/Contents/MacOS/MinecraftPet"
+# Remove linker object-path debug symbols before signing.
+xcrun strip -S "$APP/Contents/MacOS/MinecraftPet"
 cp "$ROOT/macos/Info.plist" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
 cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/macos/使用说明-macOS.md" "$APP/Contents/Resources/"
 cp -R "$ROOT/native/licenses" "$APP/Contents/Resources/"
 cp "$ROOT/assets/default-skin.png" "$APP/Contents/Resources/"

@@ -68,5 +68,62 @@ enum InputSelfTests {
         check(KeyboardText.modifierDown(code: 60, flags: CGEventFlags(rawValue: 0x20000 | 0x4)), "right Shift stays held")
         check(KeyboardText.modifierDown(code: 59, flags: CGEventFlags(rawValue: 0x40000 | 0x1)), "left Control event flags")
         print("Input self-tests: \(count) passed")
+        let inputCount = count
+        for delay in LoginStartup.delays {
+            check(LoginStartup.delay(arguments: ["pet", "--autostart"], enabled: true, seconds: delay) == delay, "login delay")
+            check(LoginStartup.delay(arguments: ["pet"], enabled: true, seconds: delay) == 0, "manual launch has no delay")
+            check(LoginStartup.delay(arguments: ["pet", "--autostart"], enabled: false, seconds: delay) == 0, "disabled login has no delay")
+        }
+        check(LoginStartup.delay(arguments: ["--autostart"], enabled: true, seconds: 999) == 0, "invalid delay rejected")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("pet-platform-test-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        do {
+            let app = root.appendingPathComponent("Pet ' 中文 $() &.app")
+            let executable = app.appendingPathComponent("Contents/MacOS/MinecraftPet")
+            try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: executable)
+            let data = root.appendingPathComponent("Profile data")
+            let agents = root.appendingPathComponent("LaunchAgents")
+            let target = agents.appendingPathComponent(LoginStartup.label + ".plist")
+            try LoginStartup.setEnabled(true, app: app, data: data, directory: agents)
+            let bytes = try Data(contentsOf: target)
+            let plist = try PropertyListSerialization.propertyList(from: bytes, format: nil) as! [String: Any]
+            let args = plist["ProgramArguments"] as! [String]
+            check(args == ["/usr/bin/open", "-g", "-a", app.path, "--args", "--autostart", "--data-dir", data.path], "structured arguments preserve spaces and shell characters")
+            check(plist["RunAtLoad"] as? Bool == true && plist["KeepAlive"] == nil, "login only; never respawn on quit")
+            try LoginStartup.setEnabled(true, app: app, data: data, directory: agents)
+            let repeated = try Data(contentsOf: target)
+            check(repeated == bytes, "registration is idempotent")
+            do {
+                try LoginStartup.setEnabled(false, app: app, data: root, directory: agents)
+                check(false, "another profile cannot remove agent")
+            } catch { check(FileManager.default.fileExists(atPath: target.path), "foreign agent retained") }
+            try LoginStartup.setEnabled(false, app: app, data: data, directory: agents)
+            check(!FileManager.default.fileExists(atPath: target.path), "disable removes only own plist")
+            try LoginStartup.setEnabled(false, app: app, data: data, directory: agents)
+            let moved = root.appendingPathComponent("Moved.app")
+            try FileManager.default.moveItem(at: app, to: moved)
+            try LoginStartup.setEnabled(true, app: moved, data: data, directory: agents)
+            let updated = try PropertyListSerialization.propertyList(from: Data(contentsOf: target), format: nil) as! [String: Any]
+            check((updated["ProgramArguments"] as! [String])[3] == moved.path, "moved application path updates")
+            for value in RenderPriority.values {
+                try RenderPriority.apply(value)
+                var requested = QOS_CLASS_UNSPECIFIED
+                let result = pthread_get_qos_class_np(pthread_self(), &requested, nil)
+                check(result == 0 && requested == RenderPriority.qos(value), "requested QoS reads back")
+            }
+            try RenderPriority.apply("normal")
+            check(RenderPriority.qos("invalid") == RenderPriority.qos("normal"), "unknown QoS defaults to normal")
+            let valid = try OfficialTexture.address("http://textures.minecraft.net/texture/abcdef123456")
+            check(valid == "https://textures.minecraft.net/texture/abcdef123456", "legacy official URL upgraded to HTTPS")
+            for bad in ["https://evil.example/texture/abc", "https://textures.minecraft.net.evil.example/texture/abc",
+                "file:///texture/abc", "https://user@textures.minecraft.net/texture/abc", "https://textures.minecraft.net:123/texture/abc",
+                "https://textures.minecraft.net/texture/../abc", "https://textures.minecraft.net/texture/xyz",
+                "https://textures.minecraft.net/texture/abc?redirect=1", "https://textures.minecraft.net/texture/abc#fragment"] {
+                do { _ = try OfficialTexture.address(bad); check(false, "untrusted texture rejected") }
+                catch { check(true, "untrusted texture rejected") }
+            }
+        } catch { fputs("FAIL: platform test: \(error)\n", stderr); exit(1) }
+        print("Platform self-tests: \(count-inputCount) passed; total \(count)")
     }
 }

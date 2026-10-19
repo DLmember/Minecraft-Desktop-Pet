@@ -38,6 +38,7 @@
 
 本地移植复用原始 Rust 渲染、皮肤与动画，通过 Swift / AppKit 提供透明窗口、菜单栏、控制台及全局键盘互动，以及可选的井号聊天前缀替换。
 支持 macOS 12+，包含 Apple Silicon / Intel 通用架构；支持需辅助功能授权的 hyp 快速队伍聊天。
+2.4.12 的 macOS 功能补齐包括正版披风下载与显示、登录自启、0–120 秒延迟和五档渲染线程 QoS（macOS 调度机制，与 Windows 进程优先级并非完全等价）。
 完整操作说明参见 [macOS 说明](macos/使用说明-macOS.md)。
 
 构建需要 Xcode Command Line Tools、Swift 和 Rust stable：

@@ -18,13 +18,17 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq gcc-mingw-w64-x86-64
       - name: Build
+        env:
+          WINDRES: x86_64-w64-mingw32-windres
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
         run: cargo build --manifest-path native/Cargo.toml --locked --release --target x86_64-pc-windows-gnu
       - name: Package
         run: |
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' native/Cargo.toml | head -1)
           mkdir -p out
           cp native/target/x86_64-pc-windows-gnu/release/minecraft-pet.exe "out/Minecraft桌宠.exe"
-          cp 使用说明.md CHANGELOG.md LICENSE out/
+          cp 使用说明.md CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md out/
+          cp -R native/licenses out/
           cd out && zip -q -r "../Minecraft桌宠-${VERSION}-Windows.zip" .
       - uses: actions/upload-artifact@v4
         with:
@@ -38,8 +42,12 @@ jobs:
       - name: Toolchain
         run: |
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Rust regression tests
+        run: cargo test --manifest-path native/Cargo.toml --lib --locked --release
       - name: Build
         run: bash scripts/build-macos.sh "$RUNNER_TEMP/out"
+      - name: Swift input and platform tests
+        run: '"$RUNNER_TEMP/out/Minecraft桌宠.app/Contents/MacOS/MinecraftPet" --self-test-input'
       - uses: actions/upload-artifact@v4
         with:
           name: macos
