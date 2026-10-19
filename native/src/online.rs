@@ -1,5 +1,8 @@
 //! Read-only public Mojang profile lookup. No credentials or input telemetry.
-use crate::{render::Skin, wide};
+use crate::{
+    render::{Cape, Skin},
+    wide,
+};
 use serde_json::Value;
 use std::{
     ffi::c_void,
@@ -11,6 +14,8 @@ use windows_sys::Win32::Networking::WinHttp::*;
 pub struct Download {
     pub bytes: Vec<u8>,
     pub skin: Skin,
+    /// 正版账号当前使用的披风；没有披风时为 None。
+    pub cape: Option<Vec<u8>>,
     pub name: String,
     pub slim: bool,
 }
@@ -169,7 +174,7 @@ pub fn identity(input: &str) -> Result<(String, bool), String> {
     }
     Err("请输入 Java 版用户名（字母、数字、下划线，最多 16 位）或 UUID。".into())
 }
-fn texture(profile: &Value) -> Result<(String, bool), String> {
+fn texture(profile: &Value) -> Result<(String, bool, Option<String>), String> {
     let encoded = profile
         .get("properties")
         .and_then(Value::as_array)
@@ -188,9 +193,17 @@ fn texture(profile: &Value) -> Result<(String, bool), String> {
     if hash.is_empty() || hash.len() > 128 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("官方皮肤地址无效。".into());
     }
+    // 披风在同一个 textures 属性里，键名是 CAPE。
+    let cape = decoded["textures"]["CAPE"]["url"].as_str().and_then(|url| {
+        url.strip_prefix("https://textures.minecraft.net/texture/")
+            .or_else(|| url.strip_prefix("http://textures.minecraft.net/texture/"))
+            .filter(|h| !h.is_empty() && h.len() <= 128 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+            .map(|h| format!("/texture/{h}"))
+    });
     Ok((
         format!("/texture/{hash}"),
         skin["metadata"]["model"] == "slim",
+        cape,
     ))
 }
 pub fn fetch(input: &str) -> Result<Download, String> {
@@ -219,12 +232,19 @@ pub fn fetch(input: &str) -> Result<Download, String> {
         .filter(|s| s.len() <= 16)
         .unwrap_or(&uuid)
         .to_owned();
-    let (path, slim) = texture(&profile)?;
+    let (path, slim, cape_path) = texture(&profile)?;
     let bytes = get("textures.minecraft.net", &path, 8 * 1024 * 1024)?;
     let skin = Skin::load(&bytes)?;
+    // 披风拿不到不算失败，只是这次没有披风可显示。
+    let cape = cape_path.and_then(|p| {
+        get("textures.minecraft.net", &p, 2 * 1024 * 1024)
+            .ok()
+            .filter(|b| Cape::load(b).is_ok())
+    });
     Ok(Download {
         bytes,
         skin,
+        cape,
         name,
         slim,
     })

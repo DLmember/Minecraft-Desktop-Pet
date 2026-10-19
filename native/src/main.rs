@@ -9,7 +9,7 @@ mod ui;
 mod window_order;
 use config::{Position, Settings, Store};
 use glam::Vec2;
-use render::{Frame, Pose, Skin};
+use render::{Cape, Frame, Pose, Skin};
 use std::{
     path::PathBuf,
     ptr::{null, null_mut},
@@ -151,6 +151,7 @@ pub struct App {
     settings: Settings,
     store: Store,
     skin: Skin,
+    cape: Option<Cape>,
     pose: Pose,
     key_recovery: keyboard::KeyRecovery,
     frame: Frame,
@@ -208,12 +209,14 @@ impl App {
         let bytes =
             std::fs::read(&settings.skin_path).unwrap_or_else(|_| render::DEFAULT_SKIN.to_vec());
         let skin = Skin::load(&bytes).unwrap_or_else(|_| Skin::load(render::DEFAULT_SKIN).unwrap());
+        let cape = load_cape(&settings);
         let pose = Pose::new(&settings);
         let notice = store.notice.clone();
         Self {
             settings,
             store,
             skin,
+            cape,
             pose,
             key_recovery: keyboard::KeyRecovery::default(),
             frame: Frame::new(450, 525),
@@ -384,7 +387,8 @@ impl App {
             dt,
         );
         let raster_start = Instant::now();
-        self.frame.draw(&self.settings, &self.skin, &self.pose);
+        self.frame
+            .draw_ext(&self.settings, &self.skin, self.cape.as_ref(), &self.pose);
         self.advance_opacity();
         self.raster_us += raster_start.elapsed().as_micros() as u64;
         let present_start = Instant::now();
@@ -714,6 +718,10 @@ impl App {
                 self.settings.outer_layer = !self.settings.outer_layer;
                 self.changed();
             }
+            138 => {
+                self.settings.show_cape = !self.settings.show_cape;
+                self.changed();
+            }
             125 => {
                 self.settings.fps = 30;
                 self.changed();
@@ -825,6 +833,7 @@ impl App {
             (121, "完全鼠标穿透", self.settings.click_through),
             (122, "全局键盘互动", self.settings.keyboard_enabled),
             (123, "视线跟随鼠标", self.settings.track_mouse),
+            (138, "显示正版披风", self.settings.show_cape),
             (0, "", false),
             (140, "大小 75%", (self.settings.scale - 0.75).abs() < 0.01),
             (141, "大小 100%", (self.settings.scale - 1.).abs() < 0.01),
@@ -1120,6 +1129,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
         _ => DefWindowProcW(hwnd, msg, w, l),
     }
 }
+/// 读取上次保存的披风文件；没有或损坏时返回 None。
+fn load_cape(settings: &Settings) -> Option<Cape> {
+    if settings.cape_path.is_empty() {
+        return None;
+    }
+    std::fs::read(&settings.cape_path)
+        .ok()
+        .and_then(|bytes| Cape::load(&bytes).ok())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--render-test") {
