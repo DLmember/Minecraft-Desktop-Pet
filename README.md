@@ -8,7 +8,7 @@
 
 ## 下载
 
-前往 [最新版本](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest)，下载 **Minecraft桌宠-2.4.10-Windows.zip**，解压后双击 **Minecraft桌宠.exe**。
+前往 [最新版本](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest)，下载 **Minecraft-Desktop-Pet-2.4.12-Windows.zip**，解压后双击 **Minecraft桌宠.exe**。
 
 支持 **Windows 10/11 x64 、 macOS 12+**。便携运行，不需要安装 Electron、Java 或额外运行环境。本次公开发布提供 Windows&macOS 版本。
 
@@ -23,7 +23,7 @@
 - 长按按键保持手位，松开后自然回位。打字时短暂压低身体，幅度可调；快速敲字会重新播放动作。
 - 点击鼠标挥动主手，可切换左右手；连续点击会立即重新挥动。
 - 置顶、缩放、自由摆放和完全鼠标穿透。
-- 可选随 Windows 登录自动启动，启动延迟（立即 / 5–120 秒）和进程优先级（空闲～高）都可以自定义。
+- 可选随 Windows 登录自动启动，通过控制台或右键菜单开启、关闭。
 - 用正版 ID 获取皮肤时，会一并取下账号当前佩戴的披风并显示在背后。穿透时鼠标移到桌宠上，会在约 0.15 秒内淡至 25% 不透明度。
 - 可选 **hyp快速队伍聊天**：键盘输入半角 `#` 自动替换成 `/p chat `，不自动发送。
 - 30 / 60 / 90 / 120 / 144 / 165 / 240 FPS 七档，静止时停止绘制。设置和导入的皮肤自动保存。

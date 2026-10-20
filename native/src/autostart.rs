@@ -1,4 +1,4 @@
-//! 开机自启与启动优先级。
+//! 随 Windows 登录自动启动。
 //!
 //! 自启写入当前用户的 HKCU\Software\Microsoft\Windows\CurrentVersion\Run，
 //! 不需要管理员权限，也不依赖启动文件夹快捷方式。注册表里保存的是
@@ -36,17 +36,9 @@ mod win {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::{
         Foundation::ERROR_SUCCESS,
-        System::{
-            Registry::{
-                RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegQueryValueExW, RegSetValueExW,
-                HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE,
-                REG_SZ,
-            },
-            Threading::{
-                GetCurrentProcess, SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS,
-                BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS,
-                NORMAL_PRIORITY_CLASS,
-            },
+        System::Registry::{
+            RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegQueryValueExW, RegSetValueExW, HKEY,
+            HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
         },
     };
 
@@ -139,24 +131,7 @@ mod win {
             let _ = set_enabled(false, user_dir);
         }
     }
-
-    /// 把设置里的优先级名称应用到当前进程，返回给界面显示的中文名。
-    pub fn apply_priority(name: &str) -> Result<&'static str, String> {
-        let (class, label) = match name {
-            "idle" => (IDLE_PRIORITY_CLASS, "空闲"),
-            "below" => (BELOW_NORMAL_PRIORITY_CLASS, "低于正常"),
-            "above" => (ABOVE_NORMAL_PRIORITY_CLASS, "高于正常"),
-            "high" => (HIGH_PRIORITY_CLASS, "高"),
-            _ => (NORMAL_PRIORITY_CLASS, "正常"),
-        };
-        unsafe {
-            if SetPriorityClass(GetCurrentProcess(), class) == 0 {
-                return Err("无法设置桌宠进程优先级".into());
-            }
-        }
-        Ok(label)
-    }
 }
 
 #[cfg(windows)]
-pub use win::{apply_priority, set_enabled, sync};
+pub use win::{set_enabled, sync};

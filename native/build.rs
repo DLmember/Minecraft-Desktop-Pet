@@ -5,6 +5,7 @@ fn main() {
     println!("cargo:rerun-if-changed=app.rc");
     println!("cargo:rerun-if-changed=app.manifest");
     println!("cargo:rerun-if-changed=../assets/icon.ico");
+    println!("cargo:rerun-if-changed=../assets/github.ico");
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("app-res.o");
     println!("cargo:rerun-if-env-changed=WINDRES");
     let windres = std::env::var("WINDRES").unwrap_or_else(|_| "windres".into());

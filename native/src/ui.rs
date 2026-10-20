@@ -64,7 +64,7 @@ impl App {
             left: 0,
             top: 0,
             right: (760. * d) as i32,
-            bottom: (786. * d) as i32,
+            bottom: (794. * d) as i32,
         };
         AdjustWindowRectExForDpi(
             &mut rect,
@@ -239,32 +239,6 @@ impl App {
         self.control("STATIC", "仅在账号有披风时出现", 0, 250, 628, 260, 24, 0);
         self.control("STATIC", "开机自启", 0, 24, 664, 90, 24, 0);
         self.check("随 Windows 登录自动启动", 125, 660, 250, 160);
-        self.control("STATIC", "进程优先级", 0, 400, 664, 95, 24, 0);
-        self.combo(
-            161,
-            500,
-            660,
-            150,
-            &["空闲", "低于正常", "正常", "高于正常", "高"],
-            config::PRIORITY_OPTIONS
-                .iter()
-                .position(|&p| p == self.settings.startup_priority)
-                .unwrap_or(2),
-        );
-        self.control("STATIC", "启动延迟", 0, 24, 700, 90, 24, 0);
-        self.combo(
-            162,
-            125,
-            696,
-            150,
-            &["立即", "5 秒", "15 秒", "30 秒", "1 分钟", "2 分钟"],
-            config::AUTOSTART_DELAYS
-                .iter()
-                .position(|&d| d == self.settings.autostart_delay)
-                .unwrap_or(0),
-        );
-        self.control("STATIC", "延迟只对开机自启生效", 0, 295, 702, 250, 24, 0);
-
         self.building_page = 1;
         self.control("STATIC", "整体角度偏移", 0, 24, 78, 280, 24, 0);
         self.control(
@@ -381,13 +355,13 @@ impl App {
         );
 
         self.building_page = 3;
-        self.status = self.control("STATIC", "已保存", 0, 24, 738, 465, 24, 320);
+        self.status = self.control("STATIC", "已保存", 0, 24, 702, 465, 24, 320);
         self.control(
             "STATIC",
             "由GPT 6 Astra制作",
             SS_RIGHT,
             490,
-            738,
+            702,
             244,
             24,
             0,
@@ -397,11 +371,22 @@ impl App {
             "拖动摆放 · 右键菜单 · 双击设置；关闭此窗口不会退出桌宠。",
             0,
             24,
-            764,
+            728,
             710,
             22,
             0,
         );
+        self.control(
+            "BUTTON",
+            "GitHub 仓库",
+            BS_PUSHBUTTON as u32 | WS_TABSTOP,
+            594,
+            756,
+            140,
+            30,
+            170,
+        );
+        self.github_icon();
         self.show_page(self.panel_page);
         self.refresh_panel();
         DragAcceptFiles(self.panel, 1);
@@ -453,7 +438,7 @@ impl App {
             left: 0,
             top: 0,
             right: (760. * d) as i32,
-            bottom: (786. * d) as i32,
+            bottom: (794. * d) as i32,
         };
         AdjustWindowRectExForDpi(
             &mut rect,
@@ -501,7 +486,50 @@ impl App {
         }
         DeleteObject(self.font);
         self.font = font;
+        self.github_icon();
         InvalidateRect(hwnd, null(), 1);
+    }
+    unsafe fn github_icon(&mut self) {
+        let size = (18. * self.panel_scale).round() as i32;
+        let icon = LoadImageW(
+            GetModuleHandleW(null()),
+            2usize as *const u16,
+            IMAGE_ICON,
+            size,
+            size,
+            0,
+        );
+        if icon.is_null() {
+            return;
+        }
+        let images = ImageList_Create(size, size, ILC_COLOR32, 1, 0);
+        if images == 0 {
+            DestroyIcon(icon);
+            return;
+        }
+        ImageList_ReplaceIcon(images, -1, icon);
+        DestroyIcon(icon);
+        let margin = (8. * self.panel_scale).round() as i32;
+        let data = BUTTON_IMAGELIST {
+            himl: images,
+            margin: RECT {
+                left: margin,
+                top: 0,
+                right: margin,
+                bottom: 0,
+            },
+            uAlign: BUTTON_IMAGELIST_ALIGN_LEFT,
+        };
+        SendMessageW(
+            self.ctrl(170),
+            BCM_SETIMAGELIST,
+            0,
+            &data as *const _ as isize,
+        );
+        if self.github_images != 0 {
+            ImageList_Destroy(self.github_images);
+        }
+        self.github_images = images;
     }
     unsafe fn radio(&mut self, text: &str, x: i32, y: i32, w: i32, id: i32) {
         self.control(
@@ -526,22 +554,6 @@ impl App {
             28,
             id,
         );
-    }
-    unsafe fn combo(&mut self, id: i32, x: i32, y: i32, w: i32, items: &[&str], selected: usize) {
-        let h = self.control(
-            "COMBOBOX",
-            "",
-            CBS_DROPDOWNLIST as u32 | WS_VSCROLL | WS_TABSTOP,
-            x,
-            y,
-            w,
-            200,
-            id,
-        );
-        for item in items {
-            SendMessageW(h, CB_ADDSTRING, 0, wide(item).as_ptr() as isize);
-        }
-        SendMessageW(h, CB_SETCURSEL, selected, 0);
     }
     unsafe fn slider(&mut self, id: i32, x: i32, y: i32, w: i32, min: i32, max: i32) {
         let h = self.control(
@@ -619,24 +631,6 @@ impl App {
                 0,
             );
         }
-        SendMessageW(
-            self.ctrl(161),
-            CB_SETCURSEL,
-            config::PRIORITY_OPTIONS
-                .iter()
-                .position(|&p| p == self.settings.startup_priority)
-                .unwrap_or(2),
-            0,
-        );
-        SendMessageW(
-            self.ctrl(162),
-            CB_SETCURSEL,
-            config::AUTOSTART_DELAYS
-                .iter()
-                .position(|&d| d == self.settings.autostart_delay)
-                .unwrap_or(0),
-            0,
-        );
         SetWindowTextW(self.ctrl(300), wide(&self.settings.skin_name).as_ptr());
         let values = [
             (self.settings.scale * 100.).round() as i32,
@@ -738,37 +732,6 @@ impl App {
             self.refresh_panel();
         }
     }
-    pub(super) unsafe fn combo_changed(&mut self, id: u32) {
-        let index = SendMessageW(self.ctrl(id as i32), CB_GETCURSEL, 0, 0) as usize;
-        match id {
-            161 => {
-                let Some(name) = config::PRIORITY_OPTIONS.get(index) else {
-                    return;
-                };
-                self.settings.startup_priority = (*name).into();
-                self.settings.clean();
-                self.notice = match autostart::apply_priority(name) {
-                    Ok(label) => format!("进程优先级已设为{label}"),
-                    Err(e) => e,
-                };
-            }
-            162 => {
-                let Some(delay) = config::AUTOSTART_DELAYS.get(index) else {
-                    return;
-                };
-                self.settings.autostart_delay = *delay;
-                self.settings.clean();
-                self.notice = if *delay == 0 {
-                    "开机自启将立即启动".into()
-                } else {
-                    format!("开机自启将延迟 {delay} 秒")
-                };
-            }
-            _ => return,
-        }
-        self.save();
-        self.refresh_panel();
-    }
     pub(super) unsafe fn fetch_skin(&mut self) {
         if self.download.is_some() {
             return;
@@ -846,8 +809,10 @@ impl App {
                 }
                 .into();
                 self.changed();
-                self.online_notice =
-                    format!("已获取 {} 的皮肤{cape_notice}，已自动识别手臂类型。", result.name);
+                self.online_notice = format!(
+                    "已获取 {} 的皮肤{cape_notice}，已自动识别手臂类型。",
+                    result.name
+                );
             }
             Err(e) => self.online_notice = e,
         }
@@ -885,11 +850,7 @@ pub(super) unsafe fn panel_proc(
     match msg {
         WM_COMMAND => {
             let id = (w & 0xffff) as u32;
-            if ((w >> 16) & 0xffff) as u32 == CBN_SELCHANGE {
-                a.combo_changed(id);
-            } else {
-                a.command(id);
-            }
+            a.command(id);
             0
         }
         WM_HSCROLL => {
@@ -956,6 +917,21 @@ pub(super) unsafe fn diagnostic_init(a: &mut App) {
     diagnostic_snapshot(a);
 }
 pub(super) unsafe fn diagnostic_snapshot(a: &mut App) {
+    let mut github_icon: BUTTON_IMAGELIST = std::mem::zeroed();
+    let github_icon_attached = SendMessageW(
+        a.ctrl(170),
+        BCM_GETIMAGELIST,
+        0,
+        &mut github_icon as *mut _ as isize,
+    ) != 0
+        && github_icon.himl != 0;
+    let _ = config::atomic(
+        &a.store.dir.join("github-link.json"),
+        serde_json::to_vec(&serde_json::json!({"iconAttached": github_icon_attached,
+            "url": "https://github.com/DLmember/Minecraft-Desktop-Pet"}))
+        .unwrap()
+        .as_slice(),
+    );
     let _ = config::atomic(
         &a.store.dir.join("input-trace.json"),
         serde_json::to_string_pretty(&a.input_trace)

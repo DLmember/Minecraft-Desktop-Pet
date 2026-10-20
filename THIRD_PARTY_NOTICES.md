@@ -43,3 +43,5 @@ Dependency licenses and copyright notices are included under native/licenses/ (l
 | zmij | 1.0.23 | MIT |
 
 Rust standard library notices and toolchain runtime notices are in the toolchain subdirectory.
+
+GitHub Octicons mark-github icon: Copyright GitHub, Inc., MIT license. Source: https://github.com/primer/octicons/blob/main/icons/mark-github-16.svg . License included under native/licenses/github-octicons/ (licenses/github-octicons/ in the release ZIP). GitHub marks belong to GitHub; their use links to the project repository and does not imply endorsement.

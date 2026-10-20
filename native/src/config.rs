@@ -10,8 +10,10 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 pub const FPS_OPTIONS: [u32; 7] = [30, 60, 90, 120, 144, 165, 240];
 /// 进程优先级档位，与 Windows 的 SetPriorityClass 一一对应。
+#[cfg(not(windows))]
 pub const PRIORITY_OPTIONS: [&str; 5] = ["idle", "below", "normal", "above", "high"];
 /// 开机自启的启动延迟档位（秒）；0 表示立即出现。
+#[cfg(not(windows))]
 pub const AUTOSTART_DELAYS: [u32; 6] = [0, 5, 15, 30, 60, 120];
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
@@ -77,7 +79,9 @@ pub struct Settings {
     pub autostart: bool,
     pub show_cape: bool,
     pub cape_path: String,
+    #[cfg(not(windows))]
     pub autostart_delay: u32,
+    #[cfg(not(windows))]
     pub startup_priority: String,
     pub outer_layer: bool,
     pub fps: u32,
@@ -112,7 +116,9 @@ impl Default for Settings {
             autostart: false,
             show_cape: true,
             cape_path: String::new(),
+            #[cfg(not(windows))]
             autostart_delay: 0,
+            #[cfg(not(windows))]
             startup_priority: "normal".into(),
             outer_layer: true,
             fps: 60,
@@ -188,13 +194,16 @@ impl Settings {
         if self.main_hand != "left" {
             self.main_hand = "right".into();
         }
-        if !PRIORITY_OPTIONS.contains(&self.startup_priority.as_str()) {
-            self.startup_priority = "normal".into();
+        #[cfg(not(windows))]
+        {
+            if !PRIORITY_OPTIONS.contains(&self.startup_priority.as_str()) {
+                self.startup_priority = "normal".into();
+            }
+            self.autostart_delay = *AUTOSTART_DELAYS
+                .iter()
+                .min_by_key(|&&delay| delay.abs_diff(self.autostart_delay))
+                .unwrap();
         }
-        self.autostart_delay = *AUTOSTART_DELAYS
-            .iter()
-            .min_by_key(|&&delay| delay.abs_diff(self.autostart_delay))
-            .unwrap();
         for v in &mut self.model_rotation {
             *v = if v.is_finite() {
                 v.clamp(-180., 180.)
@@ -589,6 +598,7 @@ mod tests {
         assert!(!dir.join("head-follow.json").exists());
         fs::remove_dir_all(dir).unwrap();
     }
+    #[cfg(not(windows))]
     #[test]
     fn autostart_preferences_default_off_and_clamp() {
         let mut s = Settings::default();
@@ -608,6 +618,25 @@ mod tests {
         Store::new(dir.clone()).save(&s).unwrap();
         assert_eq!(Store::new(dir.clone()).load(), s);
         let _ = fs::remove_dir_all(dir);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_keeps_autostart_without_delay_or_priority_settings() {
+        assert!(!Settings::first_run_defaults().autostart);
+        let mut s: Settings = serde_json::from_str(
+            r#"{"autostart":true,"autostartDelay":120,"startupPriority":"high","showCape":false,"fps":120}"#,
+        ).unwrap();
+        s.clean();
+        let value = serde_json::to_value(&s).unwrap();
+        assert!(value.get("autostartDelay").is_none());
+        assert!(value.get("startupPriority").is_none());
+        assert!(s.autostart);
+        assert!(!s.show_cape);
+        assert_eq!(s.fps, 120);
+        let dir = std::env::temp_dir().join(format!("pet-win-startup-test-{}", std::process::id()));
+        Store::new(dir.clone()).save(&s).unwrap();
+        assert_eq!(Store::new(dir.clone()).load(), s);
+        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn migrate() {
