@@ -102,6 +102,8 @@ pub struct Settings {
     pub blockbench_loop: bool,
     pub blockbench_speed: f32,
     pub blockbench_head_track: bool,
+    #[serde(default)]
+    pub blockbench_part_offsets: std::collections::HashMap<String, [f32; 6]>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -144,6 +146,7 @@ impl Default for Settings {
             blockbench_loop: true,
             blockbench_speed: 1.0,
             blockbench_head_track: true,
+            blockbench_part_offsets: std::collections::HashMap::new(),
         }
     }
 }
@@ -229,6 +232,22 @@ impl Settings {
         } else {
             1.0
         };
+        for offsets in self.blockbench_part_offsets.values_mut() {
+            for i in 0..3 {
+                offsets[i] = if offsets[i].is_finite() {
+                    offsets[i].clamp(-100.0, 100.0)
+                } else {
+                    0.0
+                };
+            }
+            for i in 3..6 {
+                offsets[i] = if offsets[i].is_finite() {
+                    offsets[i].clamp(-180.0, 180.0)
+                } else {
+                    0.0
+                };
+            }
+        }
     }
     pub fn head(&self) -> serde_json::Value {
         serde_json::json!({"headSensitivityX":self.head_sensitivity_x,"headSensitivityY":self.head_sensitivity_y,"headRangeX":self.head_range_x,"headRangeY":self.head_range_y,"headCenterX":self.head_center_x,"headCenterY":self.head_center_y})

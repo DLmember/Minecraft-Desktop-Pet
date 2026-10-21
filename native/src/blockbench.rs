@@ -824,6 +824,7 @@ impl BbModel {
             self.evaluate_bone_recursive(
                 root_idx,
                 Mat4::IDENTITY,
+                s,
                 anim,
                 time,
                 head_track,
@@ -864,6 +865,7 @@ impl BbModel {
         &self,
         bone_idx: usize,
         parent_transform: Mat4,
+        s: &Settings,
         anim: Option<&BbAnimation>,
         time: f32,
         head_track: Option<Quat>,
@@ -926,7 +928,13 @@ impl BbModel {
 
         let is_head = bone.name.to_lowercase().contains("head");
         let extra_rot = if is_head {
-            head_track.unwrap_or(Quat::IDENTITY)
+            if let Some(track) = head_track {
+                let (rx, ry, rz) = track.to_euler(EulerRot::XYZ);
+                // Invert rx (pitch) and rz so mouse follow in Blockbench space correctly mirrors RotY(PI)
+                Quat::from_euler(EulerRot::XYZ, -rx, ry, -rz)
+            } else {
+                Quat::IDENTITY
+            }
         } else {
             Quat::IDENTITY
         };
@@ -994,15 +1002,58 @@ impl BbModel {
             Quat::IDENTITY
         };
 
+        // User custom pose when s.posture == "custom"
+        let custom_pose_rot = if s.posture == "custom" {
+            let p = s.active_custom_pose();
+            let row = if is_head {
+                Some(0)
+            } else if bone_lower == "body" || bone_lower == "torso" {
+                Some(1)
+            } else if is_left_arm {
+                Some(2)
+            } else if is_right_arm {
+                Some(3)
+            } else if is_left_leg {
+                Some(4)
+            } else if is_right_leg {
+                Some(5)
+            } else {
+                None
+            };
+            if let Some(r) = row {
+                let degs = p.row(r);
+                Quat::from_euler(EulerRot::XYZ, -degs[0].to_radians(), -degs[1].to_radians(), degs[2].to_radians())
+            } else {
+                Quat::IDENTITY
+            }
+        } else {
+            Quat::IDENTITY
+        };
+
+        // User micro-adjustments for this specific bone
+        let (user_pos, user_rot) = if let Some(offsets) = s.blockbench_part_offsets.get(&bone.name).or_else(|| s.blockbench_part_offsets.get(&bone.name.to_lowercase())) {
+            (
+                Vec3::new(offsets[0], offsets[1], offsets[2]),
+                Quat::from_euler(
+                    EulerRot::XYZ,
+                    offsets[3].to_radians(),
+                    offsets[4].to_radians(),
+                    offsets[5].to_radians(),
+                ),
+            )
+        } else {
+            (Vec3::ZERO, Quat::IDENTITY)
+        };
+
         let total_rot = Quat::from_euler(
             EulerRot::XYZ,
             (bone.rotation.x + anim_rot.x).to_radians(),
             (bone.rotation.y + anim_rot.y).to_radians(),
             (bone.rotation.z + anim_rot.z).to_radians(),
-        ) * extra_rot * procedural_rot;
+        ) * extra_rot * procedural_rot * custom_pose_rot * user_rot;
 
         let pivot = bone.origin;
-        let local = Mat4::from_translation(pivot + anim_pos)
+        let local = Mat4::from_translation(pivot + anim_pos + user_pos)
             * Mat4::from_quat(total_rot)
             * Mat4::from_scale(anim_scale)
             * Mat4::from_translation(-pivot);
@@ -1014,6 +1065,7 @@ impl BbModel {
             self.evaluate_bone_recursive(
                 ch_idx,
                 world,
+                s,
                 anim,
                 time,
                 head_track,
@@ -1461,5 +1513,40 @@ mod tests {
         let raw_sit = frame_sit.rgba();
         let img_sit = image::RgbaImage::from_raw(450, 525, raw_sit).unwrap();
         let _ = img_sit.save(r"C:\Users\Rui_Shu\.gemini\antigravity\brain\cfe8a929-ab05-47cd-85ca-6cd72f32f69d\scratch\rendered_user_sitting.png");
+    }
+
+    #[test]
+    fn part_offsets_and_head_track_pitch_applied() {
+        let json = r#"{
+            "meta": { "model_format": "free" },
+            "resolution": { "width": 16, "height": 16 },
+            "elements": [
+                {
+                    "name": "head",
+                    "from": [-4, 16, -4],
+                    "to": [4, 24, 4],
+                    "origin": [0, 16, 0],
+                    "box_uv": true,
+                    "uv_offset": [0, 0]
+                }
+            ],
+            "outliner": [
+                {
+                    "name": "head",
+                    "origin": [0, 16, 0],
+                    "children": ["head"]
+                }
+            ]
+        }"#;
+        let model = BbModel::load(json.as_bytes(), None).unwrap();
+        let mut s = Settings::default();
+        s.blockbench_part_offsets.insert("head".into(), [1.0, 2.0, 3.0, 10.0, 20.0, 30.0]);
+
+        // Pitch up in world space (pitch angle rx < 0)
+        let head_pitch = Quat::from_rotation_x(-0.3);
+        let mut frame = Frame::new(100, 100);
+        model.draw(&mut frame, &s, None, 0.0, Some(head_pitch), None);
+        let count = frame.rgba().chunks_exact(4).filter(|p| p[3] > 0).count();
+        assert!(count > 0);
     }
 }

@@ -428,12 +428,62 @@ impl App {
         self.slider(507, 125, 276, 515, 25, 300);
         self.control("STATIC", "1.00x", SS_RIGHT, 650, 280, 84, 24, 508);
 
+        self.control("STATIC", "部件微调", 0, 24, 328, 90, 24, 0);
+        self.combo(510, 125, 324, 350, &["(未加载模型)"], 0);
+        self.control(
+            "BUTTON",
+            "当前归零",
+            BS_PUSHBUTTON as u32 | WS_TABSTOP,
+            490,
+            322,
+            110,
+            32,
+            511,
+        );
+        self.control(
+            "BUTTON",
+            "全部归零",
+            BS_PUSHBUTTON as u32 | WS_TABSTOP,
+            610,
+            322,
+            110,
+            32,
+            512,
+        );
+
+        self.control("STATIC", "骨骼位置偏移 (格)", 0, 24, 370, 320, 22, 0);
+        self.control("STATIC", "骨骼旋转角度 (度)", 0, 380, 370, 320, 22, 0);
+
+        self.control("STATIC", "X 左右", 0, 24, 405, 60, 24, 0);
+        self.slider(520, 86, 402, 195, -100, 100);
+        self.control("STATIC", "+0.0", SS_RIGHT, 285, 405, 65, 24, 521);
+
+        self.control("STATIC", "Y 上下", 0, 24, 450, 60, 24, 0);
+        self.slider(522, 86, 447, 195, -100, 100);
+        self.control("STATIC", "+0.0", SS_RIGHT, 285, 450, 65, 24, 523);
+
+        self.control("STATIC", "Z 前后", 0, 24, 495, 60, 24, 0);
+        self.slider(524, 86, 492, 195, -100, 100);
+        self.control("STATIC", "+0.0", SS_RIGHT, 285, 495, 65, 24, 525);
+
+        self.control("STATIC", "X 俯仰", 0, 380, 405, 60, 24, 0);
+        self.slider(530, 442, 402, 195, -180, 180);
+        self.control("STATIC", "+0°", SS_RIGHT, 641, 405, 65, 24, 531);
+
+        self.control("STATIC", "Y 偏航", 0, 380, 450, 60, 24, 0);
+        self.slider(532, 442, 447, 195, -180, 180);
+        self.control("STATIC", "+0°", SS_RIGHT, 641, 450, 65, 24, 533);
+
+        self.control("STATIC", "Z 翻滚", 0, 380, 495, 60, 24, 0);
+        self.slider(534, 442, 492, 195, -180, 180);
+        self.control("STATIC", "+0°", SS_RIGHT, 641, 495, 65, 24, 535);
+
         self.control(
             "STATIC",
-            "提示：可以直接将 .bbmodel 或 .geo.json 模型文件拖入桌宠或本设置窗口。",
+            "提示：选择部件骨骼后拖动滑块即可调整位置和角度，调整即时生效并自动保存。",
             0,
             24,
-            340,
+            550,
             710,
             24,
             509,
@@ -443,7 +493,7 @@ impl App {
             "支持 Blockbench 导出的立方体、骨骼层级、贴图以及骨骼动画关键帧。",
             0,
             24,
-            370,
+            576,
             710,
             24,
             0,
@@ -743,6 +793,86 @@ impl App {
             SendMessageW(h_anim, CB_SETCURSEL, sel_idx, 0);
         }
 
+        let h_bone = self.ctrl(510);
+        if !h_bone.is_null() {
+            let mut bone_list: Vec<String> = Vec::new();
+            if let Some(m) = &self.bbmodel {
+                for b in &m.bones {
+                    bone_list.push(b.name.clone());
+                }
+            }
+            if bone_list.is_empty() {
+                bone_list.push("(未加载模型)".to_string());
+            }
+            let cur_count = SendMessageW(h_bone, CB_GETCOUNT, 0, 0) as usize;
+            if cur_count != bone_list.len() {
+                SendMessageW(h_bone, CB_RESETCONTENT, 0, 0);
+                for item in &bone_list {
+                    SendMessageW(h_bone, CB_ADDSTRING, 0, wide(item).as_ptr() as isize);
+                }
+            }
+            if self.bbmodel.is_some() {
+                if !bone_list.iter().any(|b| b == &self.selected_blockbench_bone) {
+                    if let Some(first) = bone_list.first() {
+                        self.selected_blockbench_bone = first.clone();
+                    }
+                }
+            } else {
+                self.selected_blockbench_bone.clear();
+            }
+            let sel_idx = if self.selected_blockbench_bone.is_empty() {
+                0
+            } else {
+                bone_list
+                    .iter()
+                    .position(|b| b == &self.selected_blockbench_bone)
+                    .unwrap_or(0)
+            };
+            SendMessageW(h_bone, CB_SETCURSEL, sel_idx, 0);
+            let has_model = if self.bbmodel.is_some() { 1 } else { 0 };
+            EnableWindow(h_bone, has_model);
+            EnableWindow(self.ctrl(511), has_model);
+            EnableWindow(self.ctrl(512), has_model);
+        }
+
+        let offsets = if !self.selected_blockbench_bone.is_empty() {
+            self.settings
+                .blockbench_part_offsets
+                .get(&self.selected_blockbench_bone)
+                .or_else(|| {
+                    self.settings
+                        .blockbench_part_offsets
+                        .get(&self.selected_blockbench_bone.to_lowercase())
+                })
+                .copied()
+                .unwrap_or([0.0; 6])
+        } else {
+            [0.0; 6]
+        };
+
+        let has_model = if self.bbmodel.is_some() { 1 } else { 0 };
+        for (s_id, l_id, val) in [
+            (520, 521, offsets[0]),
+            (522, 523, offsets[1]),
+            (524, 525, offsets[2]),
+        ] {
+            let slider_val = (val * 2.0).round() as i32;
+            SendMessageW(self.ctrl(s_id), TBM_SETPOS, 1, slider_val as isize);
+            SetWindowTextW(self.ctrl(l_id), wide(&format!("{:+0.1}", val)).as_ptr());
+            EnableWindow(self.ctrl(s_id), has_model);
+        }
+
+        for (s_id, l_id, val) in [
+            (530, 531, offsets[3]),
+            (532, 533, offsets[4]),
+            (534, 535, offsets[5]),
+        ] {
+            let slider_val = val.round() as i32;
+            SendMessageW(self.ctrl(s_id), TBM_SETPOS, 1, slider_val as isize);
+            SetWindowTextW(self.ctrl(l_id), wide(&format!("{:+0}°", slider_val)).as_ptr());
+            EnableWindow(self.ctrl(s_id), has_model);
+        }
+
         let values = [
             (self.settings.scale * 100.).round() as i32,
             self.settings.head_sensitivity_x as i32,
@@ -811,6 +941,36 @@ impl App {
             208..=210 => self.settings.model_rotation[(id - 208) as usize] = value,
             211 => self.settings.typing_squash = value,
             507 => self.settings.blockbench_speed = value / 100.,
+            520 | 522 | 524 => {
+                if !self.selected_blockbench_bone.is_empty() {
+                    let axis = match id {
+                        520 => 0,
+                        522 => 1,
+                        _ => 2,
+                    };
+                    let entry = self
+                        .settings
+                        .blockbench_part_offsets
+                        .entry(self.selected_blockbench_bone.clone())
+                        .or_insert([0.0; 6]);
+                    entry[axis] = value * 0.5;
+                }
+            }
+            530 | 532 | 534 => {
+                if !self.selected_blockbench_bone.is_empty() {
+                    let axis = match id {
+                        530 => 3,
+                        532 => 4,
+                        _ => 5,
+                    };
+                    let entry = self
+                        .settings
+                        .blockbench_part_offsets
+                        .entry(self.selected_blockbench_bone.clone())
+                        .or_insert([0.0; 6]);
+                    entry[axis] = value;
+                }
+            }
             220..=237 => {
                 self.settings
                     .active_custom_pose_mut()
@@ -831,12 +991,20 @@ impl App {
             202 | 205 => format!("±{}°", value / 2.),
             207 => format!("{} FPS", self.settings.fps),
             507 => format!("{:.2}x", self.settings.blockbench_speed),
+            520 | 522 | 524 => format!("{:+0.1}", value * 0.5),
+            530 | 532 | 534 => format!("{:+0}°", value as i32),
             _ => format!("{:+}°", value as i32),
         };
-        SetWindowTextW(
-            self.ctrl(if id == 200 { 310 } else if id == 507 { 508 } else { id + 400 }),
-            wide(&text).as_ptr(),
-        );
+        let label_ctrl = if id == 200 {
+            self.ctrl(310)
+        } else if id == 507 {
+            self.ctrl(508)
+        } else if (520..=525).contains(&id) || (530..=535).contains(&id) {
+            self.ctrl(id + 1)
+        } else {
+            self.ctrl(id + 400)
+        };
+        SetWindowTextW(label_ctrl, wide(&text).as_ptr());
         if tracking {
             if !self.slider_pending {
                 SetWindowTextW(self.status, wide("调整中，松手保存").as_ptr());
@@ -885,6 +1053,13 @@ impl App {
                     }
                 }
                 self.changed();
+            }
+            510 => {
+                if let Some(m) = &self.bbmodel {
+                    if let Some(b) = m.bones.get(index) {
+                        self.selected_blockbench_bone = b.name.clone();
+                    }
+                }
             }
             _ => return,
         }
