@@ -1,7 +1,8 @@
 param(
     [ValidateSet('build','test','fmt')][string]$Action = 'build',
     [string]$ToolchainBin = '',
-    [string]$RustToolchain = 'stable-x86_64-pc-windows-gnu'
+    [string]$RustToolchain = 'stable-x86_64-pc-windows-gnu',
+    [string]$TestFilter = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -23,7 +24,11 @@ try {
     if ($Action -eq 'fmt') {
         cargo "+$RustToolchain" fmt -- --check
     } elseif ($Action -eq 'test') {
-        cargo "+$RustToolchain" test --locked
+        if ($TestFilter) {
+            cargo "+$RustToolchain" test --locked -- $TestFilter --nocapture
+        } else {
+            cargo "+$RustToolchain" test --locked
+        }
     } else {
         cargo "+$RustToolchain" build --locked --release
         if ($LASTEXITCODE -eq 0 -and $env:CARGO_TARGET_DIR) {

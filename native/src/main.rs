@@ -670,10 +670,11 @@ impl App {
                 self.settings.blockbench_path = path.to_string_lossy().into_owned();
                 self.settings.blockbench_name = model_name;
                 let anim_names = model.animation_names();
-                if let Some(idle) = anim_names.iter().find(|n| n.to_lowercase() == "idle") {
+                if let Some(idle) = anim_names.iter().find(|n| {
+                    let l = n.to_lowercase();
+                    l == "idle" || l == "stand" || l == "default" || l == "loop"
+                }) {
                     self.settings.blockbench_animation = idle.clone();
-                } else if let Some(first) = anim_names.first() {
-                    self.settings.blockbench_animation = first.clone();
                 } else {
                     self.settings.blockbench_animation.clear();
                 }
