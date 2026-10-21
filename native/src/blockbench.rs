@@ -835,7 +835,7 @@ impl BbModel {
             );
         }
 
-        let sit_drop = Vec3::new(0., -6.0 * sit - 2.1 * crouch, 0.);
+        let sit_drop = Vec3::new(0., -6.0 * sit - 2.1 * crouch, -1.1 * crouch);
         let anchor = 6.0 * sit;
         let squash_scale = if s.keyboard_bounce {
             pose.map(|p| p.squash).unwrap_or(1.0)
@@ -943,6 +943,9 @@ impl BbModel {
                 let (rx, ry, rz) = track.to_euler(EulerRot::XYZ);
                 // Invert rx (pitch) and rz so mouse follow in Blockbench space correctly mirrors RotY(PI)
                 Quat::from_euler(EulerRot::XYZ, -rx, ry, -rz)
+            } else if crouch > 0.001 {
+                // When not tracking mouse, compensate for torso forward lean by tilting head up
+                Quat::from_rotation_x(0.25 * crouch)
             } else {
                 Quat::IDENTITY
             }
@@ -969,42 +972,68 @@ impl BbModel {
             || bone_lower == "right_arm"
             || bone_lower == "arm_right"
             || bone_lower == "arm0";
+        let is_body = bone_lower == "body" || bone_lower == "torso";
         let is_tail = bone_lower == "tail"
             || bone_lower == "cattail"
             || bone_lower == "cat_tail";
 
+        let mut parent_is_body = false;
+        let mut cur_p = bone.parent;
+        while let Some(p_idx) = cur_p {
+            let p_name = self.bones[p_idx].name.to_lowercase();
+            if p_name == "body" || p_name == "torso" {
+                parent_is_body = true;
+                break;
+            }
+            cur_p = self.bones[p_idx].parent;
+        }
+
         let procedural_rot = if (is_left_leg || is_right_leg) && (anim_rot.length_squared() < 0.001 || anim.map(|a| !a.name.to_lowercase().contains("sit")).unwrap_or(true)) {
+            // Legs in world space rotate +0.10 * crouch around X, which maps to -0.10 * crouch in Blockbench space
+            let leg_pitch = std::f32::consts::PI * 0.48 * sit - 0.10 * crouch;
             if is_left_leg {
                 Quat::from_euler(
                     EulerRot::XYZ,
-                    std::f32::consts::PI * 0.48 * sit + 0.24 * crouch,
+                    leg_pitch,
                     -0.08 * sit,
                     0.03 * sit,
                 )
             } else {
                 Quat::from_euler(
                     EulerRot::XYZ,
-                    std::f32::consts::PI * 0.48 * sit + 0.24 * crouch,
+                    leg_pitch,
                     0.08 * sit,
                     -0.03 * sit,
                 )
             }
+        } else if is_body && anim_rot.length_squared() < 0.001 {
+            if crouch > 0.001 {
+                // Torso leans forward by +0.34 * crouch in world space (-0.34 in Blockbench space)
+                Quat::from_rotation_x(-0.34 * crouch)
+            } else {
+                Quat::IDENTITY
+            }
         } else if (is_left_arm || is_right_arm) && anim_rot.length_squared() < 0.001 {
+            let crouch_rot = if !parent_is_body && crouch > 0.001 {
+                Quat::from_rotation_x(-0.34 * crouch)
+            } else {
+                Quat::IDENTITY
+            };
             let side = if is_left_arm { 0 } else { 1 };
             if let Some(p) = pose {
                 // p.arms[side] contains the live arm rotation in Desktop Pet coordinate space (forward is +Z).
                 // In Blockbench space (North is -Z, rotated by 180° around Y):
                 // Forward angle is inverted (rx -> -rx), inward angle is inverted (ry -> -ry).
                 let (rx, ry, rz) = p.arms[side].to_euler(EulerRot::XYZ);
-                Quat::from_euler(EulerRot::XYZ, -rx, ry, -rz)
+                crouch_rot * Quat::from_euler(EulerRot::XYZ, -rx, ry, -rz)
             } else if sit > 0.001 {
                 if is_left_arm {
-                    Quat::from_euler(EulerRot::XYZ, std::f32::consts::PI * 0.26 * sit, 0.10 * sit, -0.05 * sit)
+                    crouch_rot * Quat::from_euler(EulerRot::XYZ, std::f32::consts::PI * 0.26 * sit, 0.10 * sit, -0.05 * sit)
                 } else {
-                    Quat::from_euler(EulerRot::XYZ, std::f32::consts::PI * 0.26 * sit, -0.10 * sit, 0.05 * sit)
+                    crouch_rot * Quat::from_euler(EulerRot::XYZ, std::f32::consts::PI * 0.26 * sit, -0.10 * sit, 0.05 * sit)
                 }
             } else {
-                Quat::IDENTITY
+                crouch_rot
             }
         } else if is_tail && sit > 0.001 && anim_rot.length_squared() < 0.001 {
             // When sitting, curl the base tail upwards and slightly sideways to avoid clipping into the floor
@@ -1048,8 +1077,30 @@ impl BbModel {
             (bone.rotation.z + anim_rot.z).to_radians(),
         ) * extra_rot * procedural_rot * custom_pose_rot;
 
-        let pivot = bone.origin;
-        let local = Mat4::from_translation(pivot + anim_pos)
+        let mut pivot = bone.origin;
+        let mut crouch_pos_offset = Vec3::ZERO;
+        if crouch > 0.001 {
+            if is_body {
+                // Body leans forward around waist (Y = 12.0)
+                if pivot.y > 14.0 {
+                    pivot.y = 12.0;
+                }
+            } else if !parent_is_body {
+                if is_head {
+                    // Head origin is at Y = 24. Rotating around waist Y = 12 by -0.34 rad in Blockbench space:
+                    // dY = 12 * cos(-0.34) - 12 = -0.69
+                    // dZ = 12 * sin(-0.34) = -4.00
+                    crouch_pos_offset = Vec3::new(0., -0.69 * crouch, -4.00 * crouch);
+                } else if is_left_arm || is_right_arm {
+                    // Arm origin is at Y = 22. Rotating around waist Y = 12 by -0.34 rad in Blockbench space:
+                    // dY = 10 * cos(-0.34) - 10 = -0.57
+                    // dZ = 10 * sin(-0.34) = -3.33
+                    crouch_pos_offset = Vec3::new(0., -0.57 * crouch, -3.33 * crouch);
+                }
+            }
+        }
+
+        let local = Mat4::from_translation(pivot + anim_pos + crouch_pos_offset)
             * Mat4::from_quat(total_rot)
             * Mat4::from_scale(anim_scale)
             * Mat4::from_translation(-pivot);
@@ -1588,5 +1639,90 @@ mod tests {
         s.keyboard_bounce = false;
         p.update(&s, &skin, glam::Vec2::ZERO, 100., 100., false, 1.08, 0.08);
         assert_eq!(p.squash, 1.0);
+    }
+
+    #[test]
+    fn crouch_alignment_with_player_model() {
+        let json = r#"{
+            "meta": { "model_format": "free" },
+            "resolution": { "width": 64, "height": 64 },
+            "elements": [
+                {
+                    "name": "body",
+                    "from": [-4, 12, -2],
+                    "to": [4, 24, 2]
+                },
+                {
+                    "name": "left_leg",
+                    "from": [-4, 0, -2],
+                    "to": [0, 12, 2]
+                }
+            ],
+            "outliner": [
+                {
+                    "name": "Body",
+                    "origin": [0, 24, 0],
+                    "children": ["body"]
+                },
+                {
+                    "name": "LeftLeg",
+                    "origin": [-1.9, 12, 0],
+                    "children": ["left_leg"]
+                }
+            ]
+        }"#;
+        let model = BbModel::load(json.as_bytes(), None).unwrap();
+        let mut s = Settings::default();
+        s.posture = "standing".into();
+        s.model_rotation = [0.0, -68.0, 0.0];
+
+        let skin = crate::render::Skin::load(crate::render::DEFAULT_SKIN).unwrap();
+        let mut p = crate::render::Pose::new(&s);
+        p.update(&s, &skin, glam::Vec2::ZERO, 100., 100., true, 1.0, 0.016); // shift = true -> crouch = 1.0
+        assert_eq!(p.crouch, 1.0);
+
+        let mut bone_transforms = vec![Mat4::IDENTITY; model.bones.len()];
+        let sit = 0.0;
+        let crouch = 1.0;
+        for &root_idx in &model.root_bones {
+            model.evaluate_bone_recursive(
+                root_idx,
+                Mat4::IDENTITY,
+                &s,
+                None,
+                0.0,
+                None,
+                sit,
+                crouch,
+                Some(&p),
+                &mut bone_transforms,
+            );
+        }
+
+        let sit_drop = Vec3::new(0., -6.0 * sit - 2.1 * crouch, -1.1 * crouch);
+        let global = crate::render::model_transform(&s)
+            * Mat4::from_translation(sit_drop)
+            * Mat4::from_rotation_y(std::f32::consts::PI);
+
+        // Check LeftLeg bone transform
+        let leg_idx = model.bones.iter().position(|b| b.name == "LeftLeg").unwrap();
+        let leg_world = global * bone_transforms[leg_idx];
+        let leg_bone = &model.bones[leg_idx];
+        let hip_pos = leg_world.transform_point3(leg_bone.origin);
+        let foot_pos = leg_world.transform_point3(leg_bone.origin - Vec3::new(0.0, 12.0, 0.0));
+
+        println!("LeftLeg hip pos = {:?}, foot pos = {:?}", hip_pos, foot_pos);
+
+        // Hip Y should drop from 12 to 9.9
+        assert!((hip_pos.y - 9.90).abs() < 0.05);
+
+        // Check Body bone transform
+        let body_idx = model.bones.iter().position(|b| b.name == "Body").unwrap();
+        let body_world = global * bone_transforms[body_idx];
+        let waist_pos = body_world.transform_point3(Vec3::new(0.0, 12.0, 0.0));
+        let neck_pos = body_world.transform_point3(Vec3::new(0.0, 24.0, 0.0));
+        println!("Body waist pos = {:?}, neck pos = {:?}", waist_pos, neck_pos);
+        assert!((waist_pos.y - 9.90).abs() < 0.05);
+        assert!((neck_pos.y - 21.21).abs() < 0.10);
     }
 }
