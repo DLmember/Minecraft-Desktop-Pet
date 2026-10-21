@@ -154,7 +154,6 @@ pub struct App {
     skin: Skin,
     cape: Option<Cape>,
     bbmodel: Option<blockbench::BbModel>,
-    selected_blockbench_bone: String,
     pose: Pose,
     key_recovery: keyboard::KeyRecovery,
     frame: Frame,
@@ -218,11 +217,6 @@ impl App {
         } else {
             None
         };
-        let selected_blockbench_bone = bbmodel
-            .as_ref()
-            .and_then(|m| m.bones.first())
-            .map(|b| b.name.clone())
-            .unwrap_or_default();
         let pose = Pose::new(&settings);
         let notice = store.notice.clone();
         Self {
@@ -231,7 +225,6 @@ impl App {
             skin,
             cape,
             bbmodel,
-            selected_blockbench_bone,
             pose,
             key_recovery: keyboard::KeyRecovery::default(),
             frame: Frame::new(450, 525),
@@ -685,11 +678,6 @@ impl App {
                 } else {
                     self.settings.blockbench_animation.clear();
                 }
-                self.selected_blockbench_bone = model
-                    .bones
-                    .first()
-                    .map(|b| b.name.clone())
-                    .unwrap_or_default();
                 self.bbmodel = Some(model);
                 self.notice = format!("已加载 Blockbench 模型: {}", self.settings.blockbench_name);
                 self.changed();
@@ -886,25 +874,8 @@ impl App {
                 self.changed();
             }
             513 => {
-                self.settings.blockbench_typing_squash = !self.settings.blockbench_typing_squash;
+                self.settings.keyboard_bounce = !self.settings.keyboard_bounce;
                 self.changed();
-            }
-            511 => {
-                if !self.selected_blockbench_bone.is_empty() {
-                    self.settings.blockbench_part_offsets.remove(&self.selected_blockbench_bone);
-                    self.settings.blockbench_part_offsets.remove(&self.selected_blockbench_bone.to_lowercase());
-                    self.notice = format!("部件「{}」微调已重置", self.selected_blockbench_bone);
-                    self.changed();
-                }
-            }
-            512 => {
-                self.settings.blockbench_part_offsets.clear();
-                self.notice = "所有部件微调已重置为默认".into();
-                self.changed();
-            }
-            515 => {
-                self.show_page(3);
-                self.show_panel();
             }
             140..=143 => {
                 self.settings.scale = [0.75, 1., 1.25, 1.5][(id - 140) as usize];
@@ -945,8 +916,7 @@ impl App {
             (100, "打开控制台", false),
             (101, "导入皮肤…", false),
             (501, "导入 Blockbench 模型…", false),
-            (515, "Blockbench 部件微调…", false),
-            (513, "按键身体回弹", self.settings.blockbench_typing_squash),
+            (513, "按键身体回弹", self.settings.keyboard_bounce),
             (0, "", false),
             (110, "站立", self.settings.posture == "standing"),
             (111, "坐下", self.settings.posture == "sitting"),
@@ -1115,9 +1085,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                     a.start.elapsed().as_secs_f32(),
                     &a.settings,
                 );
-                let wake_for_key = a.settings.is_sitting()
-                    || (a.settings.model_mode == "blockbench" && a.settings.blockbench_typing_squash);
-                if wake_for_key {
+                if a.settings.keyboard_bounce {
                     a.wake();
                 }
             }

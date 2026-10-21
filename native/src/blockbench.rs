@@ -837,7 +837,7 @@ impl BbModel {
 
         let sit_drop = Vec3::new(0., -6.0 * sit - 2.1 * crouch, 0.);
         let anchor = 6.0 * sit;
-        let squash_scale = if s.blockbench_typing_squash {
+        let squash_scale = if s.keyboard_bounce {
             pose.map(|p| p.squash).unwrap_or(1.0)
         } else {
             1.0
@@ -996,7 +996,7 @@ impl BbModel {
                 // In Blockbench space (North is -Z, rotated by 180° around Y):
                 // Forward angle is inverted (rx -> -rx), inward angle is inverted (ry -> -ry).
                 let (rx, ry, rz) = p.arms[side].to_euler(EulerRot::XYZ);
-                Quat::from_euler(EulerRot::XYZ, -rx, -ry, rz)
+                Quat::from_euler(EulerRot::XYZ, -rx, ry, -rz)
             } else if sit > 0.001 {
                 if is_left_arm {
                     Quat::from_euler(EulerRot::XYZ, std::f32::consts::PI * 0.26 * sit, 0.10 * sit, -0.05 * sit)
@@ -1033,7 +1033,7 @@ impl BbModel {
             };
             if let Some(r) = row {
                 let degs = p.row(r);
-                Quat::from_euler(EulerRot::XYZ, -degs[0].to_radians(), -degs[1].to_radians(), degs[2].to_radians())
+                Quat::from_euler(EulerRot::XYZ, -degs[0].to_radians(), degs[1].to_radians(), -degs[2].to_radians())
             } else {
                 Quat::IDENTITY
             }
@@ -1041,30 +1041,15 @@ impl BbModel {
             Quat::IDENTITY
         };
 
-        // User micro-adjustments for this specific bone
-        let (user_pos, user_rot) = if let Some(offsets) = s.blockbench_part_offsets.get(&bone.name).or_else(|| s.blockbench_part_offsets.get(&bone.name.to_lowercase())) {
-            (
-                Vec3::new(offsets[0], offsets[1], offsets[2]),
-                Quat::from_euler(
-                    EulerRot::XYZ,
-                    offsets[3].to_radians(),
-                    offsets[4].to_radians(),
-                    offsets[5].to_radians(),
-                ),
-            )
-        } else {
-            (Vec3::ZERO, Quat::IDENTITY)
-        };
-
         let total_rot = Quat::from_euler(
             EulerRot::XYZ,
             (bone.rotation.x + anim_rot.x).to_radians(),
             (bone.rotation.y + anim_rot.y).to_radians(),
             (bone.rotation.z + anim_rot.z).to_radians(),
-        ) * extra_rot * procedural_rot * custom_pose_rot * user_rot;
+        ) * extra_rot * procedural_rot * custom_pose_rot;
 
         let pivot = bone.origin;
-        let local = Mat4::from_translation(pivot + anim_pos + user_pos)
+        let local = Mat4::from_translation(pivot + anim_pos)
             * Mat4::from_quat(total_rot)
             * Mat4::from_scale(anim_scale)
             * Mat4::from_translation(-pivot);
@@ -1527,7 +1512,7 @@ mod tests {
     }
 
     #[test]
-    fn part_offsets_and_head_track_pitch_applied() {
+    fn head_track_pitch_applied() {
         let json = r#"{
             "meta": { "model_format": "free" },
             "resolution": { "width": 16, "height": 16 },
@@ -1550,8 +1535,7 @@ mod tests {
             ]
         }"#;
         let model = BbModel::load(json.as_bytes(), None).unwrap();
-        let mut s = Settings::default();
-        s.blockbench_part_offsets.insert("head".into(), [1.0, 2.0, 3.0, 10.0, 20.0, 30.0]);
+        let s = Settings::default();
 
         // Pitch up in world space (pitch angle rx < 0)
         let head_pitch = Quat::from_rotation_x(-0.3);
@@ -1562,10 +1546,33 @@ mod tests {
     }
 
     #[test]
+    fn inspect_arm_typing_coordinates() {
+        let s = Settings::default();
+        let mut p = crate::render::Pose::new(&s);
+        let skin = crate::render::Skin::load(crate::render::DEFAULT_SKIN).unwrap();
+        // Update pose in sitting posture
+        let mut s_sit = s.clone();
+        s_sit.posture = "sitting".into();
+        p.update(&s_sit, &skin, glam::Vec2::ZERO, 100., 100., false, 1.0, 0.016);
+
+        for side in 0..2 {
+            let q = p.arms[side];
+            let (rx, ry, rz) = q.to_euler(EulerRot::XYZ);
+            let hand_player = q * Vec3::new(0., -10., 0.);
+
+            let new_bb_q = Quat::from_euler(EulerRot::XYZ, -rx, ry, -rz);
+            let new_bb_world = Mat4::from_rotation_y(std::f32::consts::PI).transform_vector3(new_bb_q * Vec3::new(0., -10., 0.));
+
+            println!("SIDE {}: player hand vec: {:?}, new_bb_world: {:?}", side, hand_player, new_bb_world);
+            assert!((new_bb_world - hand_player).length() < 0.01);
+        }
+    }
+
+    #[test]
     fn blockbench_typing_squash_and_toggle() {
         let mut s = Settings::default();
         s.model_mode = "blockbench".into();
-        s.blockbench_typing_squash = true;
+        s.keyboard_bounce = true;
         s.keyboard_enabled = true;
         s.typing_squash = 10.0;
 
@@ -1578,7 +1585,7 @@ mod tests {
         assert!((p.squash - 0.90).abs() < 1e-4);
 
         // When switch is turned off, squash is disabled
-        s.blockbench_typing_squash = false;
+        s.keyboard_bounce = false;
         p.update(&s, &skin, glam::Vec2::ZERO, 100., 100., false, 1.08, 0.08);
         assert_eq!(p.squash, 1.0);
     }

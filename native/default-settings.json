@@ -8,7 +8,7 @@
   "clickThrough": true,
   "trackMouse": true,
   "keyboardEnabled": true,
-  "blockbenchTypingSquash": true,
+  "keyboardBounce": true,
   "hypQuickChat": false,
   "outerLayer": true,
   "fps": 120,

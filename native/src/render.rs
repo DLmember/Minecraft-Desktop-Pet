@@ -256,14 +256,16 @@ impl Pose {
             self.held.retain(|k| k.vk != vk);
             return;
         }
-        let allow = (s.is_sitting()
-            || (s.model_mode == "blockbench" && s.blockbench_typing_squash))
-            && s.keyboard_enabled;
-        if !allow {
+        if !s.keyboard_bounce || !s.keyboard_enabled {
             return;
         }
         // OS auto-repeat must not switch hands, release a held pose or restart squash.
-        if self.held.iter().any(|k| k.vk == vk) {
+        let already_held = self.held.iter().any(|k| k.vk == vk);
+        if !already_held {
+            self.squash_start = Some(now);
+            self.squash = 1.;
+        }
+        if !s.is_sitting() || already_held {
             return;
         }
         let key = key_position(vk);
@@ -291,9 +293,6 @@ impl Pose {
             side,
             key: self.hands[side].key,
         });
-        // A new physical press interrupts the pulse and starts at full height.
-        self.squash_start = Some(now);
-        self.squash = 1.;
     }
     pub fn held_codes(&self) -> Vec<u32> {
         self.held.iter().map(|k| k.vk).collect()
@@ -364,16 +363,22 @@ impl Pose {
         if (self.crouch - crouch).abs() < 0.0001 {
             self.crouch = crouch;
         }
-        let allow_squash = (s.is_sitting()
-            || (s.model_mode == "blockbench" && s.blockbench_typing_squash))
-            && s.keyboard_enabled;
+        let allow_squash = s.keyboard_bounce && s.keyboard_enabled;
         self.squash = if allow_squash {
             1. - self.squash_pulse(now) * s.typing_squash / 100.
         } else {
             1.
         };
-        if !s.is_sitting() && s.model_mode != "blockbench" {
-            self.reset_keys();
+        if !s.is_sitting() {
+            self.held.clear();
+            self.hands = [Hand {
+                until: 0.,
+                key: None,
+            }; 2];
+            if !s.keyboard_bounce {
+                self.squash_start = None;
+                self.squash = 1.;
+            }
         }
         if self
             .swing_start
