@@ -885,6 +885,10 @@ impl App {
                 self.settings.blockbench_head_track = !self.settings.blockbench_head_track;
                 self.changed();
             }
+            513 => {
+                self.settings.blockbench_typing_squash = !self.settings.blockbench_typing_squash;
+                self.changed();
+            }
             511 => {
                 if !self.selected_blockbench_bone.is_empty() {
                     self.settings.blockbench_part_offsets.remove(&self.selected_blockbench_bone);
@@ -942,6 +946,7 @@ impl App {
             (101, "导入皮肤…", false),
             (501, "导入 Blockbench 模型…", false),
             (515, "Blockbench 部件微调…", false),
+            (513, "按键身体回弹", self.settings.blockbench_typing_squash),
             (0, "", false),
             (110, "站立", self.settings.posture == "standing"),
             (111, "坐下", self.settings.posture == "sitting"),
@@ -1110,7 +1115,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                     a.start.elapsed().as_secs_f32(),
                     &a.settings,
                 );
-                if a.settings.is_sitting() {
+                let wake_for_key = a.settings.is_sitting()
+                    || (a.settings.model_mode == "blockbench" && a.settings.blockbench_typing_squash);
+                if wake_for_key {
                     a.wake();
                 }
             }

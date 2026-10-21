@@ -836,7 +836,18 @@ impl BbModel {
         }
 
         let sit_drop = Vec3::new(0., -6.0 * sit - 2.1 * crouch, 0.);
+        let anchor = 6.0 * sit;
+        let squash_scale = if s.blockbench_typing_squash {
+            pose.map(|p| p.squash).unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        let squash = Mat4::from_translation(Vec3::Y * anchor)
+            * Mat4::from_scale(Vec3::new(1., squash_scale, 1.))
+            * Mat4::from_translation(-Vec3::Y * anchor);
+
         let global = model_transform(s)
+            * squash
             * Mat4::from_translation(sit_drop)
             * Mat4::from_rotation_y(std::f32::consts::PI);
 
@@ -1548,5 +1559,27 @@ mod tests {
         model.draw(&mut frame, &s, None, 0.0, Some(head_pitch), None);
         let count = frame.rgba().chunks_exact(4).filter(|p| p[3] > 0).count();
         assert!(count > 0);
+    }
+
+    #[test]
+    fn blockbench_typing_squash_and_toggle() {
+        let mut s = Settings::default();
+        s.model_mode = "blockbench".into();
+        s.blockbench_typing_squash = true;
+        s.keyboard_enabled = true;
+        s.typing_squash = 10.0;
+
+        let mut p = crate::render::Pose::new(&s);
+        let skin = crate::render::Skin::load(crate::render::DEFAULT_SKIN).unwrap();
+        // Press a key at t = 1.0s
+        p.key(65, true, 1.0, &s);
+        // At t = 1.08s (peak of pulse), update pose
+        p.update(&s, &skin, glam::Vec2::ZERO, 100., 100., false, 1.08, 0.08);
+        assert!((p.squash - 0.90).abs() < 1e-4);
+
+        // When switch is turned off, squash is disabled
+        s.blockbench_typing_squash = false;
+        p.update(&s, &skin, glam::Vec2::ZERO, 100., 100., false, 1.08, 0.08);
+        assert_eq!(p.squash, 1.0);
     }
 }

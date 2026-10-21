@@ -102,6 +102,7 @@ pub struct Settings {
     pub blockbench_loop: bool,
     pub blockbench_speed: f32,
     pub blockbench_head_track: bool,
+    pub blockbench_typing_squash: bool,
     #[serde(default)]
     pub blockbench_part_offsets: std::collections::HashMap<String, [f32; 6]>,
 }
@@ -146,6 +147,7 @@ impl Default for Settings {
             blockbench_loop: true,
             blockbench_speed: 1.0,
             blockbench_head_track: true,
+            blockbench_typing_squash: true,
             blockbench_part_offsets: std::collections::HashMap::new(),
         }
     }

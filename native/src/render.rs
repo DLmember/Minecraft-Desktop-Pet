@@ -256,7 +256,10 @@ impl Pose {
             self.held.retain(|k| k.vk != vk);
             return;
         }
-        if !s.is_sitting() || !s.keyboard_enabled {
+        let allow = (s.is_sitting()
+            || (s.model_mode == "blockbench" && s.blockbench_typing_squash))
+            && s.keyboard_enabled;
+        if !allow {
             return;
         }
         // OS auto-repeat must not switch hands, release a held pose or restart squash.
@@ -361,12 +364,15 @@ impl Pose {
         if (self.crouch - crouch).abs() < 0.0001 {
             self.crouch = crouch;
         }
-        self.squash = if s.is_sitting() {
+        let allow_squash = (s.is_sitting()
+            || (s.model_mode == "blockbench" && s.blockbench_typing_squash))
+            && s.keyboard_enabled;
+        self.squash = if allow_squash {
             1. - self.squash_pulse(now) * s.typing_squash / 100.
         } else {
             1.
         };
-        if !s.is_sitting() {
+        if !s.is_sitting() && s.model_mode != "blockbench" {
             self.reset_keys();
         }
         if self

@@ -421,8 +421,9 @@ impl App {
 
         self.check("循环播放动画", 490, 178, 220, 505);
 
-        self.control("STATIC", "视线跟随", 0, 24, 230, 90, 24, 0);
+        self.control("STATIC", "互动效果", 0, 24, 230, 90, 24, 0);
         self.check("头部骨骼跟随鼠标视线", 125, 226, 260, 506);
+        self.check("按键身体回弹压低", 490, 226, 220, 513);
 
         self.control("STATIC", "播放速度", 0, 24, 280, 90, 24, 0);
         self.slider(507, 125, 276, 515, 25, 300);
@@ -729,6 +730,7 @@ impl App {
             (500, self.settings.model_mode == "blockbench"),
             (505, self.settings.blockbench_loop),
             (506, self.settings.blockbench_head_track),
+            (513, self.settings.blockbench_typing_squash),
         ] {
             SendMessageW(
                 self.ctrl(id),
