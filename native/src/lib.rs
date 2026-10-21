@@ -1,5 +1,6 @@
 //! Original renderer exposed through a main-thread-only C ABI for AppKit.
 #![allow(dead_code)]
+mod blockbench;
 mod config;
 mod keyboard;
 mod render;

@@ -3,7 +3,7 @@ use glam::{EulerRot, Mat4, Quat, Vec2, Vec3};
 use image::RgbaImage;
 pub const DEFAULT_SKIN: &[u8] = include_bytes!("../../assets/default-skin.png");
 /// 六个面的明暗查色表；皮肤和披风共用同一套光照。
-fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
+pub fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
     let shades = [0.80, 0.80, 1., 0.62, 0.94, 0.86];
     let mut lut = [[[0u8; 256]; 3]; 6];
     for f in 0..6 {
@@ -220,7 +220,7 @@ fn degrees(values: &[f32]) -> Quat {
         values[2].to_radians(),
     )
 }
-fn model_transform(s: &Settings) -> Mat4 {
+pub(crate) fn model_transform(s: &Settings) -> Mat4 {
     Mat4::from_translation(Vec3::Y * 15.)
         * Mat4::from_quat(degrees(&s.model_rotation))
         * Mat4::from_translation(-Vec3::Y * 15.)
@@ -566,7 +566,7 @@ impl Pose {
         self.base_body() * Mat4::from_rotation_y(self.body_yaw)
     }
 }
-fn project(v: Vec3, width: f32, height: f32) -> Vec3 {
+pub(crate) fn project(v: Vec3, width: f32, height: f32) -> Vec3 {
     let forward = Vec3::new(30., 23., 70.).normalize();
     let right = Vec3::Y.cross(forward).normalize();
     let up = forward.cross(right);
@@ -599,6 +599,7 @@ struct BoxPart {
     keyboard: bool,
     cape: bool,
 }
+#[allow(dead_code)]
 fn parts(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
     parts_with_cape(s, skin, pose, None)
 }
@@ -797,11 +798,14 @@ impl Frame {
     pub fn draw(&mut self, s: &Settings, skin: &Skin, pose: &Pose) {
         self.draw_ext(s, skin, None, pose);
     }
-    /// 带披风的绘制；披风只在正版账号取到的时候才传进来。
-    pub fn draw_ext(&mut self, s: &Settings, skin: &Skin, cape: Option<&Cape>, pose: &Pose) {
+    pub fn clear(&mut self) {
         self.pixels.fill(0);
         self.depth.fill(f32::INFINITY);
         self.bounds = [self.width as i32, self.height as i32, 0, 0];
+    }
+    /// 带披风的绘制；披风只在正版账号取到的时候才传进来。
+    pub fn draw_ext(&mut self, s: &Settings, skin: &Skin, cape: Option<&Cape>, pose: &Pose) {
+        self.clear();
         let cape = cape.filter(|_| s.show_cape);
         for part in parts_with_cape(s, skin, pose, cape) {
             if part.cape {
@@ -881,6 +885,29 @@ impl Frame {
         }
     }
     fn triangle(&mut self, p: [Vec3; 3], uv: [Vec2; 3], face: usize, b: &BoxPart, skin: Tex) {
+        let texscale = skin.image.width() as f32 / 64.;
+        let tex = uv.map(|t| t * texscale);
+        self.draw_triangle_raw(p, tex, face, b.keyboard, skin.image, skin.colors);
+    }
+    pub fn draw_triangle(
+        &mut self,
+        p: [Vec3; 3],
+        uv_pixels: [Vec2; 3],
+        face: usize,
+        image: &RgbaImage,
+        colors: &[[[u8; 3]; 6]],
+    ) {
+        self.draw_triangle_raw(p, uv_pixels, face, false, image, colors);
+    }
+    fn draw_triangle_raw(
+        &mut self,
+        p: [Vec3; 3],
+        tex: [Vec2; 3],
+        face: usize,
+        is_keyboard: bool,
+        image: &RgbaImage,
+        colors: &[[[u8; 3]; 6]],
+    ) {
         let area = edge(p[0], p[1], p[2]);
         if area.abs() < 0.0001 {
             return;
@@ -909,7 +936,6 @@ impl Frame {
             .fold(f32::NEG_INFINITY, f32::max)
             .ceil()
             .min(self.height as f32) as usize;
-        let texscale = skin.image.width() as f32 / 64.;
         let shades = [0.80f32, 0.80, 1., 0.62, 0.94, 0.86];
         let gray = [131u8, 135, 138].map(|c| {
             let l = (((c as f32 / 255. + 0.055) / 1.055).powf(2.4) * shades[face]).max(0.);
@@ -925,7 +951,6 @@ impl Frame {
         let c0 = edge(p[0], p[1], origin) * inv_area;
         let za = p[0].z - p[1].z;
         let zc = p[2].z - p[1].z;
-        let tex = uv.map(|t| t * texscale);
         let ta = tex[0] - tex[1];
         let tc = tex[2] - tex[1];
         // Fixed-point, half-open coverage gives shared triangle edges exactly one
@@ -966,15 +991,15 @@ impl Frame {
                 if z >= self.depth[i] {
                     continue;
                 }
-                let (color, alpha) = if b.keyboard {
+                let (color, alpha) = if is_keyboard {
                     (gray, 255)
                 } else {
                     let tx = tex[1].x + ta.x * a + tc.x * c;
                     let ty = tex[1].y + ta.y * a + tc.y * c;
-                    let xx = (tx as u32).min(skin.image.width() - 1);
-                    let yy = (ty as u32).min(skin.image.height() - 1);
-                    let ti = (yy * skin.image.width() + xx) as usize;
-                    (skin.colors[ti][face], skin.image.get_pixel(xx, yy)[3])
+                    let xx = (tx as u32).min(image.width() - 1);
+                    let yy = (ty as u32).min(image.height() - 1);
+                    let ti = (yy * image.width() + xx) as usize;
+                    (colors[ti][face], image.get_pixel(xx, yy)[3])
                 };
                 if alpha < 16 {
                     continue;
@@ -1019,7 +1044,7 @@ impl Frame {
             .collect()
     }
 }
-fn edge(a: Vec3, b: Vec3, p: Vec3) -> f32 {
+pub(crate) fn edge(a: Vec3, b: Vec3, p: Vec3) -> f32 {
     (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
 }
 #[cfg(test)]

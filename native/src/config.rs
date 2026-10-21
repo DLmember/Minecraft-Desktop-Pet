@@ -95,6 +95,13 @@ pub struct Settings {
     pub custom_pose: CustomPose,
     pub custom_base: String,
     pub custom_sitting_pose: CustomPose,
+    pub model_mode: String,
+    pub blockbench_path: String,
+    pub blockbench_name: String,
+    pub blockbench_animation: String,
+    pub blockbench_loop: bool,
+    pub blockbench_speed: f32,
+    pub blockbench_head_track: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -130,6 +137,13 @@ impl Default for Settings {
             custom_pose: CustomPose::default(),
             custom_base: "standing".into(),
             custom_sitting_pose: CustomPose::default(),
+            model_mode: "player".into(),
+            blockbench_path: String::new(),
+            blockbench_name: String::new(),
+            blockbench_animation: String::new(),
+            blockbench_loop: true,
+            blockbench_speed: 1.0,
+            blockbench_head_track: true,
         }
     }
 }
@@ -207,6 +221,14 @@ impl Settings {
             self.custom_base = "standing".into();
         }
         self.custom_sitting_pose.clean();
+        if self.model_mode != "blockbench" {
+            self.model_mode = "player".into();
+        }
+        self.blockbench_speed = if self.blockbench_speed.is_finite() {
+            self.blockbench_speed.clamp(0.1, 5.0)
+        } else {
+            1.0
+        };
     }
     pub fn head(&self) -> serde_json::Value {
         serde_json::json!({"headSensitivityX":self.head_sensitivity_x,"headSensitivityY":self.head_sensitivity_y,"headRangeX":self.head_range_x,"headRangeY":self.head_range_y,"headCenterX":self.head_center_x,"headCenterY":self.head_center_y})

@@ -1,6 +1,6 @@
 use super::*;
 use windows_sys::Win32::UI::Controls::Dialogs::*;
-const SLIDER_IDS: [i32; 9] = [200, 201, 202, 203, 204, 205, 206, 207, 211];
+const SLIDER_IDS: [i32; 10] = [200, 201, 202, 203, 204, 205, 206, 207, 211, 507];
 const SS_PATHELLIPSIS: u32 = 0x8000;
 const SS_RIGHT: u32 = 2;
 const TBM_GETPOS: u32 = WM_USER;
@@ -109,15 +109,15 @@ impl App {
         self.controls.clear();
         self.layout.clear();
         self.page_controls.clear();
-        self.building_page = 3;
-        for (i, text) in ["常规", "视线与角度", "自定义姿态"].iter().enumerate() {
+        self.building_page = 255;
+        for (i, text) in ["常规", "视线与角度", "自定义姿态", "Blockbench"].iter().enumerate() {
             self.control(
                 "BUTTON",
                 text,
                 BS_RADIOBUTTON as u32 | BS_PUSHLIKE as u32 | WS_TABSTOP,
-                24 + i as i32 * 242,
+                24 + i as i32 * 178,
                 16,
-                226,
+                170,
                 34,
                 150 + i as i32,
             );
@@ -381,6 +381,75 @@ impl App {
         );
 
         self.building_page = 3;
+        self.control("STATIC", "模型模式", 0, 24, 82, 90, 24, 0);
+        self.check("启用 Blockbench 3D 模型", 125, 78, 260, 500);
+        self.control(
+            "BUTTON",
+            "导入模型…",
+            BS_PUSHBUTTON as u32 | WS_TABSTOP,
+            490,
+            76,
+            120,
+            32,
+            501,
+        );
+        self.control(
+            "BUTTON",
+            "恢复玩家皮肤",
+            BS_PUSHBUTTON as u32 | WS_TABSTOP,
+            624,
+            76,
+            110,
+            32,
+            502,
+        );
+
+        self.control("STATIC", "当前模型", 0, 24, 132, 90, 24, 0);
+        self.control(
+            "STATIC",
+            "未加载任何 Blockbench 模型",
+            SS_PATHELLIPSIS,
+            125,
+            132,
+            609,
+            24,
+            503,
+        );
+
+        self.control("STATIC", "选择动画", 0, 24, 180, 90, 24, 0);
+        self.combo(504, 125, 176, 350, &["无动画（基础姿态）"], 0);
+
+        self.check("循环播放动画", 490, 178, 220, 505);
+
+        self.control("STATIC", "视线跟随", 0, 24, 230, 90, 24, 0);
+        self.check("头部骨骼跟随鼠标视线", 125, 226, 260, 506);
+
+        self.control("STATIC", "播放速度", 0, 24, 280, 90, 24, 0);
+        self.slider(507, 125, 276, 515, 25, 300);
+        self.control("STATIC", "1.00x", SS_RIGHT, 650, 280, 84, 24, 508);
+
+        self.control(
+            "STATIC",
+            "提示：可以直接将 .bbmodel 或 .geo.json 模型文件拖入桌宠或本设置窗口。",
+            0,
+            24,
+            340,
+            710,
+            24,
+            509,
+        );
+        self.control(
+            "STATIC",
+            "支持 Blockbench 导出的立方体、骨骼层级、贴图以及骨骼动画关键帧。",
+            0,
+            24,
+            370,
+            710,
+            24,
+            0,
+        );
+
+        self.building_page = 255;
         self.status = self.control("STATIC", "已保存", 0, 24, 738, 465, 24, 320);
         self.control(
             "STATIC",
@@ -409,18 +478,18 @@ impl App {
         SetForegroundWindow(self.panel);
     }
     pub(super) unsafe fn show_page(&mut self, page: u8) {
-        self.panel_page = page.min(2);
+        self.panel_page = page.min(3);
         for &(hwnd, owner) in &self.page_controls {
             ShowWindow(
                 hwnd,
-                if owner == 3 || owner == self.panel_page {
+                if owner == 255 || owner == self.panel_page {
                     SW_SHOW
                 } else {
                     SW_HIDE
                 },
             );
         }
-        for i in 0..3 {
+        for i in 0..4 {
             SendMessageW(
                 self.ctrl(150 + i),
                 BM_SETCHECK,
@@ -607,6 +676,9 @@ impl App {
             (124, self.settings.outer_layer),
             (138, self.settings.show_cape),
             (160, self.settings.autostart),
+            (500, self.settings.model_mode == "blockbench"),
+            (505, self.settings.blockbench_loop),
+            (506, self.settings.blockbench_head_track),
         ] {
             SendMessageW(
                 self.ctrl(id),
@@ -638,6 +710,39 @@ impl App {
             0,
         );
         SetWindowTextW(self.ctrl(300), wide(&self.settings.skin_name).as_ptr());
+        let model_label = if self.settings.blockbench_name.is_empty() {
+            "未加载任何 Blockbench 模型（默认使用标准玩家模型）"
+        } else {
+            &self.settings.blockbench_name
+        };
+        SetWindowTextW(self.ctrl(503), wide(model_label).as_ptr());
+
+        let h_anim = self.ctrl(504);
+        if !h_anim.is_null() {
+            let mut anim_list = vec!["无动画（基础姿态）".to_string()];
+            if let Some(m) = &self.bbmodel {
+                for a in m.animation_names() {
+                    anim_list.push(a);
+                }
+            }
+            let cur_count = SendMessageW(h_anim, CB_GETCOUNT, 0, 0) as usize;
+            if cur_count != anim_list.len() {
+                SendMessageW(h_anim, CB_RESETCONTENT, 0, 0);
+                for item in &anim_list {
+                    SendMessageW(h_anim, CB_ADDSTRING, 0, wide(item).as_ptr() as isize);
+                }
+            }
+            let sel_idx = if self.settings.blockbench_animation.is_empty() {
+                0
+            } else {
+                anim_list
+                    .iter()
+                    .position(|a| a == &self.settings.blockbench_animation)
+                    .unwrap_or(0)
+            };
+            SendMessageW(h_anim, CB_SETCURSEL, sel_idx, 0);
+        }
+
         let values = [
             (self.settings.scale * 100.).round() as i32,
             self.settings.head_sensitivity_x as i32,
@@ -651,6 +756,7 @@ impl App {
                 .position(|&fps| fps == self.settings.fps)
                 .unwrap_or(1) as i32,
             self.settings.typing_squash.round() as i32,
+            (self.settings.blockbench_speed * 100.).round() as i32,
         ];
         for (i, &id) in SLIDER_IDS.iter().enumerate() {
             SendMessageW(self.ctrl(id), TBM_SETPOS, 1, values[i] as isize);
@@ -658,10 +764,11 @@ impl App {
                 200 | 201 | 204 | 211 => format!("{}%", values[i]),
                 202 | 205 => format!("±{}°", values[i] as f32 / 2.),
                 207 => format!("{} FPS", self.settings.fps),
+                507 => format!("{:.2}x", self.settings.blockbench_speed),
                 _ => format!("{:+}°", values[i]),
             };
             SetWindowTextW(
-                self.ctrl(if id == 200 { 310 } else { 400 + id }),
+                self.ctrl(if id == 200 { 310 } else if id == 507 { 508 } else { 400 + id }),
                 wide(&text).as_ptr(),
             );
         }
@@ -703,6 +810,7 @@ impl App {
             }
             208..=210 => self.settings.model_rotation[(id - 208) as usize] = value,
             211 => self.settings.typing_squash = value,
+            507 => self.settings.blockbench_speed = value / 100.,
             220..=237 => {
                 self.settings
                     .active_custom_pose_mut()
@@ -722,10 +830,11 @@ impl App {
             200 | 201 | 204 | 211 => format!("{}%", value as i32),
             202 | 205 => format!("±{}°", value / 2.),
             207 => format!("{} FPS", self.settings.fps),
+            507 => format!("{:.2}x", self.settings.blockbench_speed),
             _ => format!("{:+}°", value as i32),
         };
         SetWindowTextW(
-            self.ctrl(if id == 200 { 310 } else { id + 400 }),
+            self.ctrl(if id == 200 { 310 } else if id == 507 { 508 } else { id + 400 }),
             wide(&text).as_ptr(),
         );
         if tracking {
@@ -763,6 +872,19 @@ impl App {
                 } else {
                     format!("开机自启将延迟 {delay} 秒")
                 };
+            }
+            504 => {
+                if index == 0 {
+                    self.settings.blockbench_animation.clear();
+                    self.notice = "已切换为基础姿态（无动画）".into();
+                } else if let Some(m) = &self.bbmodel {
+                    let names = m.animation_names();
+                    if let Some(name) = names.get(index - 1) {
+                        self.settings.blockbench_animation = name.clone();
+                        self.notice = format!("正在播放动画: {name}");
+                    }
+                }
+                self.changed();
             }
             _ => return,
         }
@@ -867,6 +989,27 @@ impl App {
         data.lpstrFile = buffer.as_mut_ptr();
         data.nMaxFile = buffer.len() as u32;
         let title = wide("选择 Minecraft 皮肤");
+        data.lpstrTitle = title.as_ptr();
+        data.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if GetOpenFileNameW(&mut data) != 0 {
+            let len = buffer.iter().position(|&c| c == 0).unwrap();
+            self.import(PathBuf::from(String::from_utf16_lossy(&buffer[..len])));
+        }
+    }
+    pub(super) unsafe fn choose_model(&mut self) {
+        let mut buffer = [0u16; 32768];
+        let filter = wide("Blockbench 模型 (*.bbmodel;*.geo.json)\0*.bbmodel;*.geo.json;*.json\0所有文件 (*.*)\0*.*\0\0");
+        let mut data: OPENFILENAMEW = std::mem::zeroed();
+        data.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+        data.hwndOwner = if self.panel.is_null() {
+            self.hwnd
+        } else {
+            self.panel
+        };
+        data.lpstrFilter = filter.as_ptr();
+        data.lpstrFile = buffer.as_mut_ptr();
+        data.nMaxFile = buffer.len() as u32;
+        let title = wide("选择 Blockbench 3D 模型");
         data.lpstrTitle = title.as_ptr();
         data.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
         if GetOpenFileNameW(&mut data) != 0 {

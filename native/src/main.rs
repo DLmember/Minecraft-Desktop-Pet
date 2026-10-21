@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 mod autostart;
+mod blockbench;
 mod config;
 mod hyp_chat;
 mod keyboard;
@@ -152,6 +153,7 @@ pub struct App {
     store: Store,
     skin: Skin,
     cape: Option<Cape>,
+    bbmodel: Option<blockbench::BbModel>,
     pose: Pose,
     key_recovery: keyboard::KeyRecovery,
     frame: Frame,
@@ -210,6 +212,11 @@ impl App {
             std::fs::read(&settings.skin_path).unwrap_or_else(|_| render::DEFAULT_SKIN.to_vec());
         let skin = Skin::load(&bytes).unwrap_or_else(|_| Skin::load(render::DEFAULT_SKIN).unwrap());
         let cape = load_cape(&settings);
+        let bbmodel = if settings.model_mode == "blockbench" && !settings.blockbench_path.is_empty() {
+            blockbench::BbModel::load_file(std::path::Path::new(&settings.blockbench_path)).ok()
+        } else {
+            None
+        };
         let pose = Pose::new(&settings);
         let notice = store.notice.clone();
         Self {
@@ -217,6 +224,7 @@ impl App {
             store,
             skin,
             cape,
+            bbmodel,
             pose,
             key_recovery: keyboard::KeyRecovery::default(),
             frame: Frame::new(450, 525),
@@ -387,8 +395,28 @@ impl App {
             dt,
         );
         let raster_start = Instant::now();
-        self.frame
-            .draw_ext(&self.settings, &self.skin, self.cape.as_ref(), &self.pose);
+        if self.settings.model_mode == "blockbench" && self.bbmodel.is_some() {
+            self.frame.clear();
+            let head_rot = if self.settings.blockbench_head_track {
+                Some(self.pose.head_rotation)
+            } else {
+                None
+            };
+            self.bbmodel.as_ref().unwrap().draw(
+                &mut self.frame,
+                &self.settings,
+                if self.settings.blockbench_animation.is_empty() {
+                    None
+                } else {
+                    Some(&self.settings.blockbench_animation)
+                },
+                now * self.settings.blockbench_speed,
+                head_rot,
+            );
+        } else {
+            self.frame
+                .draw_ext(&self.settings, &self.skin, self.cape.as_ref(), &self.pose);
+        }
         self.advance_opacity();
         self.raster_us += raster_start.elapsed().as_micros() as u64;
         let present_start = Instant::now();
@@ -588,6 +616,15 @@ impl App {
         self.refresh_panel();
     }
     unsafe fn import(&mut self, path: PathBuf) {
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if ext == "bbmodel" || ext == "json" {
+            self.import_blockbench(path);
+            return;
+        }
         self.download = None; // A later local choice wins over an older network request.
         self.online_notice.clear();
         let result = std::fs::read(&path)
@@ -607,12 +644,43 @@ impl App {
                     .unwrap_or_default()
                     .to_string_lossy()
                     .into_owned();
+                self.settings.model_mode = "player".into();
                 if self.skin.legacy {
                     self.settings.arm_model = "classic".into();
                 }
                 self.changed();
             }
             Err(e) => report_error(&e),
+        }
+    }
+    unsafe fn import_blockbench(&mut self, path: PathBuf) {
+        match blockbench::BbModel::load_file(&path) {
+            Ok(model) => {
+                let dest = self.store.dir.join("custom_model.bbmodel");
+                if let Ok(bytes) = std::fs::read(&path) {
+                    let _ = config::atomic(&dest, &bytes);
+                }
+                let model_name = path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                self.settings.model_mode = "blockbench".into();
+                self.settings.blockbench_path = path.to_string_lossy().into_owned();
+                self.settings.blockbench_name = model_name;
+                let anim_names = model.animation_names();
+                if let Some(idle) = anim_names.iter().find(|n| n.to_lowercase() == "idle") {
+                    self.settings.blockbench_animation = idle.clone();
+                } else if let Some(first) = anim_names.first() {
+                    self.settings.blockbench_animation = first.clone();
+                } else {
+                    self.settings.blockbench_animation.clear();
+                }
+                self.bbmodel = Some(model);
+                self.notice = format!("已加载 Blockbench 模型: {}", self.settings.blockbench_name);
+                self.changed();
+            }
+            Err(e) => report_error(&format!("无法导入 Blockbench 模型：{e}")),
         }
     }
     unsafe fn center(&mut self) {
@@ -778,7 +846,31 @@ impl App {
                 self.pose.sit = if self.settings.is_sitting() { 1. } else { 0. };
                 self.changed();
             }
-            150..=152 => self.show_page((id - 150) as u8),
+            150..=153 => self.show_page((id - 150) as u8),
+            500 => {
+                if self.settings.model_mode == "blockbench" {
+                    self.settings.model_mode = "player".into();
+                    self.changed();
+                } else if self.bbmodel.is_some() {
+                    self.settings.model_mode = "blockbench".into();
+                    self.changed();
+                } else {
+                    self.choose_model();
+                }
+            }
+            501 => self.choose_model(),
+            502 => {
+                self.settings.model_mode = "player".into();
+                self.changed();
+            }
+            505 => {
+                self.settings.blockbench_loop = !self.settings.blockbench_loop;
+                self.changed();
+            }
+            506 => {
+                self.settings.blockbench_head_track = !self.settings.blockbench_head_track;
+                self.changed();
+            }
             140..=143 => {
                 self.settings.scale = [0.75, 1., 1.25, 1.5][(id - 140) as usize];
                 self.resize_pet();

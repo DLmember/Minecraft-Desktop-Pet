@@ -14,6 +14,9 @@ if ($Action -ne 'fmt') {
     $linker = Get-Command x86_64-w64-mingw32-gcc -ErrorAction Stop
     $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = $linker.Source
     $env:RUSTFLAGS = '-C link-self-contained=yes'
+    if (-not $env:CARGO_TARGET_DIR -and ($root -match '[^\x00-\x7F]')) {
+        $env:CARGO_TARGET_DIR = Join-Path $env:TEMP 'cargo_target_minecraft_pet'
+    }
 }
 Push-Location (Join-Path $root 'native')
 try {
@@ -23,6 +26,14 @@ try {
         cargo "+$RustToolchain" test --locked
     } else {
         cargo "+$RustToolchain" build --locked --release
+        if ($LASTEXITCODE -eq 0 -and $env:CARGO_TARGET_DIR) {
+            $destDir = Join-Path $root 'native\target\release'
+            New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+            $builtExe = Join-Path $env:CARGO_TARGET_DIR 'release\minecraft-pet.exe'
+            if (Test-Path $builtExe) {
+                Copy-Item $builtExe (Join-Path $destDir 'minecraft-pet.exe') -Force
+            }
+        }
     }
     if ($LASTEXITCODE -ne 0) { throw "Cargo $Action failed" }
 } finally { Pop-Location }
