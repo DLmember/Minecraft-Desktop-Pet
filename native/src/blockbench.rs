@@ -802,8 +802,21 @@ impl BbModel {
         anim_name: Option<&str>,
         time: f32,
         head_track: Option<Quat>,
+        pose: Option<&crate::render::Pose>,
     ) {
-        let anim = anim_name.and_then(|name| self.animations.iter().find(|a| a.name == name));
+        let sit = pose.map(|p| p.sit).unwrap_or(if s.is_sitting() { 1.0 } else { 0.0 });
+        let crouch = pose.map(|p| p.crouch).unwrap_or(0.0);
+
+        let mut active_anim = anim_name;
+        if sit > 0.5 && (active_anim.is_none() || active_anim == Some("idle")) {
+            if let Some(sit_anim) = self.animations.iter().find(|a| {
+                let n = a.name.to_lowercase();
+                n == "sit" || n == "sitting" || n == "seated"
+            }) {
+                active_anim = Some(&sit_anim.name);
+            }
+        }
+        let anim = active_anim.and_then(|name| self.animations.iter().find(|a| a.name == name));
 
         // Evaluate bone transforms
         let mut bone_transforms = vec![Mat4::IDENTITY; self.bones.len()];
@@ -814,11 +827,16 @@ impl BbModel {
                 anim,
                 time,
                 head_track,
+                sit,
+                crouch,
                 &mut bone_transforms,
             );
         }
 
-        let global = model_transform(s);
+        let sit_drop = Vec3::new(0., -6.0 * sit - 2.1 * crouch, 0.);
+        let global = model_transform(s)
+            * Mat4::from_translation(sit_drop)
+            * Mat4::from_rotation_y(std::f32::consts::PI);
 
         // Render elements attached to bones
         for (bone_idx, bone) in self.bones.iter().enumerate() {
@@ -834,6 +852,11 @@ impl BbModel {
             let elem = &self.elements[e_idx];
             self.draw_element(frame, s, global, Mat4::IDENTITY, elem);
         }
+
+        // Seated keyboard in front of character
+        if sit > 0.4 {
+            frame.draw_keyboard(s, sit);
+        }
     }
 
     fn evaluate_bone_recursive(
@@ -843,6 +866,8 @@ impl BbModel {
         anim: Option<&BbAnimation>,
         time: f32,
         head_track: Option<Quat>,
+        sit: f32,
+        crouch: f32,
         bone_transforms: &mut [Mat4],
     ) {
         let bone = &self.bones[bone_idx];
@@ -882,12 +907,58 @@ impl BbModel {
             Quat::IDENTITY
         };
 
+        let bone_lower = bone.name.to_lowercase();
+        let is_left_leg = bone_lower == "leftleg"
+            || bone_lower == "left_leg"
+            || bone_lower == "leg_left"
+            || bone_lower == "leg1"
+            || bone_lower == "left_leg_bone";
+        let is_right_leg = bone_lower == "rightleg"
+            || bone_lower == "right_leg"
+            || bone_lower == "leg_right"
+            || bone_lower == "leg0"
+            || bone_lower == "right_leg_bone";
+        let is_left_arm = bone_lower == "leftarm"
+            || bone_lower == "left_arm"
+            || bone_lower == "arm_left"
+            || bone_lower == "arm1";
+        let is_right_arm = bone_lower == "rightarm"
+            || bone_lower == "right_arm"
+            || bone_lower == "arm_right"
+            || bone_lower == "arm0";
+
+        let procedural_rot = if (is_left_leg || is_right_leg) && (anim_rot.length_squared() < 0.001 || anim.map(|a| !a.name.to_lowercase().contains("sit")).unwrap_or(true)) {
+            if is_left_leg {
+                Quat::from_euler(
+                    EulerRot::XYZ,
+                    std::f32::consts::PI * 0.48 * sit + 0.24 * crouch,
+                    -0.16 * sit,
+                    0.045 * sit,
+                )
+            } else {
+                Quat::from_euler(
+                    EulerRot::XYZ,
+                    std::f32::consts::PI * 0.48 * sit + 0.24 * crouch,
+                    0.16 * sit,
+                    -0.045 * sit,
+                )
+            }
+        } else if (is_left_arm || is_right_arm) && sit > 0.001 && anim_rot.length_squared() < 0.001 {
+            if is_left_arm {
+                Quat::from_euler(EulerRot::XYZ, std::f32::consts::PI * 0.20 * sit, 0.08 * sit, -0.06 * sit)
+            } else {
+                Quat::from_euler(EulerRot::XYZ, std::f32::consts::PI * 0.20 * sit, -0.08 * sit, 0.06 * sit)
+            }
+        } else {
+            Quat::IDENTITY
+        };
+
         let total_rot = Quat::from_euler(
             EulerRot::XYZ,
             (bone.rotation.x + anim_rot.x).to_radians(),
             (bone.rotation.y + anim_rot.y).to_radians(),
             (bone.rotation.z + anim_rot.z).to_radians(),
-        ) * extra_rot;
+        ) * extra_rot * procedural_rot;
 
         let pivot = bone.origin;
         let local = Mat4::from_translation(pivot + anim_pos)
@@ -905,6 +976,8 @@ impl BbModel {
                 anim,
                 time,
                 head_track,
+                sit,
+                crouch,
                 bone_transforms,
             );
         }
@@ -936,49 +1009,51 @@ impl BbModel {
         let min = elem.from - Vec3::splat(elem.inflate);
         let max = elem.to + Vec3::splat(elem.inflate);
 
-        // 6 faces: 0: East(+X), 1: West(-X), 2: Up(+Y), 3: Down(-Y), 4: South(+Z), 5: North(-Z)
+        // 6 faces in Blockbench:
+        // 0: East(+X), 1: West(-X), 2: Up(+Y), 3: Down(-Y), 4: South(+Z), 5: North(-Z)
+        // Each quad is [top-left, top-right, bottom-left, bottom-right] when viewed from the outside.
         let face_vertices = [
-            // East (+X)
+            // East (+X): facing +X, looking towards -X. Left is -Z, Right is +Z.
             [
-                Vec3::new(max.x, max.y, max.z),
                 Vec3::new(max.x, max.y, min.z),
-                Vec3::new(max.x, min.y, max.z),
-                Vec3::new(max.x, min.y, min.z),
-            ],
-            // West (-X)
-            [
-                Vec3::new(min.x, max.y, min.z),
-                Vec3::new(min.x, max.y, max.z),
-                Vec3::new(min.x, min.y, min.z),
-                Vec3::new(min.x, min.y, max.z),
-            ],
-            // Up (+Y)
-            [
-                Vec3::new(min.x, max.y, min.z),
-                Vec3::new(max.x, max.y, min.z),
-                Vec3::new(min.x, max.y, max.z),
                 Vec3::new(max.x, max.y, max.z),
-            ],
-            // Down (-Y)
-            [
-                Vec3::new(min.x, min.y, max.z),
-                Vec3::new(max.x, min.y, max.z),
-                Vec3::new(min.x, min.y, min.z),
                 Vec3::new(max.x, min.y, min.z),
+                Vec3::new(max.x, min.y, max.z),
             ],
-            // South (+Z)
+            // West (-X): facing -X, looking towards +X. Left is +Z, Right is -Z.
             [
+                Vec3::new(min.x, max.y, max.z),
+                Vec3::new(min.x, max.y, min.z),
+                Vec3::new(min.x, min.y, max.z),
+                Vec3::new(min.x, min.y, min.z),
+            ],
+            // Up (+Y): facing +Y, looking from above. Left is +X, Right is -X, Top is -Z, Bottom is +Z.
+            [
+                Vec3::new(max.x, max.y, min.z),
+                Vec3::new(min.x, max.y, min.z),
                 Vec3::new(max.x, max.y, max.z),
                 Vec3::new(min.x, max.y, max.z),
+            ],
+            // Down (-Y): facing -Y, looking from below. Left is +X, Right is -X, Top is +Z, Bottom is -Z.
+            [
                 Vec3::new(max.x, min.y, max.z),
                 Vec3::new(min.x, min.y, max.z),
-            ],
-            // North (-Z)
-            [
-                Vec3::new(min.x, max.y, min.z),
-                Vec3::new(max.x, max.y, min.z),
-                Vec3::new(min.x, min.y, min.z),
                 Vec3::new(max.x, min.y, min.z),
+                Vec3::new(min.x, min.y, min.z),
+            ],
+            // South (+Z): facing +Z, looking towards -Z. Left is -X, Right is +X.
+            [
+                Vec3::new(min.x, max.y, max.z),
+                Vec3::new(max.x, max.y, max.z),
+                Vec3::new(min.x, min.y, max.z),
+                Vec3::new(max.x, min.y, max.z),
+            ],
+            // North (-Z): facing -Z, looking towards +Z. Left is +X, Right is -X.
+            [
+                Vec3::new(max.x, max.y, min.z),
+                Vec3::new(min.x, max.y, min.z),
+                Vec3::new(max.x, min.y, min.z),
+                Vec3::new(min.x, min.y, min.z),
             ],
         ];
 
@@ -1173,7 +1248,7 @@ mod tests {
         let model = BbModel::load(json.as_bytes(), None).unwrap();
         let mut frame = Frame::new(360, 420);
         let s = Settings::default();
-        model.draw(&mut frame, &s, None, 0.0, None);
+        model.draw(&mut frame, &s, None, 0.0, None, None);
 
         let visible_pixels = frame.rgba().chunks_exact(4).filter(|p| p[3] > 0).count();
         assert!(visible_pixels > 50, "模型应该被渲染并产生不透明像素，当前像素数: {visible_pixels}");
@@ -1289,7 +1364,7 @@ mod tests {
         let mut frame = Frame::new(360, 420);
         let s = Settings::default();
         let head_gaze = Quat::from_rotation_y(0.2);
-        model.draw(&mut frame, &s, Some("nod"), 0.5, Some(head_gaze));
+        model.draw(&mut frame, &s, Some("nod"), 0.5, Some(head_gaze), None);
 
         let count = frame.rgba().chunks_exact(4).filter(|p| p[3] > 0).count();
         assert!(count > 50);
@@ -1308,9 +1383,49 @@ mod tests {
 
             let mut frame = Frame::new(360, 420);
             let s = Settings::default();
-            model.draw(&mut frame, &s, Some("idle"), 0.5, None);
+            model.draw(&mut frame, &s, Some("idle"), 0.5, None, None);
             let count = frame.rgba().chunks_exact(4).filter(|p| p[3] > 0).count();
             assert!(count > 100);
         }
+    }
+
+    #[test]
+    fn test_procedural_sitting() {
+        let json = r#"{
+            "meta": {"format_version": "4.10", "model_format": "free"},
+            "name": "sit_test",
+            "resolution": {"width": 16, "height": 16},
+            "elements": [
+                {
+                    "name": "leg",
+                    "from": [0, 0, 0],
+                    "to": [2, 6, 2],
+                    "faces": {
+                        "north": {"uv": [0, 0, 2, 6], "texture": 0}
+                    }
+                }
+            ],
+            "outliner": [
+                {
+                    "name": "LeftLeg",
+                    "origin": [1, 6, 1],
+                    "children": [0]
+                }
+            ],
+            "textures": [
+                {"name": "tex", "source": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="}
+            ]
+        }"#;
+
+        let model = BbModel::load(json.as_bytes(), None).unwrap();
+        let mut frame = Frame::new(360, 420);
+        let mut s = Settings::default();
+        s.posture = "sitting".into();
+        let mut pose = crate::render::Pose::new(&s);
+        pose.sit = 1.0;
+
+        model.draw(&mut frame, &s, None, 0.0, None, Some(&pose));
+        let count = frame.rgba().chunks_exact(4).filter(|p| p[3] > 0).count();
+        assert!(count > 0, "坐下状态应正常渲染模型与键盘");
     }
 }

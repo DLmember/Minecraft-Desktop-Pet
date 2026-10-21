@@ -817,6 +817,26 @@ impl Frame {
             }
         }
     }
+    pub fn draw_keyboard(&mut self, s: &Settings, sit: f32) {
+        if sit <= 0.4 {
+            return;
+        }
+        let b = BoxPart {
+            size: Vec3::new(19.6, 0.65, 7.8),
+            uv: Vec2::ZERO,
+            transform: model_transform(s)
+                * Mat4::from_translation(Vec3::new(0., 10.2, 9.4))
+                * Mat4::from_scale(Vec3::splat(sit))
+                * Mat4::from_translation(Vec3::new(0., -0.3, 0.)),
+            inflate: 0.,
+            mirror: false,
+            keyboard: true,
+            cape: false,
+        };
+        let dummy_img = RgbaImage::new(1, 1);
+        let dummy_colors = vec![[[128u8; 3]; 6]];
+        self.draw_box(&b, Tex::of(&dummy_img, &dummy_colors));
+    }
     fn draw_box(&mut self, b: &BoxPart, skin: Tex) {
         let Vec3 { x: w, y: h, z: d } = b.size;
         let u = b.uv.x;

@@ -412,6 +412,7 @@ impl App {
                 },
                 now * self.settings.blockbench_speed,
                 head_rot,
+                Some(&self.pose),
             );
         } else {
             self.frame
