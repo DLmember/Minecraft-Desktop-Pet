@@ -1,0 +1,8 @@
+/native/target/
+/release/
+/.tmp/
+/.tools/
+*.log
+/macos/build/
+
+.DS_Store
