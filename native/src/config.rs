@@ -79,6 +79,16 @@ pub struct Settings {
     pub autostart: bool,
     pub show_cape: bool,
     pub cape_path: String,
+    pub chibi: bool,
+    pub da_blink: bool,
+    pub da_dance: bool,
+    pub typing_letters: bool,
+    pub music_notes: bool,
+    pub tease_enabled: bool,
+    // Keep the previous preview setting key so existing preferences survive.
+    #[serde(rename = "idleAnimation")]
+    pub breathing_animation: bool,
+    pub chibi_body_scale: f32,
     #[cfg(not(windows))]
     pub autostart_delay: u32,
     #[cfg(not(windows))]
@@ -116,6 +126,14 @@ impl Default for Settings {
             autostart: false,
             show_cape: true,
             cape_path: String::new(),
+            chibi: false,
+            da_blink: true,
+            da_dance: false,
+            typing_letters: false,
+            music_notes: false,
+            tease_enabled: false,
+            breathing_animation: false,
+            chibi_body_scale: 100.,
             #[cfg(not(windows))]
             autostart_delay: 0,
             #[cfg(not(windows))]
@@ -165,7 +183,17 @@ impl Settings {
             &mut self.custom_pose
         }
     }
+    pub fn swing_left(&self, button: usize) -> bool {
+        match self.main_hand.as_str() {
+            "left" => true,
+            "mapped" => matches!(button, 0 | 3 | 4),
+            "reverse" => matches!(button, 1 | 2),
+            _ => false,
+        }
+    }
     pub fn clean(&mut self) {
+        if self.chibi { self.da_blink = false; }
+        self.chibi_body_scale = if self.chibi_body_scale.is_finite() { self.chibi_body_scale.clamp(50., 180.) } else { 100. };
         if self.posture != "sitting" && self.posture != "custom" {
             self.posture = "standing".into();
         }
@@ -191,18 +219,18 @@ impl Settings {
         self.head_range_y = self.head_range_y.clamp(0., 85.);
         self.head_center_x = self.head_center_x.clamp(-60., 60.);
         self.head_center_y = self.head_center_y.clamp(-60., 60.);
-        if self.main_hand != "left" {
+        if !["left", "right", "mapped", "reverse"].contains(&self.main_hand.as_str()) {
             self.main_hand = "right".into();
         }
         #[cfg(not(windows))]
         {
-            if !PRIORITY_OPTIONS.contains(&self.startup_priority.as_str()) {
-                self.startup_priority = "normal".into();
-            }
-            self.autostart_delay = *AUTOSTART_DELAYS
-                .iter()
-                .min_by_key(|&&delay| delay.abs_diff(self.autostart_delay))
-                .unwrap();
+        if !PRIORITY_OPTIONS.contains(&self.startup_priority.as_str()) {
+            self.startup_priority = "normal".into();
+        }
+        self.autostart_delay = *AUTOSTART_DELAYS
+            .iter()
+            .min_by_key(|&&delay| delay.abs_diff(self.autostart_delay))
+            .unwrap();
         }
         for v in &mut self.model_rotation {
             *v = if v.is_finite() {
@@ -252,13 +280,31 @@ impl Settings {
         }
     }
 }
+fn write_file(path: &Path, data: &[u8]) -> Result<(), String> {
+    fs::File::create(path)
+        .and_then(|mut file| {
+            file.write_all(data)?;
+            file.sync_all()
+        })
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+/// Write through a temporary file so a crash cannot truncate the settings.
+/// Security software sometimes blocks the rename dance; in that case fall back
+/// to a direct write of the same path instead of losing the user's changes.
 pub fn atomic(path: &Path, data: &[u8]) -> Result<(), String> {
-    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let parent = path.parent().unwrap();
+    fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     let tmp = PathBuf::from(format!("{}.tmp", path.display()));
-    let mut file = fs::File::create(&tmp).map_err(|e| e.to_string())?;
-    file.write_all(data).map_err(|e| e.to_string())?;
-    file.sync_all().map_err(|e| e.to_string())?;
-    drop(file);
+    let staged = fs::File::create(&tmp).and_then(|mut file| {
+        file.write_all(data)?;
+        file.sync_all()
+    });
+    if let Err(staged) = staged {
+        let _ = fs::remove_file(&tmp);
+        return write_file(path, data).map_err(|direct| {
+            format!("临时文件失败：{staged}；直接写入失败：{direct}")
+        });
+    }
     #[cfg(windows)]
     {
         let a: Vec<u16> = tmp.as_os_str().encode_wide_null();
@@ -269,19 +315,24 @@ pub fn atomic(path: &Path, data: &[u8]) -> Result<(), String> {
                 b.as_ptr(),
                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
             )
-        } == 0
+        } != 0
         {
-            return Err(std::io::Error::last_os_error().to_string());
+            return Ok(());
         }
+        let replaced = std::io::Error::last_os_error();
+        let _ = fs::remove_file(&tmp);
+        write_file(path, data).map_err(|direct| {
+            format!("替换失败：{replaced}；直接写入失败：{direct}")
+        })
     }
     #[cfg(not(windows))]
     {
         fs::rename(&tmp, path).map_err(|e| e.to_string())?;
-        fs::File::open(path.parent().unwrap())
+        fs::File::open(parent)
             .and_then(|dir| dir.sync_all())
             .map_err(|e| e.to_string())?;
+        Ok(())
     }
-    Ok(())
 }
 #[cfg(windows)]
 trait Wide {
@@ -637,6 +688,17 @@ mod tests {
         Store::new(dir.clone()).save(&s).unwrap();
         assert_eq!(Store::new(dir.clone()).load(), s);
         fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn da_options_and_chibi_thickness_survive_restart() {
+        let mut s = Settings::default(); s.da_blink = false; s.da_dance = false;
+        s.chibi_body_scale = 150.;
+        let dir = std::env::temp_dir().join(format!("pet-da-settings-{}", std::process::id()));
+        Store::new(dir.clone()).save(&s).unwrap();
+        assert_eq!(Store::new(dir.clone()).load(), s);
+        s.chibi = true; s.da_blink = true; s.chibi_body_scale = 900.; s.clean();
+        assert!(!s.da_blink); assert_eq!(s.chibi_body_scale, 180.);
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn migrate() {

@@ -1,7 +1,25 @@
+#[path = "render_effects.rs"]
+mod effects;
 use crate::config::Settings;
 use glam::{EulerRot, Mat4, Quat, Vec2, Vec3};
 use image::RgbaImage;
 pub const DEFAULT_SKIN: &[u8] = include_bytes!("../../assets/default-skin.png");
+/// 眨眼曲线，1 = 完全闭眼，0 = 完全睁眼。直接照抄材质包
+/// Detailed Animations Reworked X Just Expressions 的 `player.jem` 待机动画：
+/// `right_blink.sy = clamp(1.5-abs(sin(u)*6),0,1) * clamp(-32+cos(u/1.5)*40+cos(u/4)*40,0,1)`
+/// 其中 `var.r = 2*pi*random(id)`、`u = var.r + age/8`。
+/// 第一项给出闭眼轮廓，第二项是“闸门”：只在图案的窄峰附近放行，
+/// 于是眨眼短促（约 0.2 秒）、间隔不规则，且大部分时间完全睁眼。
+pub fn blink_closure(u: f32) -> f32 {
+    let lid = (1.5 - (u.sin() * 6.).abs()).clamp(0., 1.);
+    let gate = (-32. + (u / 1.5).cos() * 40. + (u / 4.).cos() * 40.).clamp(0., 1.);
+    lid * gate
+}
+/// 资源包里的 `age` 以 tick 计（20 tick/秒）并除以 8，所以 u 每秒推进 2.5。
+const BLINK_RATE: f32 = 2.5;
+// Exact timing from supplied EMF 3.3.8 / ETF 7.2.4 pack:
+// da_elapsed_ref = (age - last_age) * 3; age = seconds * 20.
+const DANCE_RATE: f32 = 0.175 * 60.;
 /// 六个面的明暗查色表；皮肤和披风共用同一套光照。
 fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
     let shades = [0.80, 0.80, 1., 0.62, 0.94, 0.86];
@@ -39,7 +57,8 @@ fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
         .collect()
 }
 
-/// 官方披风纹理（64×32，支持有界的等比例高清纹理）。
+/// 官方披风纹理（64×32）。只有中间那张 10×16 的面是不透明的，
+/// 其余六个面的 UV 区域在官方纹理里本来就是透明的。
 pub struct Cape {
     pub image: RgbaImage,
     colors: Vec<[[u8; 3]; 6]>,
@@ -52,12 +71,6 @@ impl Cape {
         if !bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) || bytes.len() < 24 {
             return Err("披风不是有效的 PNG。".into());
         }
-        // Reject oversized dimensions before the PNG decoder allocates pixels.
-        let w = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
-        let h = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
-        if w < 64 || w > 1024 || w % 64 != 0 || h != w / 2 {
-            return Err("披风必须为 64×32 或等比例高清 PNG，最大 1024×512。".into());
-        }
         let image = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
             .map_err(|e| e.to_string())?
             .into_rgba8();
@@ -69,9 +82,164 @@ impl Cape {
     }
 }
 
+/// 一只眼睛在 8×8 脸部贴图里的位置（面部像素坐标，0 为左上角）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Eye {
+    pub x0: u8,
+    pub x1: u8,
+    pub y0: u8,
+    pub rows: u8,
+    /// 瞳孔列（眼白上最深的一列）。材质包用 `ctrl_*_pupil.tx/ty` 滑动这一层，
+    /// 这里同样只移动这一小段，眼睛其余部分与眼皮不动。
+    pub pupil: (u8, u8),
+    /// 眼皮/眼睛素材在皮肤贴图上的格子 (x0, y0, x1, y1)。
+    pub lid: (u8, u8, u8, u8),
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Eyes {
+    pub left: Eye,
+    pub right: Eye,
+}
+fn channel_diff(a: [u8; 4], b: [u8; 4]) -> u8 {
+    (0..3)
+        .map(|i| a[i].abs_diff(b[i]))
+        .max()
+        .unwrap_or(0)
+}
+fn luma(p: [u8; 4]) -> u32 {
+    p[0] as u32 + p[1] as u32 + p[2] as u32
+}
+/// 材质包的一处「识别格子」。
+///
+/// Just Expressions / Fresh Animations 把眼睛素材放在 MC 皮肤里原版用不到的空白区
+/// （64×64 图里对原版没有意义的位置）。每种眼睛对应一块独立格子：位置、大小、
+/// 有无眉毛各不相同。材质包在这些格子里识别到像素，就把素材贴到脸上对应位置、
+/// 播放对应的眨眼/待机动画；格子里没东西，就没有那只眼睛的动画。
+///
+/// 一块格子占**两行**，与 `player.jem` 一致：上面一行是眼睛（`right_eye` 的 UV），
+/// 下面一行是眼白/瞳孔（`right_eye_white` 的 UV）。玩家在上一行画眼睛、下一行
+/// 画出有对比的瞳孔，材质包就认得这是眼睛。
+struct EyeCell {
+    /// 识别格子左上角及宽度（贴图像素）；格子高度为 2 行。
+    x: u32,
+    y: u32,
+    w: u32,
+    /// 贴到脸上的行号（0 = 额头顶部）、眼睛占几行（1–3）。
+    row: u32,
+    h: u32,
+    /// 贴到脸正面的横向范围（面部像素坐标 0..8）。
+    u0: u32,
+    u1: u32,
+}
+/// 直接取自 `player.jem`（Detailed Animations Reworked X Just Expressions v15 与
+/// Fresh Moves v3.1.1 数值一致）：三组眼睛位置 × 1/2/3 行大小，外加 3 像素宽的
+/// 眉毛版本。眼睛画在脸的哪一行、多大，都有对应格子。
+const EYE_CELLS: [EyeCell; 12] = [
+    // 2 像素宽、1 行高：眼睛分别画在脸部第 6/5/4/3 行
+    EyeCell { x: 4,  y: 6, w: 2, row: 6, h: 1, u0: 5, u1: 6 },
+    EyeCell { x: 4,  y: 4, w: 2, row: 5, h: 1, u0: 5, u1: 6 },
+    EyeCell { x: 4,  y: 2, w: 2, row: 4, h: 1, u0: 5, u1: 6 },
+    EyeCell { x: 4,  y: 0, w: 2, row: 3, h: 1, u0: 5, u1: 6 },
+    // 2 像素宽、2 行高（大眼）
+    EyeCell { x: 24, y: 5, w: 2, row: 5, h: 2, u0: 5, u1: 6 },
+    EyeCell { x: 24, y: 2, w: 2, row: 4, h: 2, u0: 5, u1: 6 },
+    EyeCell { x: 28, y: 5, w: 2, row: 3, h: 2, u0: 5, u1: 6 },
+    EyeCell { x: 28, y: 2, w: 2, row: 2, h: 2, u0: 5, u1: 6 },
+    // 2 像素宽、3 行高（特大眼）
+    EyeCell { x: 32, y: 4, w: 2, row: 4, h: 3, u0: 5, u1: 6 },
+    // 3 像素宽（带眉毛的眼睛）
+    EyeCell { x: 32, y: 2, w: 3, row: 5, h: 1, u0: 5, u1: 7 },
+    EyeCell { x: 32, y: 0, w: 3, row: 4, h: 1, u0: 5, u1: 7 },
+    // 抬高 1 像素的版本（眼睛更靠上）
+    EyeCell { x: 36, y: 6, w: 2, row: 5, h: 1, u0: 6, u1: 7 },
+];
+/// 按材质包的识别格读取眨眼数据。
+///
+/// 逐格检查玩家皮肤：哪块格子里画了真正的眼睛（两行里出现眼白/瞳孔级的明暗
+/// 对比），就用那一格的位置、大小和素材播放动画；一格都没画（普通未改造皮肤）
+/// 就返回 `None`，桌宠不眨眼——与材质包在没有对应贴图时的表现一致。
+fn detect_eyes(image: &RgbaImage) -> Option<Eyes> {
+    if image.width() < 64 || image.height() < 32 {
+        return None;
+    }
+    let k = (image.width() / 64) as u32;
+    let at = |x: u32, y: u32| -> [u8; 4] {
+        let px = (x * k + k / 2).min(image.width() - 1);
+        let py = (y * k + k / 2).min(image.height() - 1);
+        let p = image.get_pixel(px, py);
+        [p[0], p[1], p[2], p[3]]
+    };
+    for cell in EYE_CELLS {
+        // 格子的两行都必须实际画过（有不透明像素）。
+        let mut rows = Vec::with_capacity(2);
+        for row in 0..2 {
+            let px: Vec<[u8; 4]> = (0..cell.w)
+                .map(|i| at(cell.x + i, cell.y + row))
+                .collect();
+            if px.iter().any(|p| p[3] < 128) {
+                rows.clear();
+                break;
+            }
+            rows.push(px);
+        }
+        if rows.len() != 2 {
+            continue;
+        }
+        // 眼睛必须真有眼白/瞳孔级对比：上一行是眼睛，下一行是瞳孔/眼白。
+        let eye_row = &rows[0];
+        let white_row = &rows[1];
+        let lo_eye = eye_row.iter().map(|p| luma(*p)).min().unwrap();
+        let hi_eye = eye_row.iter().map(|p| luma(*p)).max().unwrap();
+        let lo_white = white_row.iter().map(|p| luma(*p)).min().unwrap();
+        let hi_white = white_row.iter().map(|p| luma(*p)).max().unwrap();
+        let contrast = (hi_eye - lo_eye).max(hi_white - lo_white);
+        // 原版空白区若只是被整体填成一种颜色，对比为 0，不算眼睛。
+        if contrast < 60 {
+            continue;
+        }
+        // 瞳孔 = 眼睛行里最深的那一列。
+        let pupil = eye_row
+            .iter()
+            .position(|p| luma(*p) == lo_eye)
+            .unwrap_or(0) as u32;
+        // 眼睛贴到脸上：宽度 = 格子宽度，落在 u0..u1；另一只眼睛镜像。
+        let face_x0 = cell.u0;
+        let face_x1 = cell.u1;
+        let lid = (
+            cell.x as u8,
+            cell.y as u8,
+            (cell.x + cell.w - 1) as u8,
+            cell.y as u8,
+        );
+        let right_pupil = (face_x0 + pupil.min(cell.w - 1)) as u8;
+        let left_pupil = (7 - (face_x0 + pupil.min(cell.w - 1))) as u8;
+        return Some(Eyes {
+            left: Eye {
+                x0: (7 - face_x1) as u8,
+                x1: (7 - face_x0) as u8,
+                y0: cell.row as u8,
+                rows: cell.h as u8,
+                pupil: (left_pupil, left_pupil),
+                lid: (lid.2, lid.1, lid.0, lid.3),
+            },
+            right: Eye {
+                x0: face_x0 as u8,
+                x1: face_x1 as u8,
+                y0: cell.row as u8,
+                rows: cell.h as u8,
+                pupil: (right_pupil, right_pupil),
+                lid,
+            },
+        });
+    }
+    // 一格都没画：这张皮肤没有眼睛素材，不眨眼。
+    None
+}
 pub struct Skin {
     pub image: RgbaImage,
     pub legacy: bool,
+    /// 材质包识别格里找到的眼睛；皮肤没画识别格时不做眨眼，其他动画照常。
+    pub eyes: Option<Eyes>,
     colors: Vec<[[u8; 3]; 6]>,
 }
 impl Skin {
@@ -119,9 +287,11 @@ impl Skin {
             }
         }
         let colors = colors_for(&image);
+        let eyes = detect_eyes(&image);
         Ok(Self {
             image,
             legacy,
+            eyes,
             colors,
         })
     }
@@ -188,6 +358,20 @@ fn smooth(t: f32) -> f32 {
 }
 const SWING_SECONDS: f32 = 0.30; // Vanilla attack animation: six ticks at 20 ticks/s.
 pub struct Pose {
+    tease_start:Option<f32>,
+    tease_kind:usize,
+    tease_from_head:Quat,
+    tease_from_arms:[Quat;2],
+    pub breathing_weight:f32,
+    breathing_bob:f32,
+    random_state:u64,
+    pub music_playing: bool,
+    notes: Vec<effects::Note>,
+    next_note: f32,
+    pub clock: f32,
+    feed_start: Option<f32>,
+    feed_blend: f32,
+    letters: Vec<effects::Letter>,
     pub sit: f32,
     pub crouch: f32,
     pub yaw: f32,
@@ -205,7 +389,48 @@ pub struct Pose {
     pub squash: f32,
     pub swing_progress: f32,
     pub body_yaw: f32,
+    /// 材质包 SneakyDance 的通道（按使用者要求去掉腿部，其余逐条照抄）：
+    /// `body.rz`、`body.ty`、`head.rz`、`head.rx`、`arm.rz`、`arm.tx`、`arm.ty`
+    /// （左右臂 ty 反号）。
+    pub body_roll: f32,
+    pub body_bob: f32,
+    pub head_roll: f32,
+    pub head_nod: f32,
+    pub arm_roll: f32,
+    pub arm_slide: f32,
+    pub arm_bob: f32,
+    pub leg_roll: f32,
+    pub leg_slide: f32,
+    /// 潜行持续时间（秒）。材质包用 `var.SneakingTimer` 累计 tick，到 20 才开扭。
+    sneak_timer: f32,
+    /// `var.SneakyDanceTimer`：扭动的相位，材质包每 tick 推进 0.175 rad。
+    dance_timer: f32,
+    /// `var.SneakyDanceIntensity` 归一化到 0..1。
+    pub dance: f32,
     counter: u32,
+    /// `var.r`：实例固定的随机相位，取值 [0, 2π)，让每次眨眼间隔都不一样。
+    blink_phase: f32,
+    /// 当前睁眼程度，1 = 完全睁开，0 = 完全闭合。
+    pub eyelid: f32,
+    /// 瞳孔位移（贴图像素，±0.5）。对应资源包的 `ctrl_r_pupil.tx/ty`，
+    /// 头部转向时瞳孔跟着看向同一边，而不是整只眼睛平移。
+    pub pupil: Vec2,
+}
+/// 材质包的 `random(id)`：每个实例固定一次的 [0,1) 随机数，用来决定各段待机动画的
+/// 周期。桌宠用眨眼相位（本来就是 [0, 2π) 的固定随机相位）换算，同一次启动内稳定，
+/// 重启后换一个。
+fn random_unit(phase: f32) -> f32 {
+    (phase / std::f32::consts::TAU).fract().abs()
+}
+/// `var.r = 2*pi*random(id)`：每个实例取一次随机相位。桌宠只有一个实例，
+/// 这里用启动时刻的低位做种子，保证每次启动的眨眼节奏都不同。
+fn blink_seed() -> f32 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    let phase = nanos as f32 / 1e9 * std::f32::consts::TAU;
+    phase.max(0.).min(std::f32::consts::TAU)
 }
 fn rotation(x: f32, y: f32, z: f32) -> Quat {
     Quat::from_euler(EulerRot::XYZ, x, y, z)
@@ -228,6 +453,17 @@ fn model_transform(s: &Settings) -> Mat4 {
 impl Pose {
     pub fn new(s: &Settings) -> Self {
         Self {
+            tease_start:None,tease_kind:0,
+            tease_from_head:Quat::IDENTITY,tease_from_arms:[Quat::IDENTITY;2],
+            breathing_weight:0.,breathing_bob:0.,
+            random_state:std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64 | 1,
+            music_playing: false,
+            notes: Vec::with_capacity(8),
+            next_note: 0.,
+            clock: 0.,
+            feed_start: None,
+            feed_blend: 0.,
+            letters: Vec::with_capacity(64),
             sit: if s.is_sitting() { 1. } else { 0. },
             crouch: 0.,
             yaw: front_yaw(),
@@ -249,7 +485,34 @@ impl Pose {
             squash: 1.,
             swing_progress: 0.,
             body_yaw: 0.,
+            body_roll: 0.,
+            body_bob: 0.,
+            head_roll: 0.,
+            head_nod: 0.,
+            arm_roll: 0.,
+            arm_slide: 0.,
+            arm_bob: 0.,
+            leg_roll: 0.,
+            leg_slide: 0.,
+            sneak_timer: 0.,
+            dance_timer: 0.,
+            dance: 0.,
+            blink_phase: blink_seed(),
+            eyelid: 1.,
+            pupil: Vec2::ZERO,
         }
+    }
+    /// 眨眼进度直接由 `now` 求值，不累加状态：窗口休眠、掉帧或切换 FPS 后
+    /// 仍然连续，也不会因为重复调用 update 而叠加。
+    /// 返回闭眼程度：0 = 完全睁开，1 = 完全闭合。
+    pub fn blink_at(&self, now: f32) -> f32 {
+        let u = self.blink_phase + now * BLINK_RATE;
+        blink_closure(u)
+    }
+    /// 潜行计时和扭动都靠每帧推进：按住 Shift 期间必须持续出帧，
+    /// 否则静止省电一停帧就永远等不到那 10 秒。
+    pub fn needs_frames(&self) -> bool {
+        self.dance > 0.001 || self.feed_start.is_some() || self.tease_start.is_some() || self.breathing_weight>0.001 || !self.letters.is_empty() || !self.notes.is_empty()
     }
     pub fn key(&mut self, vk: u32, down: bool, now: f32, s: &Settings) {
         if !down {
@@ -264,6 +527,13 @@ impl Pose {
             return;
         }
         let key = key_position(vk);
+        if s.typing_letters { if let Some(pos)=key {
+            if let Some(ch)=effects::key_label(vk) {
+                if self.letters.len()==64 {self.letters.remove(0);}
+                let color=effects::CANDY_COLORS[self.random_choice(9)];
+                self.letters.push(effects::Letter {pos, ch, start:now,color});
+            }
+        }}
         let side = if s.typing_mode == "alternating" || key.is_none() {
             let side = if self.counter % 2 == 0 { 1 } else { 0 };
             self.counter += 1;
@@ -292,10 +562,31 @@ impl Pose {
         self.squash_start = Some(now);
         self.squash = 1.;
     }
+    pub fn tease(&mut self,now:f32) {
+        self.tease_from_head=self.head_rotation;
+        self.tease_from_arms=self.arms;
+        self.tease_kind=self.random_choice(3);
+        self.tease_start=Some(now);
+        self.feed_start=None;self.feed_blend=0.;self.reset_swing();
+    }
+    pub fn interaction_state(&self)->(bool,usize,f32) {(self.tease_start.is_some(),self.tease_kind,self.breathing_weight)}
+    fn random_choice(&mut self,count:usize)->usize {
+        let mut x=self.random_state;x^=x<<13;x^=x>>7;x^=x<<17;self.random_state=x;
+        (x as usize)%count
+    }
     pub fn held_codes(&self) -> Vec<u32> {
         self.held.iter().map(|k| k.vk).collect()
     }
+    pub fn effect_counts(&self) -> [usize;3] {
+        [self.letters.len(), self.notes.len(), self.feed_start.is_some() as usize]
+    }
+    pub fn feed(&mut self, now: f32) {
+        if self.tease_start.is_some() {return;}
+        self.feed_start=Some(now); self.reset_swing();
+    }
     pub fn click(&mut self, now: f32, left: bool) {
+        if self.tease_start.is_some() {return;}
+        if self.feed_start.is_some() {return;}
         let side = if left { 0 } else { 1 };
         if side != self.swing_side {
             self.reset_swing();
@@ -345,9 +636,23 @@ impl Pose {
         now: f32,
         dt: f32,
     ) {
+        self.clock=now;
+        if self.tease_start.is_some_and(|t|now-t>=0.5) {self.tease_start=None;}
+        if !s.tease_enabled {self.tease_start=None;}
+        let breathing=if s.breathing_animation {1.} else {0.};
+        self.breathing_weight+=(breathing-self.breathing_weight)*(1.-(-dt*if breathing>0. {2.5} else {20.}).exp());
+        if self.breathing_weight<0.001 {self.breathing_weight=0.;}
+        self.breathing_bob=(now*1.7).sin()*0.10*self.breathing_weight;
+        self.notes.retain(|n| now-n.start<0.5 && s.music_notes);
+        if s.music_notes && self.music_playing && now>=self.next_note {
+            if self.notes.len()==8 {self.notes.remove(0);}
+            self.notes.push(effects::Note {start:now,phase:now*2.4});self.next_note=now+0.5;
+        }
+        self.letters.retain(|p| now-p.start<0.8 && s.typing_letters && s.is_sitting());
+        if self.feed_start.is_some_and(|t|now-t>=1.85) {self.feed_start=None;}
         let a = 1. - (-dt * 12.).exp();
         let sit = if s.is_sitting() { 1. } else { 0. };
-        let crouch = if s.posture == "standing" && shift && s.keyboard_enabled {
+        let crouch = if s.posture == "standing" && (s.da_dance || (shift && s.keyboard_enabled)) {
             1.
         } else {
             0.
@@ -369,6 +674,9 @@ impl Pose {
         if !s.is_sitting() {
             self.reset_keys();
         }
+        // 眨眼只依赖时间轴，和姿势、敲字、挥动互不干预。
+        // `eyelid` 还要乘上材质包的 `eye_top.ty` 开合（见下面的 `var.nov1` 一段）。
+        let closure = self.blink_at(now);
         if self
             .swing_start
             .is_some_and(|start| now - start >= SWING_SECONDS)
@@ -422,9 +730,30 @@ impl Pose {
             (s.head_center_y.to_radians() + y).clamp(-85f32.to_radians(), 85f32.to_radians());
         self.yaw = front_yaw() + horizontal;
         self.pitch = vertical;
+        // Only the periodic blink changes the eye patch. Looking down never closes it.
+        self.pupil = Vec2::ZERO;
+        self.eyelid = if s.da_blink && !s.chibi { 1. - closure } else { 1. };
+        self.sneak_timer = 0.;
+        self.dance = if s.da_dance && s.posture == "standing" { 1. } else { 0. };
+        self.dance_timer = if self.dance > 0. { self.dance_timer + dt * DANCE_RATE } else { 0. };
+        let i = self.dance * 0.15;
+        let t = self.dance_timer;
+        // Game downward-Y/forward-negative-Z -> renderer upward-Y/positive-Z.
+        self.body_roll = -t.sin() * i;
+        self.body_bob = (t * 2.).cos() * i;
+        self.head_nod = (t * 2. - 0.5).cos() * i * 0.1;
+        self.head_roll = -(t - 0.5).sin() * i * 0.5;
+        self.arm_roll = -(t - 0.25).sin() * i;
+        self.arm_slide = -3. * t.sin() * i;
+        self.arm_bob = -3. * t.sin() * i;
+        self.leg_roll = t.sin() * i;
+        self.leg_slide = -12. * t.sin() * i;
         if s.track_mouse {
-            let desired =
-                view * Quat::from_rotation_y(horizontal) * Quat::from_rotation_x(vertical);
+            let desired = view
+                * Quat::from_rotation_y(horizontal)
+                * Quat::from_rotation_x(vertical)
+                * Quat::from_rotation_z(self.head_roll)
+                * Quat::from_rotation_x(self.head_nod);
             let parent = degrees(&s.model_rotation)
                 * Quat::from_rotation_x(0.34 * self.crouch)
                 * custom_body;
@@ -444,7 +773,9 @@ impl Pose {
                         front_yaw()
                     }) + horizontal,
                     0.,
-                );
+                )
+                * Quat::from_rotation_z(self.head_roll)
+                * Quat::from_rotation_x(self.head_nod);
         }
         let aw = if s.arm_model == "slim" && !skin.legacy {
             3.
@@ -464,14 +795,20 @@ impl Pose {
                 let k = held
                     .map(|k| k.key)
                     .unwrap_or(if active { hand.key } else { None });
+                // Q 版键盘更靠下、更近，肩也更低；坐标都是 chibi 缩放前的世界值。
+                let (key_y, idle_y, key_z, idle_z, shoulder_y, shoulder_x) = if s.chibi {
+                    (3.33, 3.98, 6.27, 6.0, 6., 3.15)
+                } else {
+                    (10.35, 11.2, 9.4, 8.8, 10., 4. + aw / 2.)
+                };
                 let mut target = Vec3::new(
                     k.map(|v| v.x).unwrap_or(sign * 4.2),
-                    if active { 10.35 } else { 11.2 },
-                    9.4 + k.map(|v| v.y).unwrap_or(-0.65),
+                    if active { key_y } else { idle_y },
+                    key_z + k.map(|v| v.y).unwrap_or(-0.65),
                 );
                 if !active {
                     target.y += 0.65;
-                    target.z = 8.8;
+                    target.z = idle_z;
                 }
                 let arm_body = if s.posture == "custom" {
                     // Swing owns its torso twist; it must not pull the hidden
@@ -480,7 +817,7 @@ impl Pose {
                 } else {
                     body
                 };
-                let shoulder = arm_body.transform_point3(Vec3::new(sign * (4. + aw / 2.), 10., 0.));
+                let shoulder = arm_body.transform_point3(Vec3::new(sign * shoulder_x, shoulder_y, 0.));
                 let dir = arm_body
                     .inverse()
                     .transform_vector3(target - shoulder)
@@ -490,7 +827,11 @@ impl Pose {
                 rest = rest.slerp(typing, self.sit);
                 if s.posture == "custom" && s.is_sitting() {
                     // Independent idle pose around the usual keyboard-hover position.
-                    let idle_target = Vec3::new(sign * 4.2, 11.85, 8.8);
+                    let idle_target = Vec3::new(
+                        sign * 4.2,
+                        if s.chibi { 3.98 } else { 11.85 },
+                        if s.chibi { 6.0 } else { 8.8 },
+                    );
                     let idle_dir = arm_body
                         .inverse()
                         .transform_vector3(idle_target - shoulder)
@@ -521,7 +862,7 @@ impl Pose {
                         self.typing_arms[side].slerp(rest, 1. - (-dt * 22.).exp())
                     };
             }
-            self.arms[side] = self.typing_arms[side];
+            self.arms[side] = Quat::from_rotation_z(self.arm_roll) * self.typing_arms[side];
         }
         self.arms_initialized = true;
         if self.swing_start.is_some() {
@@ -554,6 +895,38 @@ impl Pose {
                 self.arms[side] = attack;
             }
         }
+        self.feed_blend=0.;
+        if let Some(start)=self.feed_start {
+            let elapsed=(now-start).max(0.);
+            let tick=elapsed.min(1.6)*20.;
+            let lift=smooth(tick/4.);
+            let chew=if tick>=8. {((32.-tick)*std::f32::consts::PI/4.).cos().abs()} else {0.};
+            let weight=if elapsed<1.6 {smooth(elapsed/0.12)} else {1.-smooth((elapsed-1.6)/0.25)};
+            self.feed_blend=weight;
+            let eating=rotation(-0.3-1.12*lift+chew*0.045,0.,0.40*lift);
+            self.arms[1]=self.arms[1].slerp(eating,weight);
+            self.head_rotation=self.head_rotation.slerp(rotation(0.06*lift+chew*0.025,0.,0.),weight);
+        }
+        // Additive overlays start from this frame's live base pose, never last
+        // frame's offset; held keys and edited custom poses remain authoritative.
+        if self.breathing_weight>0. {
+            let breath=(now*1.7).sin()*self.breathing_weight;
+            self.head_rotation*=rotation(breath*0.012,0.,0.);
+            for side in 0..2 {self.arms[side]*=rotation(breath*0.014,0.,breath*0.008*if side==0 {1.}else{-1.});}
+        }
+        if let Some(start)=self.tease_start {
+            let t=((now-start)/0.5).clamp(0.,1.);
+            let envelope=smooth(t/0.12)*(1.-smooth((t-0.78)/0.22));
+            let wave=(t*std::f32::consts::TAU*5.).sin()*envelope;
+            let enter=smooth(t/0.12);
+            self.head_rotation=self.tease_from_head.slerp(self.head_rotation,enter);
+            for side in 0..2 {self.arms[side]=self.tease_from_arms[side].slerp(self.arms[side],enter);}
+            if self.tease_kind==0 || self.tease_kind==2 {self.head_rotation*=rotation(0.,wave*0.65,0.);}
+            if self.tease_kind==1 || self.tease_kind==2 {
+                self.arms[0]*=rotation(wave*0.55,0.,wave*0.70);
+                self.arms[1]*=rotation(-wave*0.55,0.,-wave*0.70);
+            }
+        }
     }
     fn base_body(&self) -> Mat4 {
         Mat4::from_translation(Vec3::new(
@@ -563,7 +936,18 @@ impl Pose {
         )) * Mat4::from_rotation_x(0.34 * self.crouch)
     }
     fn body(&self) -> Mat4 {
-        self.base_body() * Mat4::from_rotation_y(self.body_yaw)
+        Mat4::from_translation(Vec3::Y * (self.body_bob+self.breathing_bob))
+            * self.base_body()
+            * Mat4::from_translation(Vec3::Y * 12.)
+            * Mat4::from_rotation_z(self.body_roll)
+            * Mat4::from_translation(-Vec3::Y * 12.)
+            * Mat4::from_rotation_y(self.body_yaw)
+    }
+    /// 上半身空间（`body` 骨架）：`body.ty` 的上下起伏与 `body.rz` 的扭动都在这里，
+    /// 头和手臂挂在上面。腿不在这里——材质包里 leg 是独立骨骼，不吃 `body` 的变换。
+    pub fn torso_space(&self) -> Mat4 {
+        Mat4::from_translation(Vec3::Y * (self.body_bob+self.breathing_bob))
+            * self.base_body()
     }
 }
 fn project(v: Vec3, width: f32, height: f32) -> Vec3 {
@@ -589,6 +973,48 @@ impl<'a> Tex<'a> {
         Self { image, colors }
     }
 }
+/// Minecraft 模型单个面的 UV（0..16 贴图单位，v 向下）+ 旋转（0/90/180/270）。
+/// Q 版(图腾玩偶)模型每个面独立指定 UV，直接采样标准皮肤对应区域，
+/// 所以不需要生成中间贴图。
+#[derive(Clone, Copy)]
+struct FaceUv {
+    u0: f32,
+    v0: f32,
+    u1: f32,
+    v1: f32,
+    rotation: u16,
+}
+
+/// Q 版(图腾玩偶)cuboid 的静态定义，不含骨骼动画。
+struct ChibiBox {
+    /// 相对骨骼 pivot 的偏移（桌宠骨骼空间，Y 向上）。
+    off: [f32; 3],
+    size: [f32; 3],
+    /// 固有旋转（Euler 度，XYZ）。
+    rot: [f32; 3],
+    faces: [FaceUv; 6],
+}
+
+// Q 版(图腾玩偶)模型数据：Blockbench 坐标已映射到桌宠骨骼空间(x/z 镜像、rotation 取反)。
+// 面顺序=draw_box face 0..5(+x左/-x右/+y顶/-y底/+z前/-z后)。左右臂/腿几何完全对称。
+// 纤细/粗壮仅手臂面 UV 采样宽度不同。
+const CHIBI_HEAD: ChibiBox = ChibiBox { off: [0.0,3.6,0.0], size: [7.2,7.2,7.2], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 4.0, v0: 2.0, u1: 6.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 0.0, v0: 2.0, u1: 2.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 2.0, v0: 2.0, u1: 4.0, v1: 0.0, rotation: 0 }, FaceUv { u0: 4.0, v0: 0.0, u1: 6.0, v1: 2.0, rotation: 0 }, FaceUv { u0: 2.0, v0: 2.0, u1: 4.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 6.0, v0: 2.0, u1: 8.0, v1: 4.0, rotation: 0 }] };
+const CHIBI_HAT: ChibiBox = ChibiBox { off: [0.05,3.7,0.2], size: [7.6,7.6,7.6], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 12.0, v0: 2.0, u1: 14.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 8.0, v0: 2.0, u1: 10.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 10.0, v0: 2.0, u1: 12.0, v1: 0.0, rotation: 0 }, FaceUv { u0: 12.0, v0: 0.0, u1: 14.0, v1: 2.0, rotation: 0 }, FaceUv { u0: 10.0, v0: 2.0, u1: 12.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 14.0, v0: 2.0, u1: 16.0, v1: 4.0, rotation: 0 }] };
+const CHIBI_BODY: ChibiBox = ChibiBox { off: [0.0,0.0,0.0], size: [3.5,3.7,2.5], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 7.0, v0: 5.0, u1: 8.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 4.0, v0: 5.0, u1: 5.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 5.0, v0: 5.0, u1: 7.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 7.0, v0: 5.0, u1: 9.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 5.0, v0: 5.0, u1: 7.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 8.0, v0: 5.0, u1: 10.0, v1: 8.0, rotation: 0 }] };
+const CHIBI_BODY_LAYER: ChibiBox = ChibiBox { off: [0.0,0.0,0.0], size: [3.7,3.9,2.7], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 7.0, v0: 9.0, u1: 8.0, v1: 12.0, rotation: 0 }, FaceUv { u0: 4.0, v0: 9.0, u1: 5.0, v1: 12.0, rotation: 0 }, FaceUv { u0: 5.0, v0: 9.0, u1: 7.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 7.0, v0: 9.0, u1: 9.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 5.0, v0: 9.0, u1: 7.0, v1: 12.0, rotation: 0 }, FaceUv { u0: 8.0, v0: 9.0, u1: 10.0, v1: 12.0, rotation: 0 }] };
+const CHIBI_ARM_LEFT_NARROW: ChibiBox = ChibiBox { off: [0.0,-2.0,0.0], size: [1.2,4.0,1.2], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 9.75, v0: 13.0, u1: 10.5, v1: 16.0, rotation: 0 }, FaceUv { u0: 8.0, v0: 13.0, u1: 8.75, v1: 16.0, rotation: 0 }, FaceUv { u0: 9.0, v0: 12.0, u1: 9.75, v1: 13.0, rotation: 0 }, FaceUv { u0: 9.75, v0: 12.0, u1: 10.5, v1: 13.0, rotation: 0 }, FaceUv { u0: 9.0, v0: 13.0, u1: 9.75, v1: 16.0, rotation: 0 }, FaceUv { u0: 10.5, v0: 13.0, u1: 11.25, v1: 16.0, rotation: 0 }] };
+const CHIBI_ARM_LEFT_WIDE: ChibiBox = ChibiBox { off: [0.0,-2.0,0.0], size: [1.2,4.0,1.2], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 10.0, v0: 13.0, u1: 11.0, v1: 16.0, rotation: 0 }, FaceUv { u0: 8.0, v0: 13.0, u1: 9.0, v1: 16.0, rotation: 0 }, FaceUv { u0: 9.0, v0: 12.0, u1: 10.0, v1: 13.0, rotation: 0 }, FaceUv { u0: 10.0, v0: 12.0, u1: 11.0, v1: 13.0, rotation: 0 }, FaceUv { u0: 9.0, v0: 13.0, u1: 10.0, v1: 16.0, rotation: 0 }, FaceUv { u0: 11.0, v0: 13.0, u1: 12.0, v1: 16.0, rotation: 0 }] };
+const CHIBI_ARM_LEFT_LAYER_NARROW: ChibiBox = ChibiBox { off: [0.0,-2.0,0.0], size: [1.4,4.2,1.4], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 13.75, v0: 13.0, u1: 14.5, v1: 16.0, rotation: 0 }, FaceUv { u0: 12.0, v0: 13.0, u1: 12.75, v1: 16.0, rotation: 0 }, FaceUv { u0: 13.0, v0: 12.0, u1: 13.75, v1: 13.0, rotation: 0 }, FaceUv { u0: 13.75, v0: 12.0, u1: 14.5, v1: 13.0, rotation: 0 }, FaceUv { u0: 13.0, v0: 13.0, u1: 13.75, v1: 16.0, rotation: 0 }, FaceUv { u0: 14.5, v0: 13.0, u1: 15.25, v1: 16.0, rotation: 0 }] };
+const CHIBI_ARM_LEFT_LAYER_WIDE: ChibiBox = ChibiBox { off: [0.0,-2.0,0.0], size: [1.4,4.2,1.4], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 14.0, v0: 13.0, u1: 15.0, v1: 16.0, rotation: 0 }, FaceUv { u0: 12.0, v0: 13.0, u1: 13.0, v1: 16.0, rotation: 0 }, FaceUv { u0: 13.0, v0: 12.0, u1: 14.0, v1: 13.0, rotation: 0 }, FaceUv { u0: 14.0, v0: 12.0, u1: 15.0, v1: 13.0, rotation: 0 }, FaceUv { u0: 13.0, v0: 13.0, u1: 14.0, v1: 16.0, rotation: 0 }, FaceUv { u0: 15.0, v0: 13.0, u1: 16.0, v1: 16.0, rotation: 0 }] };
+const CHIBI_ARM_RIGHT_NARROW: ChibiBox = ChibiBox { off: [0.0,-2.0,0.0], size: [1.2,4.0,1.2], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 11.75, v0: 5.0, u1: 12.5, v1: 8.0, rotation: 0 }, FaceUv { u0: 10.0, v0: 5.0, u1: 10.75, v1: 8.0, rotation: 0 }, FaceUv { u0: 11.0, v0: 4.0, u1: 11.75, v1: 5.0, rotation: 0 }, FaceUv { u0: 11.75, v0: 4.0, u1: 12.5, v1: 5.0, rotation: 0 }, FaceUv { u0: 11.0, v0: 5.0, u1: 11.75, v1: 8.0, rotation: 0 }, FaceUv { u0: 12.5, v0: 5.0, u1: 13.25, v1: 8.0, rotation: 0 }] };
+const CHIBI_ARM_RIGHT_WIDE: ChibiBox = ChibiBox { off: [0.0,-2.0,0.0], size: [1.2,4.0,1.2], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 12.0, v0: 5.0, u1: 13.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 10.0, v0: 5.0, u1: 11.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 11.0, v0: 4.0, u1: 12.0, v1: 5.0, rotation: 0 }, FaceUv { u0: 12.0, v0: 4.0, u1: 13.0, v1: 5.0, rotation: 0 }, FaceUv { u0: 11.0, v0: 5.0, u1: 12.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 13.0, v0: 5.0, u1: 14.0, v1: 8.0, rotation: 0 }] };
+const CHIBI_ARM_RIGHT_LAYER_NARROW: ChibiBox = ChibiBox { off: [0.0,-2.0,0.0], size: [1.4,4.2,1.4], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 11.75, v0: 9.0, u1: 12.5, v1: 12.0, rotation: 0 }, FaceUv { u0: 10.0, v0: 9.0, u1: 10.75, v1: 12.0, rotation: 0 }, FaceUv { u0: 11.0, v0: 8.0, u1: 11.75, v1: 9.0, rotation: 0 }, FaceUv { u0: 11.75, v0: 8.0, u1: 12.5, v1: 9.0, rotation: 0 }, FaceUv { u0: 11.0, v0: 9.0, u1: 11.75, v1: 12.0, rotation: 0 }, FaceUv { u0: 12.5, v0: 9.0, u1: 13.25, v1: 12.0, rotation: 0 }] };
+const CHIBI_ARM_RIGHT_LAYER_WIDE: ChibiBox = ChibiBox { off: [0.0,-2.0,0.0], size: [1.4,4.2,1.4], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 12.0, v0: 9.0, u1: 13.0, v1: 12.0, rotation: 0 }, FaceUv { u0: 10.0, v0: 9.0, u1: 11.0, v1: 12.0, rotation: 0 }, FaceUv { u0: 11.0, v0: 8.0, u1: 12.0, v1: 9.0, rotation: 0 }, FaceUv { u0: 12.0, v0: 8.0, u1: 13.0, v1: 9.0, rotation: 0 }, FaceUv { u0: 11.0, v0: 9.0, u1: 12.0, v1: 12.0, rotation: 0 }, FaceUv { u0: 13.0, v0: 9.0, u1: 14.0, v1: 12.0, rotation: 0 }] };
+const CHIBI_LEG_LEFT: ChibiBox = ChibiBox { off: [0.0,-2.4,0.0], size: [1.5,4.8,1.5], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 6.0, v0: 13.0, u1: 7.0, v1: 16.0, rotation: 0 }, FaceUv { u0: 4.0, v0: 13.0, u1: 5.0, v1: 16.0, rotation: 0 }, FaceUv { u0: 5.0, v0: 12.0, u1: 6.0, v1: 13.0, rotation: 0 }, FaceUv { u0: 6.0, v0: 12.0, u1: 7.0, v1: 13.0, rotation: 0 }, FaceUv { u0: 5.0, v0: 13.0, u1: 6.0, v1: 16.0, rotation: 0 }, FaceUv { u0: 7.0, v0: 13.0, u1: 8.0, v1: 16.0, rotation: 0 }] };
+const CHIBI_LEG_LEFT_LAYER: ChibiBox = ChibiBox { off: [0.0,-2.4,0.0], size: [1.7,5.0,1.7], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 2.0, v0: 13.0, u1: 3.0, v1: 16.0, rotation: 0 }, FaceUv { u0: 0.0, v0: 13.0, u1: 1.0, v1: 16.0, rotation: 0 }, FaceUv { u0: 1.0, v0: 12.0, u1: 2.0, v1: 13.0, rotation: 0 }, FaceUv { u0: 2.0, v0: 12.0, u1: 3.0, v1: 13.0, rotation: 0 }, FaceUv { u0: 1.0, v0: 13.0, u1: 2.0, v1: 16.0, rotation: 0 }, FaceUv { u0: 3.0, v0: 13.0, u1: 4.0, v1: 16.0, rotation: 0 }] };
+const CHIBI_LEG_RIGHT: ChibiBox = ChibiBox { off: [0.0,-2.4,0.0], size: [1.5,4.8,1.5], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 2.0, v0: 5.0, u1: 3.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 0.0, v0: 5.0, u1: 1.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 1.0, v0: 4.0, u1: 2.0, v1: 5.0, rotation: 0 }, FaceUv { u0: 2.0, v0: 4.0, u1: 3.0, v1: 5.0, rotation: 0 }, FaceUv { u0: 1.0, v0: 5.0, u1: 2.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 3.0, v0: 5.0, u1: 4.0, v1: 8.0, rotation: 0 }] };
+const CHIBI_LEG_RIGHT_LAYER: ChibiBox = ChibiBox { off: [0.0,-2.4,0.0], size: [1.7,5.0,1.7], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 2.0, v0: 9.0, u1: 3.0, v1: 12.0, rotation: 0 }, FaceUv { u0: 0.0, v0: 9.0, u1: 1.0, v1: 12.0, rotation: 0 }, FaceUv { u0: 1.0, v0: 8.0, u1: 2.0, v1: 9.0, rotation: 0 }, FaceUv { u0: 2.0, v0: 8.0, u1: 3.0, v1: 9.0, rotation: 0 }, FaceUv { u0: 1.0, v0: 9.0, u1: 2.0, v1: 12.0, rotation: 0 }, FaceUv { u0: 3.0, v0: 9.0, u1: 4.0, v1: 12.0, rotation: 0 }] };
+
 #[derive(Clone)]
 struct BoxPart {
     size: Vec3,
@@ -598,6 +1024,16 @@ struct BoxPart {
     mirror: bool,
     keyboard: bool,
     cape: bool,
+    /// Q 版模式：六个面各自独立的 UV，顺序同 `draw_box` 的 face 0..5
+    /// （+x 左 / -x 右 / +y 顶 / -y 底 / +z 前 / -z 后）。`None` 表示用标准
+    /// cuboid 展开（`uv` + 尺寸推导）。
+    faces: Option<[FaceUv; 6]>,
+    /// 只有头部正面带眼睛；眨眼时在这一块里落眼皮。
+    eyes: Option<Eyes>,
+    /// 睁眼程度，1 = 完全睁开，0 = 完全闭合。
+    eyelid: f32,
+    /// 瞳孔位移（面部像素），头部转向时让眼珠跟着看过去。
+    pupil: Vec2,
 }
 fn parts(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
     parts_with_cape(s, skin, pose, None)
@@ -608,6 +1044,9 @@ fn parts_with_cape(
     pose: &Pose,
     cape: Option<&Cape>,
 ) -> Vec<BoxPart> {
+    if s.chibi {
+        return parts_chibi(s, skin, pose);
+    }
     let custom = s.posture == "custom";
     let custom_body = if custom {
         Mat4::from_quat(degrees(&s.active_custom_pose().body))
@@ -620,30 +1059,45 @@ fn parts_with_cape(
     } else {
         4.
     };
-    let mut v = Vec::with_capacity(13);
-    let mut part =
-        |transform: Mat4, size: Vec3, u: f32, w: f32, outer: Vec2, mirror: bool, hat: bool| {
+    let mut v = Vec::with_capacity(15);
+    let mut part = |transform: Mat4,
+                    size: Vec3,
+                    u: f32,
+                    w: f32,
+                    outer: Vec2,
+                    mirror: bool,
+                    hat: bool,
+                    eyes: bool| {
+        v.push(BoxPart {
+            size,
+            uv: Vec2::new(u, w),
+            transform,
+            inflate: 0.,
+            mirror,
+            keyboard: false,
+            cape: false,
+            faces: None,
+            eyes: if eyes && s.da_blink && !s.chibi { skin.eyes } else { None },
+            eyelid: pose.eyelid,
+            pupil: if eyes { pose.pupil } else { Vec2::ZERO },
+        });
+        if s.outer_layer && (!skin.legacy || hat) {
             v.push(BoxPart {
                 size,
-                uv: Vec2::new(u, w),
+                uv: outer,
                 transform,
-                inflate: 0.,
+                inflate: if hat { 1. } else { 0.5 },
                 mirror,
                 keyboard: false,
                 cape: false,
+                faces: None,
+                // 外层帽子是叠加在头部上的一层，眼皮由内层负责。
+                eyes: None,
+                eyelid: pose.eyelid,
+                pupil: Vec2::ZERO,
             });
-            if s.outer_layer && (!skin.legacy || hat) {
-                v.push(BoxPart {
-                    size,
-                    uv: outer,
-                    transform,
-                    inflate: if hat { 1. } else { 0.5 },
-                    mirror,
-                    keyboard: false,
-                    cape: false,
-                });
-            }
-        };
+        }
+    };
     part(
         body * Mat4::from_translation(Vec3::new(0., 6., 0.)),
         Vec3::new(8., 12., 4.),
@@ -652,9 +1106,10 @@ fn parts_with_cape(
         Vec2::new(16., 32.),
         false,
         false,
+        false,
     );
     part(
-        pose.base_body()
+        pose.torso_space()
             * custom_body
             * Mat4::from_translation(Vec3::new(0., 12., 0.))
             * Mat4::from_quat(pose.head_rotation)
@@ -665,12 +1120,17 @@ fn parts_with_cape(
         Vec2::new(32., 0.),
         false,
         true,
+        true,
     );
     for side in 0..2 {
         let left = side == 0;
         let sign = if left { 1. } else { -1. };
-        let tr = body
-            * Mat4::from_translation(Vec3::new(sign * (4. + aw / 2.), 10., 0.))
+        let tr = pose.torso_space() * Mat4::from_rotation_y(pose.body_yaw) * custom_body
+            * Mat4::from_translation(Vec3::new(
+                sign * (4. + aw / 2.) + pose.arm_slide,
+                10. + sign * pose.arm_bob,
+                0.,
+            ))
             * Mat4::from_quat(pose.arms[side])
             * Mat4::from_translation(Vec3::new(0., -4., 0.));
         let (u, w, outer) = if left && !skin.legacy {
@@ -686,13 +1146,19 @@ fn parts_with_cape(
             outer,
             left && skin.legacy,
             false,
+            false,
         );
     }
     for side in 0..2 {
         let left = side == 0;
         let sign = if left { 1. } else { -1. };
         let tr = pose.base_body()
-            * Mat4::from_translation(Vec3::new(sign * (2. + 0.25 * pose.sit), 0., 0.))
+            * Mat4::from_translation(Vec3::new(
+                sign * (2. + 0.25 * pose.sit) + pose.leg_slide,
+                0.,
+                0.,
+            ))
+            * Mat4::from_rotation_z(pose.leg_roll)
             * Mat4::from_quat({
                 let base = rotation(
                     -std::f32::consts::PI * 0.48 * pose.sit - 0.24 * pose.crouch,
@@ -719,22 +1185,28 @@ fn parts_with_cape(
             outer,
             left && skin.legacy,
             false,
+            false,
         );
     }
     if cape.is_some() {
-        // Use the full atlas with its patterned front face pointing away from
-        // the body. A negative U offset made the other five faces sample x=0.
+        // 10×16×1 的薄板挂在背后：UV 与方块面包裹一致，
+        // 中间那一面正好落在官方纹理的 (1,1)..(11,17)。
+        // 官方披风的图案画在“外壳”那一面，也就是 (-Z) 那一侧；
+        // 方块 UV 里 -Z 面的起点是 u + 2d + w，取 u = -11 正好落在 (1,1)。
         v.push(BoxPart {
             size: Vec3::new(10., 16., 1.),
-            uv: Vec2::ZERO,
+            uv: Vec2::new(-11., 0.),
             transform: body
                 * Mat4::from_translation(Vec3::new(0., 3.6, -2.9))
-                * Mat4::from_rotation_x(0.14)
-                * Mat4::from_rotation_y(std::f32::consts::PI),
+                * Mat4::from_rotation_x(0.14),
             inflate: 0.,
             mirror: false,
             keyboard: false,
             cape: true,
+            faces: None,
+            eyes: None,
+            eyelid: 1.,
+            pupil: Vec2::ZERO,
         });
     }
     // Squash only the character about its seated support height, never the keyboard
@@ -757,6 +1229,10 @@ fn parts_with_cape(
             mirror: false,
             keyboard: true,
             cape: false,
+            faces: None,
+            eyes: None,
+            eyelid: 1.,
+            pupil: Vec2::ZERO,
         });
     }
     let global = model_transform(s);
@@ -764,6 +1240,192 @@ fn parts_with_cape(
         part.transform = global * part.transform;
     }
     // Three.js draws opaque first and orders translucent meshes by camera-space center.
+    v.sort_by(|a, b| {
+        (a.inflate > 0.).cmp(&(b.inflate > 0.)).then_with(|| {
+            if a.inflate > 0. {
+                let az = project(a.transform.transform_point3(Vec3::ZERO), 1., 1.).z;
+                let bz = project(b.transform.transform_point3(Vec3::ZERO), 1., 1.).z;
+                bz.total_cmp(&az)
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+    });
+    v
+}
+
+/// Q 版(图腾玩偶)模式：用 Q 版 cuboid + 标准皮肤贴图，挂到现有骨骼动画上。
+/// 复用 Pose 的角度，但髋高度、身体尺寸、肩/髋 pivot 按 Q 版比例。
+fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
+    let slim = s.arm_model == "slim" && !skin.legacy;
+    let body_scale = s.chibi_body_scale / 100.;
+    let thickness = 1.;
+    let arm_w = 1.2;
+    let custom = s.posture == "custom";
+    let custom_body = if custom {
+        Mat4::from_quat(degrees(&s.active_custom_pose().body))
+    } else {
+        Mat4::IDENTITY
+    };
+    // Q 版身体：髋在 Y=4（站姿，脚在 Y=0）。坐姿下降、潜行俯身。
+    let base = Mat4::from_translation(Vec3::new(
+        0.,
+        4.8 - 3. * pose.sit - 1.0 * pose.crouch,
+        -0.6 * pose.crouch,
+    )) * Mat4::from_rotation_x(0.34 * pose.crouch);
+    let body = Mat4::from_translation(Vec3::Y * (pose.body_bob+pose.breathing_bob))
+        * base
+        * Mat4::from_translation(Vec3::Y * 3.7)
+        * Mat4::from_rotation_z(pose.body_roll)
+        * Mat4::from_translation(-Vec3::Y * 3.7)
+        * Mat4::from_rotation_y(pose.body_yaw)
+        * custom_body;
+    let torso = Mat4::from_translation(Vec3::Y * (pose.body_bob+pose.breathing_bob))
+        * base
+        * custom_body;
+
+    let mut v = Vec::with_capacity(14);
+    let push = |v: &mut Vec<BoxPart>, cb: &ChibiBox, transform: Mat4, layer: bool, eyes: bool| {
+        let t = transform
+            * Mat4::from_quat(degrees(&cb.rot))
+            * Mat4::from_translation(Vec3::from_array(cb.off));
+        v.push(BoxPart {
+            size: Vec3::from_array(cb.size),
+            uv: Vec2::ZERO,
+            transform: t,
+            inflate: if layer { 0.5 } else { 0. },
+            mirror: false,
+            keyboard: false,
+            cape: false,
+            faces: Some(cb.faces),
+            eyes: if eyes && s.da_blink && !s.chibi { skin.eyes } else { None },
+            eyelid: pose.eyelid,
+            pupil: if eyes { pose.pupil } else { Vec2::ZERO },
+        });
+    };
+
+    // 头（颈在身体顶部 Y=6）
+    let head = torso
+        * Mat4::from_translation(Vec3::new(0., 3.7, 0.))
+        * Mat4::from_quat(pose.head_rotation);
+    push(&mut v, &CHIBI_HEAD, head, false, true);
+    if s.outer_layer {
+        push(&mut v, &CHIBI_HAT, head, true, false);
+    }
+
+    // 身体（中心在 Y=3）
+    let body_t = body * Mat4::from_translation(Vec3::new(0., 1.85, 0.));
+    push(&mut v, &CHIBI_BODY, body_t, false, false);
+    if s.outer_layer {
+        push(&mut v, &CHIBI_BODY_LAYER, body_t, true, false);
+    }
+
+    // 手臂（肩在 Y=5 两侧）
+    for side in 0..2 {
+        let left = side == 0;
+        let sign = if left { 1. } else { -1. };
+        let arm = torso * Mat4::from_rotation_y(pose.body_yaw)
+            * Mat4::from_translation(Vec3::new(
+                sign * (1.75 + arm_w / 2.) + pose.arm_slide,
+                3.7 + sign * pose.arm_bob,
+                0.,
+            ))
+            * Mat4::from_quat(pose.arms[side])
+            * Mat4::from_scale(Vec3::new(thickness, 1., thickness));
+        let (inner, outer) = if left {
+            if slim {
+                (&CHIBI_ARM_LEFT_NARROW, &CHIBI_ARM_LEFT_LAYER_NARROW)
+            } else {
+                (&CHIBI_ARM_LEFT_WIDE, &CHIBI_ARM_LEFT_LAYER_WIDE)
+            }
+        } else if slim {
+            (&CHIBI_ARM_RIGHT_NARROW, &CHIBI_ARM_RIGHT_LAYER_NARROW)
+        } else {
+            (&CHIBI_ARM_RIGHT_WIDE, &CHIBI_ARM_RIGHT_LAYER_WIDE)
+        };
+        push(&mut v, inner, arm, false, false);
+        if s.outer_layer {
+            push(&mut v, outer, arm, true, false);
+        }
+    }
+
+    // 腿（髋在 Y=0 两侧，坐姿/潜行摆动）
+    for side in 0..2 {
+        let left = side == 0;
+        let sign = if left { 1. } else { -1. };
+        let leg_rot = if custom {
+            degrees(&s.active_custom_pose().row(4 + side))
+        } else {
+            // 站姿腿直立；坐姿把腿前摆约 90°（变成向前伸），潜行收腿。
+            rotation(
+                -std::f32::consts::FRAC_PI_2 * pose.sit - 0.24 * pose.crouch,
+                sign * 0.05 * pose.sit,
+                0.,
+            )
+        };
+        let leg = base
+            * Mat4::from_translation(Vec3::new(sign * 0.75 * thickness + pose.leg_slide, 0., 0.))
+            * Mat4::from_rotation_z(pose.leg_roll)
+            * Mat4::from_quat(leg_rot)
+            * Mat4::from_scale(Vec3::new(thickness, 1., thickness));
+        let (inner, outer) = if left {
+            (&CHIBI_LEG_LEFT, &CHIBI_LEG_LEFT_LAYER)
+        } else {
+            (&CHIBI_LEG_RIGHT, &CHIBI_LEG_RIGHT_LAYER)
+        };
+        push(&mut v, inner, leg, false, false);
+        if s.outer_layer {
+            push(&mut v, outer, leg, true, false);
+        }
+    }
+
+    // Squash 只作用在角色上（锚点按 Q 版支撑高度）。
+    let anchor = 3. * pose.sit;
+    let squash = Mat4::from_translation(Vec3::Y * anchor)
+        * Mat4::from_scale(Vec3::new(1., pose.squash, 1.))
+        * Mat4::from_translation(-Vec3::Y * anchor);
+    for part in &mut v {
+        part.transform = squash * part.transform;
+    }
+    // Scale body/limbs together about the seated support; keep head dimensions.
+    let body_scale_mat = Mat4::from_translation(Vec3::Y * anchor)
+        * Mat4::from_scale(Vec3::splat(body_scale))
+        * Mat4::from_translation(-Vec3::Y * anchor);
+    let neck = (squash * head).transform_point3(Vec3::ZERO);
+    let neck_delta = body_scale_mat.transform_point3(neck) - neck;
+    let head_count = if s.outer_layer { 2 } else { 1 };
+    for (index, part) in v.iter_mut().enumerate() {
+        part.transform = if index < head_count {
+            Mat4::from_translation(neck_delta) * part.transform
+        } else { body_scale_mat * part.transform };
+    }
+    // Q 版整体放大（脚仍在 Y=0，头顶约 19.3，缩放后约 29）。
+    let chibi_scale = Mat4::from_scale(Vec3::splat(1.5));
+    for part in &mut v {
+        part.transform = chibi_scale * part.transform;
+    }
+    // 坐姿打字键盘：和标准人形同一套尺寸/渐入，放在 Q 版坐姿身体前方。
+    if pose.sit > 0.4 {
+        v.push(BoxPart {
+            size: Vec3::new(19.6, 0.65, 7.8),
+            uv: Vec2::ZERO,
+            transform: Mat4::from_translation(Vec3::new(0., 5., 9.4))
+                * Mat4::from_scale(Vec3::splat(pose.sit))
+                * Mat4::from_translation(Vec3::new(0., -0.3, 0.)),
+            inflate: 0.,
+            mirror: false,
+            keyboard: true,
+            cape: false,
+            faces: None,
+            eyes: None,
+            eyelid: 1.,
+            pupil: Vec2::ZERO,
+        });
+    }
+    let global = model_transform(s);
+    for part in &mut v {
+        part.transform = global * part.transform;
+    }
     v.sort_by(|a, b| {
         (a.inflate > 0.).cmp(&(b.inflate > 0.)).then_with(|| {
             if a.inflate > 0. {
@@ -812,6 +1474,7 @@ impl Frame {
                 self.draw_box(&part, Tex::of(&skin.image, &skin.colors));
             }
         }
+        self.draw_effects(s,skin,pose);
     }
     fn draw_box(&mut self, b: &BoxPart, skin: Tex) {
         let Vec3 { x: w, y: h, z: d } = b.size;
@@ -840,6 +1503,35 @@ impl Frame {
             let mut pos = [Vec3::ZERO; 4];
             let mut uv = [Vec2::ZERO; 4];
             let (x, y, tw, th) = regions[f];
+            // Q 版每面独立 UV：把 [u0,v0,u1,v1]（0..16 单位）按 rotation 排到
+            // 四个顶点上，再乘 4 转成 64 基准贴图坐标。
+            // 坐标映射是绕 Y 轴 180° 的镜像，会翻转南北东西面的 u 轴（左右），
+            // 使这些面上的 UV 旋转方向反转（90↔270）；顶底面 u、v 都翻转，方向不变。
+            let custom = b.faces.map(|fs| {
+                let fu = fs[f];
+                let corners = [
+                    (fu.u0, fu.v0),
+                    (fu.u1, fu.v0),
+                    (fu.u0, fu.v1),
+                    (fu.u1, fu.v1),
+                ];
+                let rot = if f == 2 || f == 3 {
+                    fu.rotation
+                } else {
+                    match fu.rotation {
+                        90 => 270,
+                        270 => 90,
+                        r => r,
+                    }
+                };
+                let order: [usize; 4] = match rot {
+                    90 => [2, 0, 3, 1],
+                    180 => [3, 2, 1, 0],
+                    270 => [1, 3, 0, 2],
+                    _ => [0, 1, 2, 3],
+                };
+                order.map(|i| Vec2::new(corners[i].0 * 4., corners[i].1 * 4.))
+            });
             for iy in 0..2 {
                 for ix in 0..2 {
                     let i = iy * 2 + ix;
@@ -855,14 +1547,17 @@ impl Frame {
                         self.width as f32,
                         self.height as f32,
                     );
-                    uv[i] = Vec2::new(
-                        x + ix as f32 * tw,
-                        y + if f == 3 {
-                            (1 - iy) as f32 * th
-                        } else {
-                            iy as f32 * th
-                        },
-                    );
+                    uv[i] = match custom {
+                        Some(uvs) => uvs[i],
+                        None => Vec2::new(
+                            x + ix as f32 * tw,
+                            y + if f == 3 {
+                                (1 - iy) as f32 * th
+                            } else {
+                                iy as f32 * th
+                            },
+                        ),
+                    };
                 }
             }
             for ids in [[0, 2, 1], [2, 3, 1]] {
@@ -878,6 +1573,104 @@ impl Frame {
                     skin,
                 );
             }
+        }
+        if let Some(eyes) = b.eyes {
+            if b.inflate == 0. {
+                for eye in [eyes.left, eyes.right] {
+                    self.eyelid(b, eye, skin);
+                    self.pupil(b, eye, skin);
+                }
+            }
+        }
+    }
+    /// 眼珠：把眼睛贴图里的瞳孔那一小段像素画到它的新位置上。
+    /// 资源包用 `ctrl_*_pupil.tx/ty` 平移瞳孔骨骼，眼白和眼皮不动；
+    /// 这里同样只搬动瞳孔像素，`b.pupil` 是位移量（单位：面部像素）。
+    fn pupil(&mut self, b: &BoxPart, eye: Eye, skin: Tex) {
+        if b.pupil.length_squared() < 1e-6 {
+            return;
+        }
+        let sz = b.size + Vec3::splat(b.inflate);
+        // 比脸再靠前一点，但仍在眼皮之下：眨眼时瞳孔被眼皮盖住。
+        let z = sz.z / 2. + 0.012;
+        let (px0, px1) = eye.pupil;
+        let x0 = px0 as f32 + b.pupil.x - 4.;
+        let x1 = px1 as f32 + 1. + b.pupil.x - 4.;
+        let y0 = eye.y0 as f32 + b.pupil.y;
+        let y1 = eye.y0 as f32 + eye.rows as f32 + b.pupil.y;
+        let top = 4. - y0;
+        let bottom = 4. - y1;
+        // 位移不到一整格时用贴图上的小数坐标采样，移动才连续不跳格。
+        let (u0, u1) = (8. + px0 as f32 + b.pupil.x, 8. + px1 as f32 + 1. + b.pupil.x);
+        let (v0, v1) = (8. + y0, 8. + y1);
+        let corners = [
+            (Vec3::new(x0, top, z), Vec2::new(u0, v0)),
+            (Vec3::new(x1, top, z), Vec2::new(u1, v0)),
+            (Vec3::new(x0, bottom, z), Vec2::new(u0, v1)),
+            (Vec3::new(x1, bottom, z), Vec2::new(u1, v1)),
+        ];
+        let pos = corners.map(|(p, _)| {
+            project(
+                b.transform.transform_point3(p),
+                self.width as f32,
+                self.height as f32,
+            )
+        });
+        let uv = corners.map(|(_, t)| t);
+        for ids in [[0, 2, 1], [2, 3, 1]] {
+            self.triangle(
+                [pos[ids[0]], pos[ids[1]], pos[ids[2]]],
+                [uv[ids[0]], uv[ids[1]], uv[ids[2]]],
+                4,
+                b,
+                skin,
+            );
+        }
+    }
+    /// 眨眼的眼皮：材质包的 `right_blink` / `left_blink` 骨骼用 `sy` 从 0 长到 1，
+    /// 把眼睛那一行盖住；它采样的就是玩家画在眼睛正上方的那一行像素。
+    /// 这里在头部正面加一层同样宽度的薄片，UV 指向那块眼皮像素，
+    /// 所以闭眼时看到的是玩家自己画在皮肤上的眼皮色，而不是被拉伸的眼睛。
+    fn eyelid(&mut self, b: &BoxPart, eye: Eye, skin: Tex) {
+        let closed = 1. - b.eyelid;
+        if closed <= 0.002 {
+            return;
+        }
+        let sz = b.size + Vec3::splat(b.inflate);
+        // 面部正面在头盒 +Z 一侧；眼皮比其他面靠前一丁点，避免与脸部抢占深度。
+        let z = sz.z / 2. + 0.02;
+        let x0 = eye.x0 as f32 - 4.;
+        let x1 = eye.x1 as f32 + 1. - 4.;
+        let top = 4. - eye.y0 as f32;
+        // 眼皮从上边缘向下长满眼睛所在的那一行（材质包的 blink.sy 0→1）。
+        let bottom = top - eye.rows as f32 * closed;
+        // UV 直接取识别格里的眼皮像素；识别格坐标本身就是贴图坐标，
+        // 不能再叠加脸部 8×8 的偏移。
+        let lx0 = eye.lid.0 as f32;
+        let lx1 = eye.lid.2 as f32 + 1.;
+        let ly = eye.lid.1 as f32 + 0.5;
+        let corners = [
+            (Vec3::new(x0, top, z), Vec2::new(lx0, ly)),
+            (Vec3::new(x1, top, z), Vec2::new(lx1, ly)),
+            (Vec3::new(x0, bottom, z), Vec2::new(lx0, ly)),
+            (Vec3::new(x1, bottom, z), Vec2::new(lx1, ly)),
+        ];
+        let pos = corners.map(|(p, _)| {
+            project(
+                b.transform.transform_point3(p),
+                self.width as f32,
+                self.height as f32,
+            )
+        });
+        let uv = corners.map(|(_, t)| t);
+        for ids in [[0, 2, 1], [2, 3, 1]] {
+            self.triangle(
+                [pos[ids[0]], pos[ids[1]], pos[ids[2]]],
+                [uv[ids[0]], uv[ids[1]], uv[ids[2]]],
+                4,
+                b,
+                skin,
+            );
         }
     }
     fn triangle(&mut self, p: [Vec3; 3], uv: [Vec2; 3], face: usize, b: &BoxPart, skin: Tex) {
@@ -1026,6 +1819,71 @@ fn edge(a: Vec3, b: Vec3, p: Vec3) -> f32 {
 mod tests {
     use super::*;
     #[test]
+    fn breathing_runs_immediately_through_actions_and_preserves_custom_pose() {
+        let skin=Skin::load(DEFAULT_SKIN).unwrap();
+        for posture in ["standing","sitting","custom"] {for base in ["standing","sitting"] {for chibi in [false,true] {
+            let mut s=Settings::default();s.posture=posture.into();s.custom_base=base.into();
+            s.track_mouse=false;s.breathing_animation=true;s.tease_enabled=true;s.chibi=chibi;
+            s.custom_pose.left_arm=[20.,40.,30.];s.custom_sitting_pose.right_arm=[-25.,15.,45.];
+            let saved=serde_json::to_value(&s).unwrap();let mut p=Pose::new(&s);
+            tick(&mut p,&s,&skin,0.01,false);assert!(p.breathing_weight>0.);
+            for i in 1..240 {tick(&mut p,&s,&skin,i as f32/120.,false);}
+            assert!(p.breathing_weight>0.98);
+            p.key(65,true,2.,&s);tick(&mut p,&s,&skin,2.1,true);
+            assert!(p.breathing_weight>0.98);assert!(p.breathing_bob.abs()>0.001);
+            p.click(2.2,false);tick(&mut p,&s,&skin,2.25,true);assert!(p.breathing_weight>0.98);
+            p.feed(2.3);tick(&mut p,&s,&skin,2.4,true);assert!(p.breathing_weight>0.98);
+            p.tease(2.5);tick(&mut p,&s,&skin,2.6,true);assert!(p.breathing_weight>0.98);
+            assert_eq!(serde_json::to_value(&s).unwrap(),saved);
+            s.da_dance=true;tick(&mut p,&s,&skin,3.2,false);assert!(p.breathing_weight>0.98);
+            p.key(65,false,3.3,&s);s.da_dance=false;s.breathing_animation=false;
+            for i in 0..360 {tick(&mut p,&s,&skin,4.+i as f32/120.,false);}
+            assert_eq!(p.breathing_weight,0.);assert_eq!(p.breathing_bob,0.);
+            let mut rest=Pose::new(&s);
+            for i in 0..360 {tick(&mut rest,&s,&skin,4.+i as f32/120.,false);}
+            for side in 0..2 {assert!(p.arms[side].angle_between(rest.arms[side])<0.001,"{posture} {base} {chibi} {side}: {:?}",p.arms[side].angle_between(rest.arms[side]));}
+        }}}
+    }
+    #[test]
+    fn tease_interrupts_actions_and_returns_to_live_held_pose() {
+        let skin=Skin::load(DEFAULT_SKIN).unwrap();
+        for posture in ["standing","sitting","custom"] {for chibi in [false,true] {for kind in 0..3 {
+            let mut s=Settings::default();s.posture=posture.into();s.custom_base="sitting".into();
+            s.chibi=chibi;s.tease_enabled=true;s.track_mouse=false;
+            s.custom_sitting_pose.left_arm=[-20.,30.,15.];
+            let mut p=Pose::new(&s);p.key(65,true,0.,&s);
+            for i in 0..120 {tick(&mut p,&s,&skin,i as f32/120.,false);}
+            let held=p.held_codes();let rest=p.arms;
+            p.feed(1.);tick(&mut p,&s,&skin,1.2,false);
+            let captured=p.arms;p.tease(1.2);p.tease_kind=kind;
+            assert!(p.feed_start.is_none());assert!(p.swing_start.is_none());
+            tick(&mut p,&s,&skin,1.2,false);
+            for side in 0..2 {assert!(p.arms[side].angle_between(captured[side])<0.001);}
+            p.click(1.3,true);assert!(p.swing_start.is_none());
+            p.feed(1.3);assert!(p.feed_start.is_none());assert!(p.tease_start.is_some());
+            for i in 1..61 {tick(&mut p,&s,&skin,1.2+i as f32/120.,false);}
+            tick(&mut p,&s,&skin,1.71,false);
+            assert!(p.tease_start.is_none());assert_eq!(p.held_codes(),held);
+            for side in 0..2 {assert!(p.arms[side].angle_between(rest[side])<0.001);}
+            p.click(2.,false);assert!(p.swing_start.is_some());
+            p.tease(2.1);assert!(p.swing_start.is_none());
+        }}}
+    }
+    #[test]
+    fn letters_choose_stable_cape_palette_colors() {
+        let mut s=Settings::default();s.posture="sitting".into();s.typing_letters=true;
+        let mut p=Pose::new(&s);p.random_state=123456;
+        for i in 0..40 {p.key(65,true,i as f32*0.01,&s);p.key(65,false,i as f32*0.01+0.001,&s);}
+        assert_eq!(p.letters.len(),40);
+        assert!(p.letters.iter().all(|l|effects::CANDY_COLORS.contains(&l.color)));
+        assert!(p.letters.iter().any(|l|l.color!=p.letters[0].color));
+        let colors:Vec<_>=p.letters.iter().map(|l|l.color).collect();
+        p.key(66,true,0.5,&s);p.key(66,true,0.51,&s);
+        assert_eq!(p.letters.len(),41);
+        assert_eq!(p.letters[..40].iter().map(|l|l.color).collect::<Vec<_>>(),colors);
+    }
+
+    #[test]
     fn every_click_restarts_swing_without_a_queued_tail() {
         let skin = Skin::load(DEFAULT_SKIN).unwrap();
         for (posture, base) in [
@@ -1071,45 +1929,10 @@ mod tests {
         }
     }
     #[test]
-    fn cape_rejects_oversized_dimensions_before_decode() {
-        for (w,h) in [(2048u32,1024u32),(64,64),(63,32),(u32::MAX,32)] {
-            let mut bytes = vec![0u8; 24];
-            bytes[..8].copy_from_slice(&[137,80,78,71,13,10,26,10]);
-            bytes[16..20].copy_from_slice(&w.to_be_bytes());
-            bytes[20..24].copy_from_slice(&h.to_be_bytes());
-            assert!(Cape::load(&bytes).err().unwrap().contains("最大 1024×512"));
-        }
-        assert!(Cape::load(&[0;24]).is_err());
-        assert!(Cape::load(&vec![0;2*1024*1024+1]).is_err());
-    }
-    #[test]
-    fn cape_uses_all_six_atlas_faces_without_clamping() {
-        let mut tex = RgbaImage::new(64,32);
-        let regions = [(11,1,1,16),(0,1,1,16),(1,0,10,1),(11,0,10,1),(1,1,10,16),(12,1,10,16)];
-        let colors = [[255,0,0,255],[0,255,0,255],[0,0,255,255],
-            [255,255,0,255],[255,0,255,255],[0,255,255,255]];
-        for (i,(x,y,w,h)) in regions.into_iter().enumerate() {
-            for yy in y..y+h { for xx in x..x+w { tex.put_pixel(xx,yy,image::Rgba(colors[i])); } }
-        }
-        let mut png = std::io::Cursor::new(Vec::new());
-        tex.write_to(&mut png, image::ImageFormat::Png).unwrap();
-        let cape = Cape::load(png.get_ref()).unwrap();
-        let skin = Skin::load(DEFAULT_SKIN).unwrap();
-        let s = Settings::default(); let pose = Pose::new(&s);
-        let parts = parts_with_cape(&s,&skin,&pose,Some(&cape));
-        let part = parts.iter().find(|p| p.cape).unwrap();
-        assert_eq!(part.uv, Vec2::ZERO);
-        // +Z is the outward pattern after rotation; -Z is the lining.
-        let direction = part.transform.transform_vector3(Vec3::Z);
-        assert!(direction.z < -0.9);
-        assert_eq!(cape.image.get_pixel(5,8).0, colors[4]);
-        assert_eq!(cape.image.get_pixel(16,8).0, colors[5]);
-    }
-    #[test]
     fn cape_renders_from_the_official_texture_region() {
         use image::{ImageFormat, Rgba, RgbaImage};
         let skin = Skin::load(DEFAULT_SKIN).unwrap();
-        // Isolate the outward pattern; other faces are tested separately.
+        // 官方披风纹理：只有 (1,1)-(11,17) 是有效面，别处全透明。
         let mut tex = RgbaImage::from_pixel(64, 32, Rgba([0, 0, 0, 0]));
         for y in 1..17 {
             for x in 1..11 {
@@ -1509,6 +2332,10 @@ mod tests {
             mirror: false,
             keyboard: false,
             cape: false,
+            faces: None,
+            eyes: None,
+            eyelid: 1.,
+            pupil: Vec2::ZERO,
         };
         let points = [
             Vec3::new(2.5, 2.5, 1.),
@@ -1545,7 +2372,6 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.tmp/uv-validation");
         std::fs::create_dir_all(&dir).unwrap();
         let cases = [
-            ("cape", 10., 16., 1., 0., 0.),
             ("head", 8., 8., 8., 0., 0.),
             ("hat", 8., 8., 8., 32., 0.),
             ("body", 8., 12., 4., 16., 16.),
@@ -1598,6 +2424,10 @@ mod tests {
                             mirror,
                             keyboard: false,
                             cape: false,
+                            faces: None,
+                            eyes: None,
+                            eyelid: 1.,
+                            pupil: Vec2::ZERO,
                         };
                         let mut frame = Frame::new(450, 525);
                         frame.draw_box(&part, Tex::of(&skin.image, &skin.colors));
@@ -1695,6 +2525,196 @@ mod tests {
         }
         (s, skin, p)
     }
+    fn seated_chibi() -> (Settings, Skin, Pose) {
+        let mut s = Settings::default();
+        s.posture = "sitting".into();
+        s.chibi = true;
+        s.track_mouse = false;
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        let mut p = Pose::new(&s);
+        for i in 0..120 {
+            tick(&mut p, &s, &skin, i as f32 / 120., false);
+        }
+        (s, skin, p)
+    }
+    /// 坐姿 Q 版：腿保持身体下方，不会翻到头上方；身体因坐下而下降。
+    #[test]
+    fn chibi_seated_legs_stay_below_body() {
+        let (s, skin, p) = seated_chibi();
+        let parts = parts_with_cape(&s, &skin, &p, None);
+        let center = |p: &BoxPart| p.transform.transform_point3(Vec3::ZERO);
+        let body = parts
+            .iter()
+            .find(|p| (p.size.y - 3.7).abs() < 0.01 && (p.size.x - 3.5).abs() < 0.01)
+            .expect("身体");
+        let bc = center(body);
+        // 坐姿身体中心 chibi 缩放后约 5.5（站立约 10）。
+        assert!(bc.y < 8.0, "坐姿身体应下降，实际 {}", bc.y);
+        for l in parts.iter().filter(|p| {
+            (p.size.x - 1.5).abs() < 0.01
+                && (p.size.y - 4.8).abs() < 0.01
+                && (p.size.z - 1.5).abs() < 0.01
+                && center(p).y < bc.y
+        }) {
+            assert!(
+                center(l).y < bc.y,
+                "坐姿腿不应翻到身体上方，腿 {:?} 身体 {:?}",
+                center(l),
+                bc
+            );
+        }
+    }
+    /// Q 版模式：生成 12 个 cuboid（头2+身2+臂4+腿4，无图腾），每个都带
+    /// per-face UV，渲染后一帧有可见像素。
+    #[test]
+    fn chibi_mode_renders_without_totem() {
+        let mut s = Settings::default();
+        s.chibi = true;
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        let pose = Pose::new(&s);
+        let parts = parts_with_cape(&s, &skin, &pose, None);
+        assert_eq!(parts.len(), 12, "头2+身2+臂4+腿4=12，图腾已被去掉");
+        assert!(
+            parts.iter().all(|p| p.faces.is_some()),
+            "Q 版每个面都走独立 UV"
+        );
+        let mut frame = Frame::new(450, 525);
+        frame.draw_ext(&s, &skin, None, &pose);
+        assert!(
+            frame.bounds[2] > frame.bounds[0] && frame.bounds[3] > frame.bounds[1],
+            "Q 版渲染应有可见像素"
+        );
+    }
+    /// Q 版兼容全部动作：站、坐、潜行、打字、挥手逐一遍历，渲染不崩溃且每帧有像素。
+    #[test]
+    fn chibi_renders_all_postures_without_panic() {
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        for (posture, shift, do_key) in [
+            ("standing", false, false),
+            ("sitting", false, false),
+            ("standing", true, false), // 潜行
+            ("sitting", false, true),  // 打字
+        ] {
+            let mut s = Settings::default();
+            s.chibi = true;
+            s.posture = posture.into();
+            s.track_mouse = false;
+            let mut p = Pose::new(&s);
+            for i in 0..120 {
+                if do_key && i == 60 {
+                    p.key(81, true, 0.5, &s);
+                }
+                tick(&mut p, &s, &skin, i as f32 / 120., shift);
+            }
+            // 挥手一次，确认挥动也不破坏渲染。
+            p.click(1., false);
+            for i in 0..30 {
+                tick(&mut p, &s, &skin, 1. + i as f32 / 120., false);
+            }
+            let mut frame = Frame::new(450, 525);
+            frame.draw_ext(&s, &skin, None, &p);
+            assert!(
+                frame.bounds[2] > frame.bounds[0] && frame.bounds[3] > frame.bounds[1],
+                "姿势 {posture}（shift={shift} key={do_key}）渲染应有可见像素"
+            );
+        }
+    }
+    /// Q 版几何：头在身体上方、腿在身体下方、左右手臂/腿关于 x 轴对称、
+    /// 头居中。用 size 特征识别部位，不依赖 push 顺序。
+    #[test]
+    fn chibi_geometry_is_well_formed() {
+        let mut s = Settings::default();
+        s.chibi = true;
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        let pose = Pose::new(&s);
+        let parts = parts_with_cape(&s, &skin, &pose, None);
+        let center = |p: &BoxPart| p.transform.transform_point3(Vec3::ZERO);
+        let head = parts.iter().find(|p| (p.size.y - 7.2).abs() < 0.01).expect("头部");
+        let body = parts
+            .iter()
+            .find(|p| (p.size.y - 3.7).abs() < 0.01 && (p.size.x - 3.5).abs() < 0.01)
+            .expect("身体");
+        let hc = center(head);
+        let bc = center(body);
+        // 手臂 inner 1.2×4×1.2，腿 inner 1.5×4.8×1.5，用宽区分。
+        let arms: Vec<_> = parts
+            .iter()
+            .filter(|p| {
+                (p.size.x - 1.2).abs() < 0.01
+                    && (p.size.y - 4.0).abs() < 0.01
+                    && (p.size.z - 1.2).abs() < 0.01
+            })
+            .collect();
+        let legs: Vec<_> = parts
+            .iter()
+            .filter(|p| {
+                (p.size.x - 1.5).abs() < 0.01
+                    && (p.size.y - 4.8).abs() < 0.01
+                    && (p.size.z - 1.5).abs() < 0.01
+            })
+            .collect();
+        assert_eq!(arms.len(), 2, "应有左右两条手臂");
+        assert_eq!(legs.len(), 2, "应有左右两条腿");
+        assert!(hc.y > bc.y, "头应在身体上方");
+        for l in &legs {
+            assert!(center(l).y < bc.y, "腿应在身体下方");
+        }
+        assert!((hc.x).abs() < 0.01, "头应居中");
+        let mut ax = arms.iter().map(|a| center(a).x);
+        let (a0, a1) = (ax.next().unwrap(), ax.next().unwrap());
+        assert!((a0 + a1).abs() < 0.01, "左右手臂应关于 x 轴对称");
+        let mut lx = legs.iter().map(|l| center(l).x);
+        let (l0, l1) = (lx.next().unwrap(), lx.next().unwrap());
+        assert!((l0 + l1).abs() < 0.01, "左右腿应关于 x 轴对称");
+    }
+    /// 潜行扭动：材质包先累计 `var.SneakingTimer` 才启动 `SneakyDanceTimer`，
+    /// 依照所提供资源包约 3.33 秒开始，松开后回落。
+    #[test]
+    fn da_blink_is_independent_of_gaze_and_disabled_for_chibi() {
+        let mut s = Settings::default();
+        let skin = blinkable_skin();
+        let mut p = Pose::new(&s);
+        for now in [0., 1., 2., 3., 4., 5.] {
+            p.update(&s, &skin, Vec2::new(180., -5000.), 360., 420., false, now, 0.);
+            let opening = p.eyelid;
+            p.update(&s, &skin, Vec2::new(180., 5000.), 360., 420., false, now, 0.);
+            assert_eq!(p.eyelid, opening);
+            assert_eq!(p.pupil, Vec2::ZERO);
+        }
+        s.da_blink = false;
+        p.update(&s, &skin, Vec2::ZERO, 360., 420., false, 1., 0.);
+        assert_eq!(p.eyelid, 1.);
+        assert!(parts(&s, &skin, &p).iter().all(|b| b.eyes.is_none()));
+        s.da_blink = true; s.chibi = true;
+        p.update(&s, &skin, Vec2::ZERO, 360., 420., false, 1., 0.);
+        assert_eq!(p.eyelid, 1.);
+        assert!(parts(&s, &skin, &p).iter().all(|b| b.eyes.is_none()));
+    }
+    #[test]
+    fn dance_starts_immediately_and_auto_crouches_only_when_standing() {
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        for posture in ["standing", "sitting"] { for chibi in [false,true] {
+            let mut s=Settings::default();s.posture=posture.into();s.chibi=chibi;s.da_dance=true;
+            let mut p=Pose::new(&s);
+            p.update(&s,&skin,Vec2::ZERO,360.,420.,false,0.01,0.01);
+            if posture=="standing" {assert_eq!(p.dance,1.);assert_eq!(p.crouch,1.);assert!(p.body_roll.abs()>0.001);}
+            else {assert_eq!(p.dance,0.);assert_eq!(p.crouch,0.);}
+            assert!((p.leg_roll+p.body_roll).abs()<1e-6);
+            s.da_dance=false;
+            p.update(&s,&skin,Vec2::ZERO,360.,420.,false,0.02,0.01);
+            assert_eq!(p.dance,0.);assert_eq!(p.body_roll,0.);
+        }}
+    }
+    #[test]
+    fn chibi_body_scales_uniformly_but_head_keeps_dimensions() {
+        let mut s=Settings::default();s.chibi=true;s.outer_layer=false;s.da_dance=false;
+        let skin=Skin::load(DEFAULT_SKIN).unwrap();let p=Pose::new(&s);
+        let a=parts(&s,&skin,&p);s.chibi_body_scale=150.;let b=parts(&s,&skin,&p);
+        for axis in [Vec3::X,Vec3::Y,Vec3::Z] {
+            assert!((a[0].transform.transform_vector3(axis).length()-b[0].transform.transform_vector3(axis).length()).abs()<1e-6);
+            for i in 1..6 {assert!((b[i].transform.transform_vector3(axis).length()/a[i].transform.transform_vector3(axis).length()-1.5).abs()<1e-5);}
+        }
+    }
     #[test]
     fn crouch_is_immediate() {
         let s = Settings::default();
@@ -1704,6 +2724,257 @@ mod tests {
         assert_eq!(p.crouch, 1.);
         tick(&mut p, &s, &skin, 1.01, false);
         assert_eq!(p.crouch, 0.);
+    }
+    /// 眨眼曲线必须与资源包一致：闭眼只占很短一段，随后完全睁开，
+    /// 不会长时间停在闭眼，也不会出现负值或超过 1。
+    #[test]
+    fn blink_curve_matches_the_resource_pack() {
+        let mut samples = Vec::new();
+        for i in 0..(60 * 600) {
+            let u = i as f32 / 600. * std::f32::consts::TAU * 3.;
+            let c = blink_closure(u);
+            assert!((0. ..=1.).contains(&c), "closure {c} out of range at u={u}");
+            samples.push(c);
+        }
+        let closed = samples.iter().filter(|&&c| c > 0.99).count();
+        let ratio = closed as f32 / samples.len() as f32;
+        assert!(
+            (0.01..0.05).contains(&ratio),
+            "closed-eye ratio {ratio} should be a short blink, not a stare"
+        );
+    }
+    /// 眨眼间隔来自同一个正弦叠加，因此并不固定；同时每次闭眼都很短。
+    #[test]
+    fn blink_intervals_vary_and_stay_short() {
+        let p = Pose::new(&Settings::default());
+        let mut starts = Vec::new();
+        let mut open = true;
+        let dt = 1. / 240.;
+        for i in 0..(240 * 120) {
+            let now = i as f32 * dt;
+            let lid = 1. - p.blink_at(now);
+            if open && lid > 0.5 {
+                open = false;
+                starts.push(now);
+            } else if !open && lid < 0.5 {
+                open = true;
+            }
+        }
+        assert!(starts.len() >= 8, "only {} blinks in two minutes", starts.len());
+        let gaps: Vec<f32> = starts.windows(2).map(|w| w[1] - w[0]).collect();
+        let min = gaps.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max = gaps.iter().cloned().fold(0., f32::max);
+        assert!(min >= 1.5, "blinks are too frequent: {min}s apart");
+        assert!(max - min > 1.0, "blink interval is a fixed metronome: {gaps:?}");
+        assert!(gaps.iter().all(|g| *g < 20.), "blinks are too rare: {gaps:?}");
+    }
+    /// 按 wiki「眼睛画法」造一张可眨眼的皮肤：在原版皮肤上，把眼睛素材画进
+    /// 材质包的识别格 (4,6)-(5,7)——上一行是眼皮色、下一行是眼白+瞳孔。
+    fn blinkable_skin() -> Skin {
+        use image::{Rgba, RgbaImage};
+        let base = Skin::load(DEFAULT_SKIN).unwrap().image;
+        let mut atlas = base.clone();
+        let lid = [0xd7u8, 0xa3, 0x79];
+        let white = [0xf2u8, 0xe4, 0xc9];
+        let pupil = [0x3bu8, 0x61, 0x4c];
+        // 识别格：眼睛行 y=6（眼皮色），瞳孔行 y=7（眼白 + 瞳孔）。
+        atlas.put_pixel(4, 6, Rgba([lid[0], lid[1], lid[2], 255]));
+        atlas.put_pixel(5, 6, Rgba([lid[0], lid[1], lid[2], 255]));
+        atlas.put_pixel(4, 7, Rgba([white[0], white[1], white[2], 255]));
+        atlas.put_pixel(5, 7, Rgba([pupil[0], pupil[1], pupil[2], 255]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        atlas.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let _ = RgbaImage::new(1, 1);
+        Skin::load(png.get_ref()).expect("synthetic blinkable skin must load")
+    }
+    /// 眨眼只影响头部正面的眼皮，不会改变任何骨骼的位置：睁眼与闭眼时，
+    /// 身体、四肢、键盘的变换矩阵必须完全一致，不能出现角色跳动。
+    #[test]
+    fn blink_only_touches_the_face_not_the_body() {
+        let s = Settings::default();
+        let skin = blinkable_skin();
+        assert!(skin.eyes.is_some(), "wiki-modified skin must expose its eyes");
+        let mut closed = Pose::new(&s);
+        // 找到最近的一次完全闭眼。
+        let closed_at = (0..2400)
+            .map(|i| i as f32 / 240.)
+            .find(|t| closed.blink_at(*t) > 0.99)
+            .expect("the curve must reach a fully closed frame");
+        // 身体现在跟着视线和时间轻摆，两帧必须取同一时刻才谈得上"只换眼态"；
+        // 换个相位让这一刻刚好完全睁开。
+        let mut open = Pose::new(&s);
+        open.blink_phase = (0..3600)
+            .map(|i| i as f32 / 3600. * std::f32::consts::TAU)
+            .find(|phase| blink_closure(phase + closed_at * BLINK_RATE) < 0.01)
+            .expect("some phase keeps the eyes open at that instant");
+        tick(&mut open, &s, &skin, closed_at, false);
+        tick(&mut closed, &s, &skin, closed_at, false);
+        assert!((1. - closed.eyelid) > 0.99, "{}", closed.eyelid);
+        // 睁眼程度还要乘材质包的 `eye_top.ty` 开合，所以"睁开"不一定是 1，
+        // 但必须明显大于闭眼那一帧。
+        assert!(open.eyelid >= 0.5, "{}", open.eyelid);
+        assert!(open.eyelid > closed.eyelid + 0.4, "{}", open.eyelid);
+        let a = parts(&s, &skin, &open);
+        let b = parts(&s, &skin, &closed);
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert_eq!(x.size, y.size);
+            assert!(x.transform.abs_diff_eq(y.transform, 1e-6));
+            assert_eq!(x.eyes.is_some(), y.eyes.is_some());
+        }
+    }
+    /// 材质包的契约：没有识别格的眼睛素材就不眨眼。原版皮肤应当返回 None，
+    /// 在识别格里画过眼睛之后才返回 Some。
+    #[test]
+    fn skin_without_eye_cells_never_blinks() {
+        let plain = Skin::load(DEFAULT_SKIN).unwrap();
+        assert!(
+            plain.eyes.is_none(),
+            "an unmodified skin has no eye cells and must not blink"
+        );
+        assert!(blinkable_skin().eyes.is_some());
+    }
+    /// 真正画出像素：闭眼时眼睛区域的画面必须与睁眼不同，且颜色来自
+    /// 眼睛上方那一行（眼皮色），松开后恢复原样。
+    #[test]
+    fn closed_eyes_change_the_face_pixels_and_then_restore() {
+        let s = Settings::default();
+        let skin = blinkable_skin();
+        let eyes = skin.eyes.unwrap();
+        let mut p = Pose::new(&s);
+        let phase = p.blink_phase;
+        let mut render = |now: f32| {
+            p.update(&s, &skin, Vec2::ZERO, 360., 420., false, now, 0.);
+            let mut f = Frame::new(360, 420);
+            f.draw(&s, &skin, &p);
+            (f.rgba(), p.eyelid)
+        };
+        let (open, _) = render(0.);
+        let t = (0..2400)
+            .map(|i| i as f32 / 240.)
+            .find(|t| {
+                let u = phase + *t * BLINK_RATE;
+                blink_closure(u) > 0.99
+            })
+            .expect("no fully closed frame found");
+        let (shut, shut_lid) = render(t);
+        assert!(shut_lid < 0.01, "not closed at {t}: {}", shut_lid);
+        let diff = open
+            .chunks_exact(4)
+            .zip(shut.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(diff > 30, "blink changed only {diff} pixels");
+        // 眼睛上方那一行的颜色（资源包里的眼皮色）必须真的出现在画面中。
+        let lid = skin
+            .image
+            .get_pixel(
+                (8 + eyes.left.x0) as u32,
+                (8 + eyes.left.y0.saturating_sub(1)) as u32,
+            )
+            .0;
+        let lit = lid[0] as f32 + lid[1] as f32 + lid[2] as f32;
+        let found = shut
+            .chunks_exact(4)
+            .filter(|c| c[3] > 200)
+            .any(|c| {
+                let d = (c[0] as f32 - lid[0] as f32).abs()
+                    + (c[1] as f32 - lid[1] as f32).abs()
+                    + (c[2] as f32 - lid[2] as f32).abs();
+                d < 40. && lit > 0.
+            });
+        assert!(found, "the eyelid colour never reached the frame");
+        // 眨眼之后必须回到完全睁开；腰部轻摆与瞳孔扫视一直在动，
+        // 所以这里核对眼睛本身，而不是整帧逐像素相等。
+        let (_, again_lid) = render(t + 12.);
+        assert!(again_lid > 0.99, "the face must return to its open state");
+    }
+    /// 闭眼时眼睛区域要被眼皮色整片盖住，不能残留瞳孔或眼白；
+    /// 且眼皮取的是眼睛上方那一行，与脸部其余像素同色系，不会出现突兀色块。
+    #[test]
+    fn eyelid_covers_the_eyes_with_the_row_above_them() {
+        let s = Settings::default();
+        let skin = blinkable_skin();
+        assert!(skin.eyes.is_some(), "the blinkable skin must expose its eyes");
+        let mut p = Pose::new(&s);
+        let phase = p.blink_phase;
+        let mut render = |now: f32| {
+            p.update(&s, &skin, Vec2::ZERO, 360., 420., false, now, 0.);
+            let mut f = Frame::new(360, 420);
+            f.draw(&s, &skin, &p);
+            f.rgba()
+        };
+        let open_time = (0..2400).map(|i| i as f32 / 240.)
+            .find(|t| blink_closure(phase + *t * BLINK_RATE) < 0.001).unwrap();
+        let open = render(open_time);
+        let t = (0..2400)
+            .map(|i| i as f32 / 240.)
+            .find(|t| blink_closure(phase + *t * BLINK_RATE) > 0.99)
+            .expect("no fully closed frame");
+        let shut = render(t);
+        // 眼皮只会画在头部正面：在「闭眼帧里新增、且位于头部正面矩形内」的像素中
+        // 取出现最多的颜色，它必须等于识别格 (4,6) 的像素经正面光照后的颜色。
+        let mut tally: Vec<([u8; 3], usize)> = Vec::new();
+        for i in 0..360 * 420 {
+            if open[i * 4..i * 4 + 4] != shut[i * 4..i * 4 + 4] && shut[i * 4 + 3] > 200 {
+                let c = [shut[i * 4], shut[i * 4 + 1], shut[i * 4 + 2]];
+                match tally
+                    .iter_mut()
+                    .find(|(k, _)| (0..3).all(|j| k[j].abs_diff(c[j]) <= 6))
+                {
+                    Some(e) => e.1 += 1,
+                    None => tally.push((c, 1)),
+                }
+            }
+        }
+        tally.sort_by_key(|(_, n)| *n);
+        // 渲染时正面（face 4）会乘上光照系数，比较时用同一套查色表。
+        let k = skin.image.width() / 64;
+        let atlas = |x: u32, y: u32| {
+            let i = (((y * k + k / 2) * skin.image.width()) + (x * k + k / 2)) as usize;
+            skin.colors[i][4]
+        };
+        let lid = atlas(4, 6);
+        // 新增像素里必须出现「眼皮色」：眼皮盖住眼睛时，原来露出的眼睛被
+        // 识别格里的眼皮像素取代，正是这块贴图在起作用。
+        let find = |c: [u8; 3]| {
+            tally
+                .iter()
+                .find(|(k2, _)| (0..3).all(|j| k2[j].abs_diff(c[j]) <= 10))
+                .copied()
+        };
+        let lid_lit = find(lid).map(|(_, n)| n).unwrap_or(0);
+        assert!(
+            lid_lit > 15,
+            "eyelid colour {lid:?} missing from the blink patch; saw {tally:?}"
+        );
+    }
+    /// 眨眼完全由时间轴决定，不存在累加状态：同一次眨眼在不同帧率下
+    /// 求值结果一致，重复调用 update 也不会叠加或漂移。
+    #[test]
+    fn blink_is_framerate_independent() {
+        let skin = blinkable_skin();
+        let s = Settings::default();
+        let base = Pose::new(&s);
+        let phase = base.blink_phase;
+        for &target in &[1.0f32, 3.2, 7.5] {
+            let mut a = Pose::new(&s);
+            a.blink_phase = phase;
+            let mut b = Pose::new(&s);
+            b.blink_phase = phase;
+            let mut t = 0.;
+            while t < target {
+                t = (t + 1. / 240.).min(target);
+                a.update(&s, &skin, Vec2::ZERO, 360., 420., false, t, 1. / 240.);
+            }
+            b.update(&s, &skin, Vec2::ZERO, 360., 420., false, target, 1. / 60.);
+            assert!(
+                (a.eyelid - b.eyelid).abs() < 1e-6,
+                "eyelid drifted with frame rate at {target}: {} vs {}",
+                a.eyelid,
+                b.eyelid
+            );
+        }
     }
     #[test]
     fn held_key_keeps_hand_but_squash_recovers() {
@@ -1954,5 +3225,34 @@ mod tests {
         assert!(Skin::load(b"bad").is_err());
         let skin = Skin::load(DEFAULT_SKIN).unwrap();
         assert!(!skin.legacy);
+    }
+    /// 临时预览：把 Q 版站立/坐姿各渲染一帧存成 PNG，供人工核对贴图方向与几何。
+    #[test]
+    #[ignore]
+    fn chibi_preview_png() {
+        use image::RgbaImage;
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        let mut s = Settings::default();
+        s.chibi = true;
+        s.track_mouse = false;
+        let mut p = Pose::new(&s);
+        for i in 0..60 {
+            tick(&mut p, &s, &skin, i as f32 / 60., false);
+        }
+        let parts = parts_with_cape(&s, &skin, &p, None);
+        assert_eq!(parts.len(), 12, "Q 版应生成 12 个 cuboid");
+        let mut frame = Frame::new(450, 525);
+        frame.draw_ext(&s, &skin, None, &p);
+        let img = RgbaImage::from_raw(450, 525, frame.rgba()).unwrap();
+        img.save("D:/Minecraft桌宠/work/chibi_stand.png").unwrap();
+        s.posture = "sitting".into();
+        let mut p2 = Pose::new(&s);
+        for i in 0..120 {
+            tick(&mut p2, &s, &skin, i as f32 / 120., false);
+        }
+        let mut f2 = Frame::new(450, 525);
+        f2.draw_ext(&s, &skin, None, &p2);
+        let img2 = RgbaImage::from_raw(450, 525, f2.rgba()).unwrap();
+        img2.save("D:/Minecraft桌宠/work/chibi_sit.png").unwrap();
     }
 }

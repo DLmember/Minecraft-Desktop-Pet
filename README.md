@@ -8,9 +8,9 @@
 
 ## 下载
 
-前往 [最新版本](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest)，下载 **Minecraft-Desktop-Pet-2.4.12-Windows.zip**，解压后双击 **Minecraft桌宠.exe**。
+前往 [最新版本](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest)，下载 **Minecraft-Desktop-Pet-2.5-Windows.zip**，解压后双击 **Minecraft桌宠.exe**。
 
-支持 **Windows 10/11 x64 、 macOS 12+**。便携运行，不需要安装 Electron、Java 或额外运行环境。本次公开发布提供 Windows&macOS 版本。
+支持 **Windows 10/11 x64 、 macOS 12+**。便携运行，不需要安装 Electron、Java 或额外运行环境。v2.5 提供 Windows 版；macOS 请使用 v2.4.12。
 
 **首次启动默认开启完全鼠标穿透。** 请双击任务栏托盘图标打开控制台；想拖动桌宠时先取消“完全鼠标穿透”。图标可能收在任务栏的隐藏图标区域。
 
@@ -26,13 +26,19 @@
 - 可选随 Windows 登录自动启动，通过控制台或右键菜单开启、关闭。
 - 用正版 ID 获取皮肤时，会一并取下账号当前佩戴的披风并显示在背后。穿透时鼠标移到桌宠上，会在约 0.15 秒内淡至 25% 不透明度。
 - 可选 **hyp快速队伍聊天**：键盘输入半角 `#` 自动替换成 `/p chat `，不自动发送。
-- 30 / 60 / 90 / 120 / 144 / 165 / 240 FPS 七档，静止时停止绘制。设置和导入的皮肤自动保存。
+- 30 / 60 / 90 / 120 / 144 / 165 / 240 FPS 七档，没有持续动画时静止停止绘制。设置和导入的皮肤自动保存。
+
+## v2.5 新增
+
+Q 版小人、可选 DA 眨眼与扭腰、四种主手映射、喂食苹果、糖果色粗体浮字、音乐音符、可调戏、持续呼吸动画、系统深色模式及手动检查更新。
+
+特别感谢 [zsyghxf](https://github.com/zsyghxf) 的 [PR #5](https://github.com/DLmember/Minecraft-Desktop-Pet/pull/5)，提供眨眼、Shift 动画与 Q 版模式的基础实现；DLmember 完成行为调整、冲突修复、界面整理及新增互动。逐项归属与完整变化见 [v2.5 发布说明](发布说明-v2.5.md)。
 
 完整操作见 [使用说明](使用说明.md)，版本变化见 [更新记录](CHANGELOG.md)。
 
 ## 隐私与网络
 
-日常互动在本机处理，正式运行不记录输入文本、不上传按键。仅在主动获取正版皮肤时连接 Mojang 的账号资料及纹理服务，不需要提供账号密码。
+日常互动在本机处理，正式运行不记录输入文本、不上传按键。主动获取正版皮肤时连接 Mojang 的账号资料及纹理服务；点击“检查更新”时连接 GitHub。无需账号密码。开启音乐音符时仅在本机查询音频会话，不录音、不上传音频。
 
 ## 从源码构建（macOS）
 
@@ -54,7 +60,7 @@
 Windows 原生 Rust + Win32 实现，使用 CPU 绘制透明方块模型，不包含浏览器运行时。
 
 1. 安装 Rust 的 `stable-x86_64-pc-windows-gnu` 工具链。
-2. 安装 x86_64 UCRT 版 [LLVM-MinGW](https://github.com/mstorsjo/llvm-mingw/releases)，其中需要 `windres.exe` 和 `x86_64-w64-mingw32-gcc.exe`。
+2. 安装 x86_64 UCRT 版 [LLVM-MinGW](https://github.com/mstorsjo/llvm-mingw/releases)，其中需要 `clang++.exe`、`windres.exe` 和 `x86_64-w64-mingw32-gcc.exe`。
 3. 建议将项目放在不含中文或空格的路径，运行：
 
 ```powershell

@@ -1,0 +1,10 @@
+{
+  "version": "Minecraft Java Edition 1.21.4",
+  "url": "https://raw.githubusercontent.com/InventivetalentDev/minecraft-assets/1.21.4/assets/minecraft/textures/item/apple.png",
+  "retrievedFrom": "https://cdn.jsdelivr.net/gh/InventivetalentDev/minecraft-assets@1.21.4/assets/minecraft/textures/item/apple.png",
+  "sha256": "9b1aef1aaa41229dbe2bc97657b8650527b14cc20a6236e823f1682c4d44c5a2",
+  "opaqueTexels": 114,
+  "consumeSeconds": 1.6,
+  "consumeTicks": 32,
+  "ticksPerSecond": 20
+}

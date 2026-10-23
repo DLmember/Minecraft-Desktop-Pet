@@ -1,6 +1,6 @@
 use super::*;
 use windows_sys::Win32::UI::Controls::Dialogs::*;
-const SLIDER_IDS: [i32; 9] = [200, 201, 202, 203, 204, 205, 206, 207, 211];
+const SLIDER_IDS: [i32; 10] = [200, 201, 202, 203, 204, 205, 206, 207, 211, 212];
 const SS_PATHELLIPSIS: u32 = 0x8000;
 const SS_RIGHT: u32 = 2;
 const TBM_GETPOS: u32 = WM_USER;
@@ -45,6 +45,7 @@ impl App {
             SetForegroundWindow(self.panel);
             return;
         }
+        self.apply_theme();
         let class = wide("MinecraftDesktopPetSettings");
         let mut wc: WNDCLASSEXW = std::mem::zeroed();
         wc.cbSize = std::mem::size_of::<WNDCLASSEXW>() as u32;
@@ -64,7 +65,7 @@ impl App {
             left: 0,
             top: 0,
             right: (760. * d) as i32,
-            bottom: (794. * d) as i32,
+            bottom: (786. * d) as i32,
         };
         AdjustWindowRectExForDpi(
             &mut rect,
@@ -123,122 +124,70 @@ impl App {
             );
         }
         self.building_page = 0;
-        self.control("STATIC", "皮肤", 0, 24, 82, 70, 24, 0);
-        self.control("STATIC", "", SS_PATHELLIPSIS, 100, 82, 350, 24, 300);
-        self.control(
-            "BUTTON",
-            "导入皮肤…",
-            BS_PUSHBUTTON as u32 | WS_TABSTOP,
-            490,
-            76,
-            120,
-            32,
-            101,
-        );
-        self.control(
-            "BUTTON",
-            "恢复内置",
-            BS_PUSHBUTTON as u32 | WS_TABSTOP,
-            624,
-            76,
-            110,
-            32,
-            102,
-        );
-        self.control("STATIC", "正版 ID", 0, 24, 132, 90, 24, 331);
-        let input = self.control(
-            "EDIT",
-            &self.online_id.clone(),
-            WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32,
-            125,
-            126,
-            350,
-            30,
-            330,
-        );
+        // General page: uniform 36px row pitch and aligned labels/inputs.
+        self.control("STATIC", "皮肤", 0, 24, 82, 110, 24, 0);
+        self.control("STATIC", "", SS_PATHELLIPSIS, 150, 82, 325, 24, 300);
+        self.control("BUTTON", "导入皮肤…", BS_PUSHBUTTON as u32 | WS_TABSTOP, 490, 76, 120, 30, 101);
+        self.control("BUTTON", "恢复内置", BS_PUSHBUTTON as u32 | WS_TABSTOP, 624, 76, 110, 30, 102);
+        self.control("STATIC", "正版 ID", 0, 24, 118, 110, 24, 331);
+        let input = self.control("EDIT", &self.online_id.clone(), WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32, 150, 112, 325, 30, 330);
         SendMessageW(input, EM_SETLIMITTEXT, 36, 0);
-        SendMessageW(
-            input,
-            0x1501,
-            0,
-            wide("Java 版用户名或 UUID").as_ptr() as isize,
-        );
-        self.control(
-            "BUTTON",
-            "获取皮肤",
-            BS_PUSHBUTTON as u32 | WS_TABSTOP,
-            490,
-            125,
-            120,
-            32,
-            104,
-        );
-        self.control("STATIC", "无需登录", 0, 624, 132, 110, 24, 332);
-        self.control(
-            "STATIC",
-            &self.online_notice.clone(),
-            0,
-            125,
-            163,
-            609,
-            24,
-            333,
-        );
-        self.control("STATIC", "手臂", 0, 24, 200, 65, 24, 0);
-        self.radio("经典（4 px）", 100, 196, 150, 114);
-        self.radio("纤细（3 px）", 260, 196, 150, 115);
-        self.check("显示皮肤外层", 490, 196, 220, 124);
-        self.control("STATIC", "姿势", 0, 24, 244, 65, 24, 0);
-        self.radio("站立", 100, 240, 100, 110);
-        self.radio("坐下", 210, 240, 100, 111);
-        self.radio("自定义", 320, 240, 130, 116);
-        self.control("STATIC", "站立时按住 Shift 潜行", 0, 490, 244, 244, 24, 0);
-        self.control("STATIC", "敲字", 0, 24, 288, 65, 24, 0);
-        self.radio("精准按键", 100, 284, 150, 112);
-        self.radio("双手交替", 260, 284, 150, 113);
-        self.control(
-            "STATIC",
-            "坐姿下生效；主键区和 F 功能键按位置敲击。",
-            0,
-            100,
-            322,
-            634,
-            24,
-            0,
-        );
-        self.control("STATIC", "主手", 0, 24, 366, 65, 24, 0);
-        self.radio("右手挥动", 100, 362, 150, 118);
-        self.radio("左手挥动", 260, 362, 150, 119);
-        self.control("STATIC", "按角色自身的左右区分", 0, 490, 366, 244, 24, 0);
-        self.control("STATIC", "桌面", 0, 24, 414, 65, 24, 0);
-        self.check("保持置顶", 100, 410, 150, 120);
-        self.check("完全鼠标穿透", 300, 410, 220, 121);
-        self.control(
-            "BUTTON",
-            "找回桌宠",
-            BS_PUSHBUTTON as u32 | WS_TABSTOP,
-            594,
-            408,
-            140,
-            32,
-            130,
-        );
-        self.check("全局键盘互动", 100, 452, 210, 122);
-        self.check("hyp快速队伍聊天", 320, 452, 220, 137);
-        self.control("STATIC", "# → /p chat", 0, 555, 456, 179, 24, 0);
-        self.control("STATIC", "大小", 0, 24, 502, 65, 24, 0);
-        self.slider(200, 100, 498, 540, 65, 180);
-        self.control("STATIC", "", SS_RIGHT, 650, 502, 84, 24, 310);
-        self.control("STATIC", "帧率", 0, 24, 550, 65, 24, 0);
-        self.slider(207, 100, 546, 540, 0, 6);
-        self.control("STATIC", "", SS_RIGHT, 650, 550, 84, 24, 607);
-        self.control("STATIC", "打字压低", 0, 24, 588, 120, 24, 0);
-        self.slider(211, 150, 584, 490, 0, 30);
-        self.control("STATIC", "", SS_RIGHT, 650, 588, 84, 24, 611);
-        self.check("显示正版披风", 24, 626, 210, 138);
-        self.control("STATIC", "仅在账号有披风时出现", 0, 250, 628, 260, 24, 0);
-        self.control("STATIC", "开机自启", 0, 24, 664, 90, 24, 0);
-        self.check("随 Windows 登录自动启动", 125, 660, 250, 160);
+        SendMessageW(input, 0x1501, 0, wide("Java 版用户名或 UUID").as_ptr() as isize);
+        self.control("BUTTON", "获取皮肤", BS_PUSHBUTTON as u32 | WS_TABSTOP, 490, 112, 120, 30, 104);
+        self.control("STATIC", "无需登录", 0, 624, 118, 110, 24, 332);
+        self.control("STATIC", &self.online_notice.clone(), 0, 150, 154, 584, 24, 333);
+        self.control("STATIC", "手臂", 0, 24, 178, 110, 24, 0);
+        self.radio("经典（4 px）", 150, 174, 155, 114);
+        self.radio("纤细（3 px）", 330, 174, 155, 115);
+        self.control("STATIC", "外观", 0, 24, 210, 110, 24, 0);
+        self.check("显示皮肤外层", 150, 206, 220, 124);
+        self.check("Q 版小人", 490, 206, 220, 139);
+        self.control("STATIC", "姿势", 0, 24, 242, 110, 24, 0);
+        self.radio("站立", 150, 238, 100, 110);
+        self.radio("坐下", 260, 238, 100, 111);
+        self.radio("自定义", 370, 238, 115, 116);
+        self.control("STATIC", "站立时按住 Shift 潜行", 0, 490, 242, 244, 24, 0);
+        self.control("STATIC", "敲字", 0, 24, 274, 110, 24, 0);
+        self.radio("精准按键", 150, 270, 155, 112);
+        self.radio("双手交替", 330, 270, 155, 113);
+        self.control("STATIC", "坐姿下响应键盘", 0, 490, 274, 244, 24, 0);
+        self.control("STATIC", "主手", 0, 24, 306, 110, 24, 0);
+        self.radio("右手挥动", 150, 302, 140, 118);
+        self.radio("左手挥动", 295, 302, 140, 119);
+        self.radio("实际映射", 440, 302, 140, 165);
+        self.radio("反向映射", 585, 302, 149, 166);
+        self.control("STATIC", "桌面", 0, 24, 338, 110, 24, 0);
+        self.check("保持置顶", 150, 334, 150, 120);
+        self.check("完全鼠标穿透", 330, 334, 220, 121);
+        self.control("BUTTON", "找回桌宠", BS_PUSHBUTTON as u32 | WS_TABSTOP, 594, 332, 140, 30, 130);
+        self.control("STATIC", "键盘", 0, 24, 370, 110, 24, 0);
+        self.check("全局键盘互动", 150, 366, 170, 122);
+        self.check("hyp快速队伍聊天", 330, 366, 220, 137);
+        self.control("STATIC", "# → /p chat", 0, 555, 370, 179, 24, 0);
+        self.control("STATIC", "动画", 0, 24, 402, 110, 24, 0);
+        self.check("DA眨眼（需修改过皮肤）", 150, 398, 298, 163);
+        self.check("DA扭腰", 450, 398, 120, 164);
+        self.check("敲字浮现字", 580, 398, 154, 167);
+        self.control("STATIC", "大小", 0, 24, 466, 110, 24, 0);
+        self.slider(200, 150, 462, 490, 65, 180);
+        self.control("STATIC", "", SS_RIGHT, 650, 466, 84, 24, 310);
+        self.control("STATIC", "帧率", 0, 24, 498, 110, 24, 0);
+        self.slider(207, 150, 494, 490, 0, 6);
+        self.control("STATIC", "", SS_RIGHT, 650, 498, 84, 24, 607);
+        self.control("STATIC", "打字压低", 0, 24, 530, 120, 24, 0);
+        self.slider(211, 150, 526, 490, 0, 30);
+        self.control("STATIC", "", SS_RIGHT, 650, 530, 84, 24, 611);
+        self.control("STATIC", "Q版身体大小", 0, 24, 562, 125, 24, 0);
+        self.slider(212, 150, 558, 490, 50, 180);
+        self.control("STATIC", "", SS_RIGHT, 650, 562, 84, 24, 612);
+        self.control("STATIC", "其他", 0, 24, 594, 110, 24, 0);
+        self.check("显示正版披风", 150, 590, 220, 138);
+        self.check("随 Windows 登录自动启动", 430, 590, 304, 160);
+        self.control("STATIC", "音乐", 0, 24, 626, 110, 24, 0);
+        self.check("播放音乐时冒音符", 150, 622, 260, 171);
+        self.check("可调戏", 150, 430, 150, 172);
+        self.check("呼吸动画", 330, 430, 155, 173);
+        self.control("STATIC", "开启后持续轻微呼吸", 0, 490, 434, 244, 24, 0);
         self.building_page = 1;
         self.control("STATIC", "整体角度偏移", 0, 24, 78, 280, 24, 0);
         self.control(
@@ -355,13 +304,15 @@ impl App {
         );
 
         self.building_page = 3;
-        self.status = self.control("STATIC", "已保存", 0, 24, 702, 465, 24, 320);
+        self.control("BUTTON", "检查更新", BS_PUSHBUTTON as u32 | WS_TABSTOP, 24, 690, 120, 30, 170);
+        self.control("BUTTON", "GitHub", BS_PUSHBUTTON as u32 | WS_TABSTOP, 614, 690, 120, 30, 169);
+        self.status = self.control("STATIC", "已保存", 0, 24, 738, 465, 24, 320);
         self.control(
             "STATIC",
             "由GPT 6 Astra制作",
             SS_RIGHT,
             490,
-            702,
+            738,
             244,
             24,
             0,
@@ -371,22 +322,12 @@ impl App {
             "拖动摆放 · 右键菜单 · 双击设置；关闭此窗口不会退出桌宠。",
             0,
             24,
-            728,
+            764,
             710,
             22,
             0,
         );
-        self.control(
-            "BUTTON",
-            "GitHub 仓库",
-            BS_PUSHBUTTON as u32 | WS_TABSTOP,
-            594,
-            756,
-            140,
-            30,
-            170,
-        );
-        self.github_icon();
+        self.apply_theme();
         self.show_page(self.panel_page);
         self.refresh_panel();
         DragAcceptFiles(self.panel, 1);
@@ -438,7 +379,7 @@ impl App {
             left: 0,
             top: 0,
             right: (760. * d) as i32,
-            bottom: (794. * d) as i32,
+            bottom: (786. * d) as i32,
         };
         AdjustWindowRectExForDpi(
             &mut rect,
@@ -486,14 +427,13 @@ impl App {
         }
         DeleteObject(self.font);
         self.font = font;
-        self.github_icon();
         InvalidateRect(hwnd, null(), 1);
     }
-    unsafe fn github_icon(&mut self) {
+    pub(super) unsafe fn github_icon(&mut self) {
         let size = (18. * self.panel_scale).round() as i32;
         let icon = LoadImageW(
             GetModuleHandleW(null()),
-            2usize as *const u16,
+            (if self.panel_dark {3usize}else{2usize}) as *const u16,
             IMAGE_ICON,
             size,
             size,
@@ -521,7 +461,7 @@ impl App {
             uAlign: BUTTON_IMAGELIST_ALIGN_LEFT,
         };
         SendMessageW(
-            self.ctrl(170),
+            self.ctrl(169),
             BCM_SETIMAGELIST,
             0,
             &data as *const _ as isize,
@@ -618,6 +558,15 @@ impl App {
             (123, self.settings.track_mouse),
             (124, self.settings.outer_layer),
             (138, self.settings.show_cape),
+            (139, self.settings.chibi),
+            (163, self.settings.da_blink && !self.settings.chibi),
+            (164, self.settings.da_dance),
+            (165, self.settings.main_hand == "mapped"),
+            (166, self.settings.main_hand == "reverse"),
+            (167, self.settings.typing_letters),
+            (171, self.settings.music_notes),
+            (172, self.settings.tease_enabled),
+            (173, self.settings.breathing_animation),
             (160, self.settings.autostart),
         ] {
             SendMessageW(
@@ -631,6 +580,8 @@ impl App {
                 0,
             );
         }
+        EnableWindow(self.ctrl(163), if self.settings.chibi { 0 } else { 1 });
+        EnableWindow(self.ctrl(212), if self.settings.chibi { 1 } else { 0 });
         SetWindowTextW(self.ctrl(300), wide(&self.settings.skin_name).as_ptr());
         let values = [
             (self.settings.scale * 100.).round() as i32,
@@ -645,11 +596,12 @@ impl App {
                 .position(|&fps| fps == self.settings.fps)
                 .unwrap_or(1) as i32,
             self.settings.typing_squash.round() as i32,
+            self.settings.chibi_body_scale.round() as i32,
         ];
         for (i, &id) in SLIDER_IDS.iter().enumerate() {
             SendMessageW(self.ctrl(id), TBM_SETPOS, 1, values[i] as isize);
             let text = match id {
-                200 | 201 | 204 | 211 => format!("{}%", values[i]),
+                200 | 201 | 204 | 211 | 212 => format!("{}%", values[i]),
                 202 | 205 => format!("±{}°", values[i] as f32 / 2.),
                 207 => format!("{} FPS", self.settings.fps),
                 _ => format!("{:+}°", values[i]),
@@ -697,6 +649,7 @@ impl App {
             }
             208..=210 => self.settings.model_rotation[(id - 208) as usize] = value,
             211 => self.settings.typing_squash = value,
+            212 => self.settings.chibi_body_scale = value,
             220..=237 => {
                 self.settings
                     .active_custom_pose_mut()
@@ -713,7 +666,7 @@ impl App {
         self.settings.clean();
         self.wake();
         let text = match id {
-            200 | 201 | 204 | 211 => format!("{}%", value as i32),
+            200 | 201 | 204 | 211 | 212 => format!("{}%", value as i32),
             202 | 205 => format!("±{}°", value / 2.),
             207 => format!("{} FPS", self.settings.fps),
             _ => format!("{:+}°", value as i32),
@@ -809,10 +762,8 @@ impl App {
                 }
                 .into();
                 self.changed();
-                self.online_notice = format!(
-                    "已获取 {} 的皮肤{cape_notice}，已自动识别手臂类型。",
-                    result.name
-                );
+                self.online_notice =
+                    format!("已获取 {} 的皮肤{cape_notice}，已自动识别手臂类型。", result.name);
             }
             Err(e) => self.online_notice = e,
         }
@@ -847,6 +798,7 @@ pub(super) unsafe fn panel_proc(
     w: WPARAM,
     l: LPARAM,
 ) -> LRESULT {
+    if let Some(result)=a.theme_message(hwnd,msg,w,l) {return result;}
     match msg {
         WM_COMMAND => {
             let id = (w & 0xffff) as u32;
@@ -887,6 +839,11 @@ pub(super) unsafe fn panel_proc(
         WM_CLOSE => {
             a.save();
             DestroyWindow(hwnd);
+            // 关闭控制台后如果托盘图标此前没加上，再重试一轮。
+            if !a.tray_ok {
+                a.tray_retry = 0;
+                a.tray_retry_at = 0.;
+            }
             0
         }
         WM_DESTROY => {
@@ -917,21 +874,6 @@ pub(super) unsafe fn diagnostic_init(a: &mut App) {
     diagnostic_snapshot(a);
 }
 pub(super) unsafe fn diagnostic_snapshot(a: &mut App) {
-    let mut github_icon: BUTTON_IMAGELIST = std::mem::zeroed();
-    let github_icon_attached = SendMessageW(
-        a.ctrl(170),
-        BCM_GETIMAGELIST,
-        0,
-        &mut github_icon as *mut _ as isize,
-    ) != 0
-        && github_icon.himl != 0;
-    let _ = config::atomic(
-        &a.store.dir.join("github-link.json"),
-        serde_json::to_vec(&serde_json::json!({"iconAttached": github_icon_attached,
-            "url": "https://github.com/DLmember/Minecraft-Desktop-Pet"}))
-        .unwrap()
-        .as_slice(),
-    );
     let _ = config::atomic(
         &a.store.dir.join("input-trace.json"),
         serde_json::to_string_pretty(&a.input_trace)
@@ -949,7 +891,7 @@ pub(super) unsafe fn diagnostic_snapshot(a: &mut App) {
         .iter()
         .map(|(id, h)| serde_json::json!({"id":id,"hwnd":*h as usize}))
         .collect();
-    let data = serde_json::json!({"pid":std::process::id(),"pet":a.hwnd as usize,"panel":a.panel as usize,"controls":controls,"settings":a.settings,"page":a.panel_page,"renderCount":a.render_count,"rasterUs":a.raster_us,"presentUs":a.present_us,"dpi":a.dpi,"head":{"yaw":a.pose.yaw,"pitch":a.pose.pitch,"local":a.pose.head_rotation.to_array()},"sit":a.pose.sit,"crouch":a.pose.crouch,"arms":a.pose.arms.map(|q|q.to_array()),"hook":!a.hook.is_null(),"mouseHook":!a.mouse_hook.is_null(),"heldKeys":a.pose.held_codes(),"squash":a.pose.squash,"swingProgress":a.pose.swing_progress,"bodyYaw":a.pose.body_yaw,"onlinePending":a.download.is_some(),"onlineNotice":a.online_notice,"bounds":a.frame.bounds,"position":[a.pos.x,a.pos.y],"size":[a.width,a.height]});
+    let data = serde_json::json!({"pid":std::process::id(),"pet":a.hwnd as usize,"panel":a.panel as usize,"controls":controls,"settings":a.settings,"page":a.panel_page,"renderCount":a.render_count,"musicPlaying":a.pose.music_playing,"interaction":a.pose.interaction_state(),"darkMode":a.panel_dark,"effects":a.pose.effect_counts(),"rasterUs":a.raster_us,"presentUs":a.present_us,"tickGapMaxUs":a.tick_gap_max_us,"tickGapAvgUs":a.tick_gap_sum_us/a.tick_gap_count.max(1),"clicks":a.click_count,"dpi":a.dpi,"head":{"yaw":a.pose.yaw,"pitch":a.pose.pitch,"local":a.pose.head_rotation.to_array()},"sit":a.pose.sit,"crouch":a.pose.crouch,"arms":a.pose.arms.map(|q|q.to_array()),"hook":!a.hook.is_null(),"clickPolling":true,"trayOk":a.tray_ok,"trayError":a.tray_error,"heldKeys":a.pose.held_codes(),"squash":a.pose.squash,"swingProgress":a.pose.swing_progress,"bodyYaw":a.pose.body_yaw,"onlinePending":a.download.is_some(),"onlineNotice":a.online_notice,"bounds":a.frame.bounds,"position":[a.pos.x,a.pos.y],"size":[a.width,a.height]});
     let _ = config::atomic(
         &a.store.dir.join("diagnostic.json"),
         serde_json::to_string_pretty(&data).unwrap().as_bytes(),

@@ -6,6 +6,9 @@ mod keyboard;
 mod online;
 mod render;
 mod ui;
+mod updates;
+mod music;
+mod theme;
 mod window_order;
 use config::{Position, Settings, Store};
 use glam::Vec2;
@@ -23,7 +26,6 @@ use windows_sys::Win32::{
 };
 const TRAY_MSG: u32 = WM_APP + 1;
 const KEY_MSG: u32 = WM_APP + 2;
-const CLICK_MSG: u32 = WM_APP + 3;
 const SHOW_MSG: u32 = WM_APP + 10;
 const SNAPSHOT_MSG: u32 = WM_APP + 11;
 static mut APP: *mut App = null_mut();
@@ -32,7 +34,7 @@ static mut PET_HWND: HWND = null_mut();
 static mut TEST_INPUT_ONLY: bool = false;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn product_title() -> String {
-    format!("Minecraft桌宠 v{VERSION}")
+    format!("Minecraft桌宠 · v{}", VERSION.strip_suffix(".0").unwrap_or(VERSION))
 }
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -83,6 +85,16 @@ impl Surface {
     }
     unsafe fn update(&mut self, hwnd: HWND, frame: &Frame, pos: POINT, opacity: u8) {
         // Match the previous renderer's 1.25 DPR cap and nearest pixel sampling.
+        if self.w as usize == frame.width && self.h as usize == frame.height {
+            // Same size as the DIB: one block copy instead of ~150k per-pixel moves.
+            std::ptr::copy_nonoverlapping(
+                frame.pixels.as_ptr(),
+                self.bits,
+                frame.pixels.len(),
+            );
+            self.present(hwnd, pos, opacity);
+            return;
+        }
         if self.source_width != frame.width {
             self.source_columns = (0..self.w as usize)
                 .map(|x| x * frame.width / self.w as usize)
@@ -162,13 +174,11 @@ pub struct App {
     hwnd: HWND,
     panel: HWND,
     hook: HHOOK,
-    mouse_hook: HHOOK,
     download: Option<std::sync::mpsc::Receiver<Result<online::Download, String>>>,
     online_id: String,
     online_notice: String,
     icon: HICON,
     font: HFONT,
-    github_images: HIMAGELIST,
     controls: Vec<(i32, HWND)>,
     status: HWND,
     pos: POINT,
@@ -195,10 +205,25 @@ pub struct App {
     render_count: u64,
     raster_us: u64,
     present_us: u64,
+    tick_last: f64,
+    tick_gap_max_us: u64,
+    tick_gap_sum_us: u64,
+    tick_gap_count: u64,
+    click_count: u64,
+    mouse_buttons: [bool; 5],
+    tray_ok: bool,
+    tray_error: u32,
+    tray_retry: u8,
+    tray_retry_at: f64,
     last_draw: f64,
     next_draw: f64,
     next_topmost_check: f64,
     topmost_foreground: HWND,
+    music: music::Monitor,
+    panel_dark: bool,
+    theme_override: Option<bool>,
+    github_images: HIMAGELIST,
+    update_check: Option<std::sync::mpsc::Receiver<Result<String,String>>>,
     diagnostic: bool,
     input_trace: Vec<serde_json::Value>,
 }
@@ -228,13 +253,11 @@ impl App {
             hwnd: null_mut(),
             panel: null_mut(),
             hook: null_mut(),
-            mouse_hook: null_mut(),
             download: None,
             online_id: String::new(),
             online_notice: String::new(),
             icon: null_mut(),
             font: null_mut(),
-            github_images: 0,
             controls: Vec::new(),
             status: null_mut(),
             pos: POINT { x: 0, y: 0 },
@@ -261,10 +284,25 @@ impl App {
             render_count: 0,
             raster_us: 0,
             present_us: 0,
+            tick_last: 0.,
+            tick_gap_max_us: 0,
+            tick_gap_sum_us: 0,
+            tick_gap_count: 0,
+            click_count: 0,
+            mouse_buttons: [false; 5],
+            tray_ok: false,
+            tray_error: 0,
+            tray_retry: 0,
+            tray_retry_at: 0.,
             last_draw: 0.,
             next_draw: 0.,
             next_topmost_check: 0.,
             topmost_foreground: null_mut(),
+            music: music::Monitor::new(),
+            panel_dark: false,
+            theme_override: None,
+            github_images: 0,
+            update_check: None,
             diagnostic,
             input_trace: Vec::new(),
         }
@@ -399,6 +437,27 @@ impl App {
         self.present_us += present_start.elapsed().as_micros() as u64;
         self.render_count += 1;
     }
+    unsafe fn mouse_press(&mut self,index:usize,cursor:POINT,now:f32) {
+        self.click_count+=1;
+        if self.settings.tease_enabled && self.pet_hit(cursor) {self.pose.tease(now);}
+        else {self.pose.click(now,self.settings.swing_left(index));}
+        self.wake();
+    }
+    unsafe fn native_mouse_press(&mut self,index:usize) {
+        if TEST_INPUT_ONLY || self.mouse_buttons[index] {return;}
+        let mut cursor=POINT{x:0,y:0};GetCursorPos(&mut cursor);
+        self.mouse_press(index,cursor,self.start.elapsed().as_secs_f32());
+        self.mouse_buttons[index]=true;
+    }
+    unsafe fn pet_hit(&self,cursor:POINT)->bool {
+        if self.hidden || self.menu_open || self.width<=0 || self.height<=0 {return false;}
+        if !self.panel.is_null() && GetAncestor(WindowFromPoint(cursor),GA_ROOT)==self.panel {return false;}
+        let x=cursor.x-self.pos.x;let y=cursor.y-self.pos.y;
+        if x<0 || y<0 || x>=self.width || y>=self.height {return false;}
+        let sx=x as usize*self.frame.width/self.width as usize;
+        let sy=y as usize*self.frame.height/self.height as usize;
+        self.frame.pixels[(sy*self.frame.width+sx)*4+3]>32
+    }
     fn hover_opacity(&self) -> u8 {
         if !self.settings.click_through || self.width <= 0 || self.height <= 0 {
             return 255;
@@ -445,16 +504,64 @@ impl App {
     unsafe fn tick(&mut self) {
         let clock = self.start.elapsed().as_secs_f64();
         let now = clock as f32;
+        if self.tick_last > 0. {
+            let gap = ((clock - self.tick_last) * 1e6).max(0.) as u64;
+            self.tick_gap_sum_us += gap;
+            self.tick_gap_count += 1;
+            self.tick_gap_max_us = self.tick_gap_max_us.max(gap);
+        }
+        self.tick_last = clock;
         self.poll_download();
+        self.poll_update();
+        self.music.set_enabled(self.settings.music_notes);
+        self.pose.music_playing = self.music.playing();
         self.maintain_topmost(clock);
+        // Explorer may still be starting when the pet launches; retry a few
+        // times instead of leaving the user without a tray entry.
+        if !self.tray_ok && self.tray_retry < 5 && clock >= self.tray_retry_at {
+            self.tray_retry += 1;
+            self.tray_retry_at = clock + 1.;
+            self.tray_ok = self.tray(NIM_ADD);
+            if self.tray_ok {
+                self.tray_error = 0;
+            } else {
+                self.tray_error = GetLastError();
+                if self.tray_retry == 5 {
+                    let _ = std::fs::write(
+                        self.store.dir.join("tray-error.txt"),
+                        format!("error={} icon={}\n", self.tray_error, self.icon as isize),
+                    );
+                }
+            }
+        }
         let mut cursor = POINT { x: 0, y: 0 };
         GetCursorPos(&mut cursor);
+        // Poll the buttons instead of installing WH_MOUSE_LL. A low-level mouse
+        // hook runs synchronously on its installing thread, so every cursor
+        // sample would wait for the current frame and the whole desktop would
+        // feel sticky. The frame timer already ticks at 120 Hz and is enough to
+        // catch any human click as a fresh press.
+        let buttons = [
+            GetAsyncKeyState(VK_LBUTTON as i32) < 0,
+            GetAsyncKeyState(VK_RBUTTON as i32) < 0,
+            GetAsyncKeyState(VK_MBUTTON as i32) < 0,
+            GetAsyncKeyState(VK_XBUTTON1 as i32) < 0,
+            GetAsyncKeyState(VK_XBUTTON2 as i32) < 0,
+        ];
+        for (index, down) in buttons.iter().enumerate() {
+            if *down && !self.mouse_buttons[index] && !TEST_INPUT_ONLY {
+                self.mouse_press(index,cursor,now);
+            }
+        }
+        self.mouse_buttons = buttons;
         let moved = cursor.x != self.cursor.x || cursor.y != self.cursor.y;
         self.cursor = cursor;
         if moved && self.settings.track_mouse {
+
             self.awake = self.awake.max(now + 0.05);
         } // Direct head updates need no trailing animation.
         if let Some(offset) = self.drag {
+
             self.pos = POINT {
                 x: cursor.x - offset.x,
                 y: cursor.y - offset.y,
@@ -478,11 +585,18 @@ impl App {
         ];
         if shift != self.shift {
             self.shift = shift;
+
             self.wake();
         }
         let dt = (clock - self.last_draw).min(0.05) as f32;
         self.last = now;
-        if !self.hidden && now <= self.awake && clock >= self.next_draw {
+        // 静止时项目会停止重绘以省 CPU；眨眼是时间轴动画，必须在这时也允许出帧，
+        // 否则桌宠不动就永远不会眨眼。潜行扭动的计时同样靠每帧推进，按住 Shift
+        // 期间也要保持出帧，眨眼和扭动之外仍然不绘制，空闲开销不变。
+        let blinking = self.settings.da_blink && !self.settings.chibi && self.skin.eyes.is_some()
+            && (self.pose.blink_at(now) > 0.0001 || self.pose.eyelid < 0.9999);
+        let dancing = (self.settings.da_dance && self.settings.posture == "standing") || self.pose.music_playing || self.pose.needs_frames() || self.settings.breathing_animation;
+        if !self.hidden && (now <= self.awake || blinking || dancing) && clock >= self.next_draw {
             self.draw(now, dt);
             self.last_draw = clock;
             let period = 1. / self.settings.fps as f64;
@@ -723,6 +837,19 @@ impl App {
                 self.settings.show_cape = !self.settings.show_cape;
                 self.changed();
             }
+            139 => {
+                self.settings.chibi = !self.settings.chibi;
+                if self.settings.chibi { self.settings.da_blink = false; }
+                self.changed();
+            }
+            163 => {
+                if !self.settings.chibi { self.settings.da_blink = !self.settings.da_blink; }
+                self.changed();
+            }
+            164 => {
+                self.settings.da_dance = !self.settings.da_dance;
+                self.changed();
+            }
             125 => {
                 self.settings.fps = 30;
                 self.changed();
@@ -779,25 +906,22 @@ impl App {
                 self.pose.sit = if self.settings.is_sitting() { 1. } else { 0. };
                 self.changed();
             }
+            165 | 166 => {
+                self.settings.main_hand = if id == 165 { "mapped" } else { "reverse" }.into();
+                self.pose.reset_swing(); self.changed();
+            }
+            167 => { self.settings.typing_letters = !self.settings.typing_letters; self.changed(); }
+            168 => { self.pose.feed(self.start.elapsed().as_secs_f32()); self.wake(); }
+            169 => { self.open_github(false); }
+            170 => { self.check_update(); }
+            171 => { self.settings.music_notes = !self.settings.music_notes; self.changed(); }
+            172 => { self.settings.tease_enabled = !self.settings.tease_enabled; self.changed(); }
+            173 => { self.settings.breathing_animation = !self.settings.breathing_animation;  self.changed(); }
             150..=152 => self.show_page((id - 150) as u8),
             140..=143 => {
                 self.settings.scale = [0.75, 1., 1.25, 1.5][(id - 140) as usize];
                 self.resize_pet();
                 self.changed();
-            }
-            170 => {
-                let result = ShellExecuteW(
-                    self.panel,
-                    wide("open").as_ptr(),
-                    wide("https://github.com/DLmember/Minecraft-Desktop-Pet").as_ptr(),
-                    null(),
-                    null(),
-                    SW_SHOWNORMAL,
-                );
-                if result as isize <= 32 {
-                    self.notice = "无法打开浏览器，请稍后重试。".into();
-                    self.refresh_panel();
-                }
             }
             199 => {
                 self.save();
@@ -832,12 +956,15 @@ impl App {
         let items = [
             (100, "打开控制台", false),
             (101, "导入皮肤…", false),
+            (168, "喂食苹果", false),
             (0, "", false),
             (110, "站立", self.settings.posture == "standing"),
             (111, "坐下", self.settings.posture == "sitting"),
             (117, "自定义姿态", self.settings.posture == "custom"),
             (118, "右手挥动", self.settings.main_hand == "right"),
             (119, "左手挥动", self.settings.main_hand == "left"),
+            (165, "实际映射", self.settings.main_hand == "mapped"),
+            (166, "反向映射", self.settings.main_hand == "reverse"),
             (0, "", false),
             (112, "精准按键", self.settings.typing_mode == "precise"),
             (113, "双手交替", self.settings.typing_mode == "alternating"),
@@ -849,6 +976,7 @@ impl App {
             (122, "全局键盘互动", self.settings.keyboard_enabled),
             (123, "视线跟随鼠标", self.settings.track_mouse),
             (138, "显示正版披风", self.settings.show_cape),
+            (139, "Q 版小人", self.settings.chibi),
             (0, "", false),
             (140, "大小 75%", (self.settings.scale - 0.75).abs() < 0.01),
             (141, "大小 100%", (self.settings.scale - 1.).abs() < 0.01),
@@ -900,7 +1028,7 @@ impl App {
             self.command(id as u32);
         }
     }
-    unsafe fn tray(&self, action: u32) {
+    unsafe fn tray(&self, action: u32) -> bool {
         let mut data: NOTIFYICONDATAW = std::mem::zeroed();
         data.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
         data.hWnd = self.hwnd;
@@ -909,8 +1037,9 @@ impl App {
         data.uCallbackMessage = TRAY_MSG;
         data.hIcon = self.icon;
         let tip = wide(&format!("Minecraft桌宠 v{VERSION} · 右键设置 / 双击控制台"));
-        data.szTip[..tip.len()].copy_from_slice(&tip);
-        Shell_NotifyIconW(action, &data);
+        let len = tip.len().min(data.szTip.len());
+        data.szTip[..len].copy_from_slice(&tip[..len]);
+        Shell_NotifyIconW(action, &data) != 0
     }
 }
 unsafe extern "system" fn keyboard_hook(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
@@ -948,21 +1077,6 @@ unsafe extern "system" fn keyboard_hook(code: i32, w: WPARAM, l: LPARAM) -> LRES
     }
     CallNextHookEx(null_mut(), code, w, l)
 }
-unsafe extern "system" fn mouse_hook(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
-    if code >= 0 && TEST_INPUT_ONLY && (*(l as *const MSLLHOOKSTRUCT)).flags & LLMHF_INJECTED == 0 {
-        return CallNextHookEx(null_mut(), code, w, l);
-    }
-    if code >= 0
-        && !PET_HWND.is_null()
-        && matches!(
-            w as u32,
-            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
-        )
-    {
-        PostMessageW(PET_HWND, CLICK_MSG, 0, 0);
-    }
-    CallNextHookEx(null_mut(), code, w, l)
-}
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     if APP.is_null() {
         return DefWindowProcW(hwnd, msg, w, l);
@@ -972,7 +1086,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
         return ui::panel_proc(a, hwnd, msg, w, l);
     }
     if a.taskbar_msg != 0 && msg == a.taskbar_msg {
-        a.tray(NIM_ADD);
+        a.tray_ok = a.tray(NIM_ADD);
+        a.tray_error = if a.tray_ok { 0 } else { GetLastError() };
         a.next_topmost_check = 0.;
         return 0;
     }
@@ -990,6 +1105,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             a.tick();
             0
         }
+        msg if msg==WM_APP+12 && a.diagnostic => {
+            if a.settings.tease_enabled {a.pose.tease(a.start.elapsed().as_secs_f32());a.wake();} 0
+        }
+        msg if msg==WM_APP+13 && a.diagnostic => {
+            let point=POINT{x:(l as u16 as i16) as i32,y:((l>>16) as u16 as i16) as i32};
+            if w<5 {a.mouse_press(w,point,a.start.elapsed().as_secs_f32());} 0
+        }
         KEY_MSG => {
             if a.settings.keyboard_enabled {
                 a.trace_key(w as u32, l != 0, "hook-message");
@@ -1006,15 +1128,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             }
             0
         }
-        CLICK_MSG => {
-            a.pose.click(
-                a.start.elapsed().as_secs_f32(),
-                a.settings.main_hand == "left",
-            );
-            a.wake();
-            0
-        }
         WM_LBUTTONDOWN => {
+            a.native_mouse_press(0);
             let mut p = POINT { x: 0, y: 0 };
             GetCursorPos(&mut p);
             a.drag = Some(POINT {
@@ -1048,6 +1163,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             a.show_panel();
             0
         }
+        WM_RBUTTONDOWN => {a.native_mouse_press(1);0}
+        WM_MBUTTONDOWN => {a.native_mouse_press(2);0}
+        WM_XBUTTONDOWN => {a.native_mouse_press(if (w>>16)&0xffff==1 {3}else{4});1}
         WM_RBUTTONUP | WM_CONTEXTMENU => {
             a.popup();
             0
@@ -1093,9 +1211,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
         TRAY_MSG => {
             match l as u32 {
                 WM_RBUTTONUP | WM_CONTEXTMENU => a.popup(),
-                WM_LBUTTONDBLCLK => a.show_panel(),
+                // 单击即可打开控制台；双击也走同一条路径（重复调用只是置前）。
+                WM_LBUTTONUP | WM_LBUTTONDBLCLK => a.show_panel(),
                 _ => {}
             }
+            0
+        }
+        WM_HOTKEY => {
+            a.show_panel();
             0
         }
         WM_COMMAND => {
@@ -1109,10 +1232,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
         }
         WM_DESTROY => {
             a.tray(NIM_DELETE);
-            if !a.mouse_hook.is_null() {
-                UnhookWindowsHookEx(a.mouse_hook);
-                a.mouse_hook = null_mut();
-            }
+            UnregisterHotKey(hwnd, 1);
             if !a.hook.is_null() {
                 UnhookWindowsHookEx(a.hook);
                 a.hook = null_mut();
@@ -1146,6 +1266,71 @@ fn load_cape(settings: &Settings) -> Option<Cape> {
         .and_then(|bytes| Cape::load(&bytes).ok())
 }
 
+/// Whether this program may write into `dir` at all. Some machines run the
+/// pet under a security policy that denies %APPDATA% writes (os error 5).
+fn writable(dir: &std::path::Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(".write-probe");
+    let ok = std::fs::write(&probe, b"1").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    ok
+}
+/// Move an existing APPDATA profile next to the executable when the original
+/// location is not writable, rewriting the saved skin/cape paths.
+fn migrate(old: &std::path::Path, new: &std::path::Path) {
+    if new.join("settings.json").exists() || !old.join("settings.json").is_file() {
+        return;
+    }
+    for name in [
+        "settings.json",
+        "settings.json.bak",
+        "skin.png",
+        "cape.png",
+        "head-follow.json",
+        "head-follow.json.bak",
+    ] {
+        let src = old.join(name);
+        if src.is_file() {
+            let _ = std::fs::copy(&src, new.join(name));
+        }
+    }
+    let from = old.to_string_lossy().to_string();
+    let to = new.to_string_lossy().to_string();
+    // JSON stores Windows paths with doubled separators.
+    let from_json = from.replace('\\', "\\\\");
+    let to_json = to.replace('\\', "\\\\");
+    for name in ["settings.json", "settings.json.bak"] {
+        let path = new.join(name);
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            let fixed = text
+                .replace(&from_json, &to_json)
+                .replace(&from, &to);
+            let _ = std::fs::write(&path, fixed);
+        }
+    }
+}
+fn default_data_dir() -> PathBuf {
+    let appdata = PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default())
+        .join("minecraft-desktop-pet");
+    if writable(&appdata) {
+        return appdata;
+    }
+    // Portable fallback: the executable's own folder is usually still writable
+    // when security software blocks the user profile.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let portable = parent.join("pet-data");
+            if writable(&portable) {
+                migrate(&appdata, &portable);
+                return portable;
+            }
+        }
+    }
+    appdata
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--render-test") {
@@ -1155,9 +1340,7 @@ fn main() {
     let dir = args
         .iter()
         .find_map(|a| a.strip_prefix("--user-data-dir=").map(PathBuf::from))
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("APPDATA").unwrap()).join("minecraft-desktop-pet")
-        });
+        .unwrap_or_else(default_data_dir);
     let diag = args.iter().any(|a| a == "--diagnostic");
     let first = !dir.join("settings.json").exists();
     let mut app = Box::new(App::new(dir.clone(), diag));
@@ -1165,6 +1348,8 @@ fn main() {
         report_error(e);
         return;
     }
+    // 程序被移动或改名后，自启项会在下次启动时自动改写成当前路径。
+    autostart::sync(app.settings.autostart, &dir);
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         TEST_INPUT_ONLY = diag && args.iter().any(|a| a == "--test-input-only");
@@ -1180,10 +1365,6 @@ fn main() {
             }
             CloseHandle(mutex);
             return;
-        }
-        // Refresh the startup path only for the active, non-diagnostic instance.
-        if !diag {
-            autostart::sync(app.settings.autostart, &dir);
         }
         let module = GetModuleHandleW(null());
         let cc = INITCOMMONCONTROLSEX {
@@ -1233,9 +1414,16 @@ fn main() {
         DragAcceptFiles(hwnd, 1);
         app.flags();
         app.hook();
-        app.mouse_hook =
-            SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), GetModuleHandleW(null()), 0);
-        app.tray(NIM_ADD);
+        app.tray_ok = app.tray(NIM_ADD);
+        app.tray_error = if app.tray_ok { 0 } else { GetLastError() };
+        if !app.tray_ok {
+            let _ = std::fs::write(
+                app.store.dir.join("tray-error.txt"),
+                format!("error={} icon={}\n", app.tray_error, app.icon as isize),
+            );
+        }
+        // 托盘不可用时的备用入口：Ctrl+Alt+Shift+M 打开控制台。
+        RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_ALT | MOD_SHIFT, 'M' as u32);
         GetCursorPos(&mut app.cursor);
         app.draw(0., 0.05);
         app.constrain();
@@ -1247,10 +1435,18 @@ fn main() {
         if !app.store.notice.is_empty() {
             app.notice = app.store.notice.clone();
         }
-        if first || args.iter().any(|a| a == "--settings") || !app.store.notice.is_empty() {
+        if !app.tray_ok {
+            app.notice = format!(
+                "托盘图标添加失败（错误 {}）；可再次双击程序或从控制台打开设置。",
+                app.tray_error
+            );
+        }
+        if first || args.iter().any(|a| a == "--settings") || !app.tray_ok || !app.store.notice.is_empty() {
             app.show_panel();
         }
         if diag {
+            app.theme_override=if args.iter().any(|s|s=="--test-theme=dark") {Some(true)} else if args.iter().any(|s|s=="--test-theme=light") {Some(false)} else {None};
+            app.apply_theme();
             ui::diagnostic_init(&mut app);
         }
         let mut timer = CreateWaitableTimerExW(
@@ -1284,6 +1480,9 @@ fn main() {
             } else {
                 (1. / app.settings.fps as f64).min(0.008)
             };
+            // 低级鼠标钩子（WH_MOUSE_LL）挂在消息循环所在线程上，系统要等它
+            // 返回才能把鼠标事件派发给其他程序。这里的等待时间必须保持原来的
+            // 帧间隔上限，任何更长的睡眠都会让全系统的鼠标变卡。
             let wait = if !app.hidden && now <= app.awake as f64 {
                 (app.next_draw - now).min(poll).max(0.0001)
             } else {
@@ -1323,9 +1522,7 @@ fn main() {
             CloseHandle(timer);
         }
         app.surface = None;
-        if app.github_images != 0 {
-            ImageList_Destroy(app.github_images);
-        }
+        if app.github_images != 0 { ImageList_Destroy(app.github_images); }
         if !app.font.is_null() {
             DeleteObject(app.font);
         }
@@ -1347,6 +1544,29 @@ fn render_test(args: &[String]) {
         .map(|p| std::fs::read(p).unwrap())
         .unwrap_or_else(|| render::DEFAULT_SKIN.to_vec());
     let skin = Skin::load(&bytes).unwrap();
+    if args.iter().any(|a| a == "--demo-eyes-skin") {
+        // 生成一张带眼睛/眉毛素材的测试皮肤，方便验证眨眼、瞳孔和眉毛动画。
+        // 眼睛画在识别格 (4,6)-(5,7)：上一行眼皮色、下一行眼白+瞳孔；
+        // 眉毛画在材质包 brows 的独立区 x=60..64（右眉 60..62、左眉 62..64）。
+        let mut atlas = skin.image.clone();
+        let mut set = |x: u32, y: u32, c: [u8; 3]| {
+            atlas.put_pixel(x, y, image::Rgba([c[0], c[1], c[2], 255]));
+        };
+        let lid = [0xd7u8, 0xa3, 0x79];
+        let white = [0xf2u8, 0xe4, 0xc9];
+        let pupil = [0x3bu8, 0x61, 0x4c];
+        let brow = [0x4au8, 0x33, 0x26];
+        set(4, 6, lid);
+        set(5, 6, lid);
+        set(4, 7, white);
+        set(5, 7, pupil);
+        for x in 60..64 {
+            set(x, 7, brow);
+        }
+        atlas.save(dir.join("demo-eyes-skin.png")).unwrap();
+        println!("written {}", dir.join("demo-eyes-skin.png").display());
+        return;
+    }
     if args.iter().any(|a| a == "--typing-return-test") {
         s.track_mouse = false;
         s.typing_squash = 0.; // Inspect arms without the intentionally restarting body pulse.
@@ -1460,6 +1680,57 @@ fn render_test(args: &[String]) {
                 )
                 .unwrap();
             }
+        }
+        return;
+    }
+    if args.iter().any(|a| a == "--sway-test") {
+        // 潜行扭动：按住 Shift，3 秒后开始扭；6 秒后每 0.3 秒截一帧（一个来回 1.8 秒）。
+        s.posture = "standing".into();
+        let mut p = Pose::new(&s);
+        let mut shots = 0;
+        for frame in 0..60 * 10 {
+            let now = frame as f32 / 60.;
+            p.update(&s, &skin, Vec2::new(225., 262.5), 450., 525., true, now, 1. / 60.);
+            if frame >= 60 * 6 && (frame - 60 * 6) % 18 == 0 {
+                let mut f = Frame::new(450, 525);
+                f.draw(&s, &skin, &p);
+                image::save_buffer(
+                    dir.join(format!(
+                        "dance-{shots}-{:.01}deg.png",
+                        p.body_roll.to_degrees()
+                    )),
+                    &f.rgba(),
+                    450,
+                    525,
+                    image::ColorType::Rgba8,
+                )
+                .unwrap();
+                shots += 1;
+            }
+        }
+        return;
+    }
+    if args.iter().any(|a| a == "--blink-test") {
+        // 输出一次完整眨眼的连续帧，用于人工核对眼皮位置与过渡。
+        s.track_mouse = false;
+        let mut p = Pose::new(&s);
+        let start = (0..2400)
+            .map(|i| i as f32 / 240.)
+            .find(|t| p.blink_at(*t) > 0.999)
+            .unwrap_or(0.);
+        for i in 0..48 {
+            let now = start - 0.10 + i as f32 / 240.;
+            p.update(&s, &skin, Vec2::ZERO, 450., 525., false, now, 1. / 240.);
+            let mut f = Frame::new(450, 525);
+            f.draw(&s, &skin, &p);
+            image::save_buffer(
+                dir.join(format!("blink-{i:02}-{:.3}.png", now)),
+                &f.rgba(),
+                450,
+                525,
+                image::ColorType::Rgba8,
+            )
+            .unwrap();
         }
         return;
     }

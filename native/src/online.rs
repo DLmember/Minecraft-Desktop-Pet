@@ -40,7 +40,7 @@ fn network_error() -> String {
         std::io::Error::last_os_error()
     )
 }
-fn get(host: &str, path: &str, limit: usize) -> Result<Vec<u8>, String> {
+pub(super) fn get(host: &str, path: &str, limit: usize) -> Result<Vec<u8>, String> {
     unsafe {
         let session = handle(WinHttpOpen(
             wide(&format!("MinecraftDesktopPet/{}", crate::VERSION)).as_ptr(),
