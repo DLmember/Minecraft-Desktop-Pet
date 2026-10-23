@@ -22,21 +22,41 @@ final class PetPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }
+/// A provider retains its immutable frame until CoreGraphics finishes with it.
+/// Reuse only unreferenced slots; a slow compositor never grows the buffer pool.
+final class PixelBuffer {
+    let pointer = UnsafeMutableRawPointer.allocate(byteCount: 450 * 525 * 4, alignment: 64)
+    deinit { pointer.deallocate() }
+}
 final class PetView: NSView {
     weak var owner: AppDelegate?
+    private var buffers = [PixelBuffer(), PixelBuffer()]
+    private let colorSpace = CGColorSpaceCreateDeviceRGB()
     var bitmap: CGImage?
     private var dragOffset: NSPoint?
     private var didDrag = false
     override var isFlipped: Bool { true }
+    func updatePixels(_ pixels: UnsafePointer<UInt8>) {
+        for i in buffers.indices where isKnownUniquelyReferenced(&buffers[i]) {
+            let buffer = buffers[i]
+            memcpy(buffer.pointer, pixels, 450 * 525 * 4)
+            let retained = Unmanaged.passRetained(buffer).toOpaque()
+            guard let provider = CGDataProvider(dataInfo: retained, data: buffer.pointer, size: 450 * 525 * 4,
+                releaseData: { info, _, _ in if let info { Unmanaged<PixelBuffer>.fromOpaque(info).release() } }) else {
+                Unmanaged<PixelBuffer>.fromOpaque(retained).release(); return
+            }
+            bitmap = CGImage(width: 450, height: 525, bitsPerComponent: 8, bitsPerPixel: 32,
+                bytesPerRow: 450 * 4, space: colorSpace,
+                bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+            needsDisplay = true; return
+        }
+    }
     override func draw(_ dirtyRect: NSRect) {
         guard let bitmap, let ctx = NSGraphicsContext.current?.cgContext else { return }
-        ctx.clear(bounds)
-        ctx.saveGState()
-        ctx.interpolationQuality = .none
-        ctx.translateBy(x: 0, y: bounds.height)
-        ctx.scaleBy(x: 1, y: -1)
-        ctx.draw(bitmap, in: bounds)
-        ctx.restoreGState()
+        ctx.clear(bounds); ctx.saveGState(); ctx.interpolationQuality = .none
+        ctx.translateBy(x:0,y:bounds.height); ctx.scaleBy(x:1,y:-1)
+        ctx.draw(bitmap,in:bounds); ctx.restoreGState()
     }
     override func mouseDown(with event: NSEvent) {
         guard let owner, let window else { return }
@@ -56,7 +76,7 @@ final class PetView: NSView {
         if didDrag { owner?.savePosition() }
         dragOffset = nil; didDrag = false
     }
-    override func rightMouseDown(with event: NSEvent) { owner?.showSettings() }
+    override func rightMouseDown(with event: NSEvent) { owner?.showPetMenu(event, in: self) }
 }
 
 final class Binding {
@@ -70,15 +90,32 @@ final class Binding {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, NSTabViewDelegate {
     var startupPending = true
+    var restartPending = false
+    let music = MusicMonitor()
+    var permissionPanel: NSWindow?
+    var updateInFlight = false
+    var glyphsReady = false
+    var renderedFrames = 0
+    var timerActive = true
+    var selectedConsolePage = 0
+    var uiReady = false
+    weak var musicToggle: NSButton?
+    var pageButtons: [NSButton] = []
+    var saveStatus: NSTextField?
+    var musicStatus = "音乐音符已关闭。"
     var startupStatus: NSTextField?
     let loginDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents", isDirectory: true)
-    let network = URLSession(configuration: .ephemeral, delegate: OfficialSessionDelegate(), delegateQueue: nil)
+    lazy var network = URLSession(configuration: .ephemeral, delegate: OfficialSessionDelegate(), delegateQueue: nil)
     var core: OpaquePointer!
     var settings: [String: Any] = [:]
     var pet: PetPanel!
     var view: PetView!
     var status: NSStatusItem!
     var panel: NSWindow?
+    /// Reuse the native console window after closing it. Rebuilding only its
+    /// content prevents AppKit from accumulating window and tab allocations
+    /// during repeated open/close cycles.
+    var consoleWindow: NSWindow?
     var timer: Timer?
     var saveTimer: Timer?
     let input = InputController()
@@ -106,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     var hidden = false
     var lastTick = ProcessInfo.processInfo.systemUptime
     let start = ProcessInfo.processInfo.systemUptime
-    let smoke = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--self-test-ui")
+    let smoke = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--self-test-ui") || CommandLine.arguments.contains("--memory-test") || CommandLine.arguments.contains("--self-test-startup") || CommandLine.arguments.contains("--self-test-restart")
     let dataDir: URL = {
         if let i = CommandLine.arguments.firstIndex(of: "--data-dir"), CommandLine.arguments.count > i + 1 {
             return URL(fileURLWithPath: CommandLine.arguments[i + 1], isDirectory: true)
@@ -146,14 +183,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         view.autoresizingMask = [.width, .height]; pet.contentView = view
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = status.button {
-            button.image = NSImage(systemSymbolName: "cube.fill", accessibilityDescription: "Minecraft桌宠")
+            let icon = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+                NSColor.labelColor.setStroke()
+                let path = NSBezierPath()
+                path.move(to:NSPoint(x:2,y:5)); path.line(to:NSPoint(x:9,y:1)); path.line(to:NSPoint(x:16,y:5))
+                path.line(to:NSPoint(x:16,y:13)); path.line(to:NSPoint(x:9,y:17)); path.line(to:NSPoint(x:2,y:13)); path.close()
+                path.move(to:NSPoint(x:2,y:13)); path.line(to:NSPoint(x:9,y:9)); path.line(to:NSPoint(x:16,y:13))
+                path.move(to:NSPoint(x:9,y:9)); path.line(to:NSPoint(x:9,y:1)); path.lineWidth=1.4; path.stroke()
+                return true
+            }
+            icon.isTemplate = true; button.image = icon
             button.toolTip = "Minecraft桌宠 v\(appVersion) · 点击打开菜单"
         }
         let menu = NSMenu(); menu.delegate = self; status.menu = menu; buildMenu(menu)
         if !smoke {
             do {
                 if flag("autostart") { try syncLoginStartup() }
-                try RenderPriority.apply(settings["startupPriority"] as? String ?? "normal")
+
             } catch { alert(error.localizedDescription) }
         }
         let delay = smoke ? 0 : LoginStartup.delay(arguments: CommandLine.arguments, enabled: flag("autostart"), seconds: Int(number("autostartDelay")))
@@ -166,11 +212,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard startupPending else { return }
         startupPending = false
         status.button?.toolTip = "Minecraft桌宠 v\(appVersion) · 点击打开菜单"
-        mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
-            self?.handleMousePress()
+        mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            self?.handleMousePress(event)
         }
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
-            self?.handleMousePress(); return event
+            self?.handleMousePress(event); return event
         }
         input.onKey = { [weak self] key, down in
             guard let self, self.core != nil else { return }
@@ -193,18 +239,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 guard let self else { return }; self.input.resetState()
             })
         }
-        applyWindow(); restartTimer(); wake(); tick(); pet.orderFrontRegardless()
-        if !smoke && (CommandLine.arguments.contains("--show-settings") || (flag("keyboardEnabled") && !input.running) || (flag("hypQuickChat") && !input.quickChatReady)) {
-            showSettings()
-            if CommandLine.arguments.contains("--show-settings") { controlTabs?.selectTabViewItem(at: 1) }
+        music.onChange = { [weak self] playing, message in
+            guard let self, self.core != nil else { return }
+            pet_music(self.core, playing); self.wake()
+            self.musicStatus = message; self.refreshMusicLabel()
         }
-        if smoke {
+        configureMusic()
+        if flag("typingLetters") { prepareGlyphs() }
+        applyWindow(); restartTimer(); wake(); tick(); pet.orderFrontRegardless()
+        if (!smoke || CommandLine.arguments.contains("--self-test-startup")) && LaunchMode.shouldShowSettings(arguments: CommandLine.arguments,
+            keyboardEnabled: flag("keyboardEnabled"), keyboardRunning: input.running,
+            quickChatEnabled: flag("hypQuickChat"), quickChatReady: input.quickChatReady) {
+            showSettings()
+
+        }
+        if CommandLine.arguments.contains("--self-test-restart") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.runRestartRegression() }
+        } else if CommandLine.arguments.contains("--memory-test") {
+            startMemoryExercise()
+        } else if CommandLine.arguments.contains("--self-test-startup") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                precondition(CommandLine.arguments.contains("--autostart"))
+                precondition(self.pet.isVisible && self.panel == nil && self.permissionPanel == nil,
+                             "Login launch must show only the pet, even with no input connection")
+                self.writeSmokeReport()
+                print("Startup regression passed: pet visible, console and permission panels closed")
+                NSApp.terminate(nil)
+            }
+        } else if smoke {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 self.showSettings()
+                if let i = CommandLine.arguments.firstIndex(of: "--preview-page"), CommandLine.arguments.count > i + 1,
+                   let page = Int(CommandLine.arguments[i + 1]), (0..<3).contains(page) { self.controlTabs?.selectTabViewItem(at: page) }
                 if CommandLine.arguments.contains("--self-test-ui") { self.runUIRegression() }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { self.writeSmokeReport() }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { NSApp.terminate(nil) }
+            let duration: Double
+            if let i = CommandLine.arguments.firstIndex(of: "--smoke-seconds"), CommandLine.arguments.count > i + 1 {
+                duration = min(60, max(2, Double(CommandLine.arguments[i + 1]) ?? 2))
+            } else { duration = 2 }
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration) { NSApp.terminate(nil) }
         }
     }
     func buildMenu(_ menu: NSMenu) {
@@ -227,6 +301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         item(hidden ? "显示桌宠" : "隐藏桌宠", #selector(toggleHidden))
         item("重新居中", #selector(recenter))
         menu.addItem(.separator())
+        item("喂食苹果", #selector(feedApple))
         item("导入 PNG 皮肤…", #selector(importSkin))
         item("退出 Minecraft桌宠", #selector(quit), nil, "q")
     }
@@ -246,11 +321,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         savePosition(); wake()
     }
     @objc func quit() { NSApp.terminate(nil) }
-    func handleMousePress() {
-        guard core != nil else { return }
-        mousePresses += 1; pet_click(core, now); wake()
+    func handleMousePress(_ event: NSEvent? = nil) {
+        guard core != nil, pet != nil, !hidden else { return }
+        // Local console controls must not trigger pet interactions.
+        if let window = event?.window, window !== pet { return }
+        let cursor = NSEvent.mouseLocation, r = pet.frame
+        let over = pet_hit(core, Float((cursor.x-r.minX)/r.width), Float((r.maxY-cursor.y)/r.height))
+        mousePresses += 1
+        pet_mouse(core, UInt32(clamping: event?.buttonNumber ?? 0), over, now)
+        wake()
     }
-    func wake() { awakeUntil = now + 0.85 }
+    @objc func feedApple() { guard core != nil else { return }; pet_feed(core, now); wake() }
+    func showPetMenu(_ event: NSEvent, in view: NSView) {
+        let menu = NSMenu()
+        for (title, action) in [("喂食苹果", #selector(feedApple)), ("打开控制台…", #selector(showSettings))] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self; menu.addItem(item)
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: view)
+    }
+    func wake() {
+        awakeUntil = now + 0.85
+        if !timerActive { timerActive = true; restartTimer() }
+    }
     func applyWindow() {
         pet.ignoresMouseEvents = flag("clickThrough")
         pet.level = flag("alwaysOnTop") ? .floating : .normal
@@ -259,12 +352,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     func restartTimer() {
         timer?.invalidate()
-        let t = Timer(timeInterval: 1.0 / max(30, number("fps")), repeats: true) { [weak self] _ in self?.tick() }
+        let rate = timerActive ? max(30, number("fps")) : (hidden ? 2.0 : 30.0)
+        let t = Timer(timeInterval: 1.0 / rate, repeats: true) { [weak self] _ in autoreleasepool { self?.tick() } }
         t.tolerance = 0.001; RunLoop.main.add(t, forMode: .common); timer = t
     }
     func changed() {
         previewSettings()
         applyWindow(); restartTimer(); wake()
+        saveStatus?.stringValue = "待保存…"
         saveTimer?.invalidate()
         saveTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in self?.save() }
     }
@@ -277,7 +372,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         saveTimer?.invalidate(); saveTimer = nil
         guard core != nil, let data = try? JSONSerialization.data(withJSONObject: settings),
               let json = String(data: data, encoding: .utf8) else { return }
-        if !json.withCString({ pet_apply(core, $0) }) { showCoreError(); loadSettings(); applyWindow() }
+        if !json.withCString({ pet_apply(core, $0) }) { saveStatus?.stringValue = "保存失败"; showCoreError(); loadSettings(); applyWindow() }
+        else { saveStatus?.stringValue = "已保存" }
     }
     func savePosition() {
         settings["position"] = ["x": pet.frame.origin.x, "y": pet.frame.origin.y]
@@ -294,18 +390,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if cursor != lastCursor && flag("trackMouse") { awakeUntil = max(awakeUntil, now+0.05) }
         if shift != lastShift && flag("keyboardEnabled") { wake() }
         lastCursor = cursor; lastShift = shift
-        if !hidden && now <= awakeUntil {
+        let active = !hidden && (now <= awakeUntil || pet_needs_frames(core))
+        if active != timerActive { timerActive = active; restartTimer() }
+        if active {
             let r = pet.frame
             let x = Float(cursor.x - r.minX), y = Float(r.maxY - cursor.y)
             if let bytes = pet_render(core, x, y, Float(r.width), Float(r.height), shift, now, min(0.05, max(0.001, now-lastDraw))) {
-                let data = Data(bytes: bytes, count: 450 * 525 * 4) as CFData
-                if let provider = CGDataProvider(data: data) {
-                    view.bitmap = CGImage(width: 450, height: 525, bitsPerComponent: 8, bitsPerPixel: 32,
-                        bytesPerRow: 450 * 4, space: CGColorSpaceCreateDeviceRGB(),
-                        bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue),
-                        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
-                    view.needsDisplay = true
-                }
+                view.updatePixels(bytes); renderedFrames += 1
             }
             lastDraw = now
         }
@@ -339,15 +430,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     @objc func refreshPermissions() { input.refresh(force: true); updatePermission() }
     @objc func restartApplication() {
+        guard !restartPending else { return }
+        restartPending = true
         savePosition()
-        let configuration = NSWorkspace.OpenConfiguration(); configuration.createsNewApplicationInstance = true
-        configuration.arguments = Array(CommandLine.arguments.dropFirst()).filter { $0 != "--autostart" }
-        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, error in
-            DispatchQueue.main.async {
-                if let error { self.alert(error.localizedDescription) }
-                else { NSApp.terminate(nil) }
-            }
+        // A permission sheet can prevent AppKit from terminating. Dismiss it
+        // first, then relaunch only after this process has actually exited.
+        closePermissions()
+        let helper = Process()
+        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+        helper.arguments = ["-c", """
+            parent="$1"
+            shift
+            attempts=0
+            while /bin/kill -0 "$parent" 2>/dev/null; do
+                attempts=$((attempts + 1))
+                [ "$attempts" -lt 200 ] || exit 1
+                /bin/sleep 0.1
+            done
+            exec /usr/bin/open -n -a "$@"
+            """, "pet-restart", String(ProcessInfo.processInfo.processIdentifier),
+            Bundle.main.bundleURL.path, "--args"] + Array(CommandLine.arguments.dropFirst()).filter { $0 != "--autostart" }
+        helper.standardInput = FileHandle.nullDevice
+        helper.standardOutput = FileHandle.nullDevice
+        helper.standardError = FileHandle.nullDevice
+        do { try helper.run() }
+        catch {
+            restartPending = false
+            alert("无法重启应用：\(error.localizedDescription)")
+            return
         }
+        DispatchQueue.main.async { NSApp.terminate(nil) }
     }
     func applicationDidBecomeActive(_ notification: Notification) {
         if core != nil && !smoke && !startupPending { configureInput() }
@@ -356,11 +468,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let listen = input.listeningAllowed, access = input.accessibilityAllowed
         let keyboard = !flag("keyboardEnabled") ? "键盘互动已关闭" : (input.running ? "键盘互动已连接" : ((listen || access) ? "键盘权限已获准，连接待恢复" : "键盘互动等待授权"))
         let chat = !flag("hypQuickChat") ? "快速聊天已关闭" : (input.quickChatReady ? "快速聊天已连接" : (access ? "聊天权限已获准，连接待恢复" : "快速聊天等待辅助功能权限"))
-        permissionSummary?.stringValue = "输入监控：\(listen ? "已授权" : "待授权")   辅助功能：\(access ? "已授权" : "待授权")\n\(keyboard) · \(chat)"
+        permissionSummary?.stringValue = "\(keyboard) · \(chat)"
         inputRequestButton?.title = listen ? "输入监控已授权" : "申请输入监控"
         accessRequestButton?.title = access ? "辅助功能已授权" : "申请辅助功能"
         permissionLabel?.stringValue = "\(keyboard)。只用于角色动作，不保存或上传输入内容。"
-        accessLabel?.stringValue = "\(chat)。点击上方按钮授权，返回后自动重连；系统要求重新启动时可点击“重启应用”。"
+        accessLabel?.stringValue = "输入监控：\(listen ? "已授权" : "待授权") · 辅助功能：\(access ? "已授权" : "待授权")\n\(keyboard) · \(chat)"
         inputHealthLabel?.stringValue = input.diagnosticSummary
         // Opt-in diagnostics contain counts and permissions, never key text/codes.
         if CommandLine.arguments.contains("--input-diagnostics"),
@@ -371,7 +483,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showSettings(); return true }
     func applicationWillTerminate(_ notification: Notification) {
         guard core != nil else { return }
-        if pet != nil && !startupPending { savePosition() }; input.stop(); timer?.invalidate(); permissionTimer?.invalidate()
+        if pet != nil && !startupPending { savePosition() }; input.stop(); music.stop(); timer?.invalidate(); permissionTimer?.invalidate()
         if let monitor = mouseMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = localMouseMonitor { NSEvent.removeMonitor(monitor) }
         for token in sleepObservers { NSWorkspace.shared.notificationCenter.removeObserver(token) }
@@ -381,249 +493,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let a = NSAlert(); a.messageText = "Minecraft桌宠"; a.informativeText = text; a.runModal()
     }
     func showCoreError() { alert(pet_error(core).map { String(cString: $0) } ?? "操作失败。") }
-    func closePanel() -> NSWindow? { panel?.close(); bindings.removeAll(); return nil }
+    func closePanel() -> NSWindow? { panel?.close(); releaseConsole(); return nil }
 
-    @objc func showSettings() {
-        guard core != nil else { return }
-        if startupPending { finishStartup() }
-        if let panel { panel.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); updatePermission(); return }
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 630),
-                         styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        w.title = "Minecraft桌宠 v\(appVersion) · macOS"; w.isReleasedWhenClosed = false; w.delegate = self
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 660, height: 630)); w.contentView = root
-        let title = NSTextField(labelWithString: "MINECRAFT  桌宠")
-        title.font = .boldSystemFont(ofSize: 22); title.frame = NSRect(x: 24, y: 574, width: 560, height: 32); root.addSubview(title)
-        let subtitle = NSTextField(labelWithString: "原版 Rust 渲染器 · macOS 原生窗口 · 设置自动保存")
-        subtitle.textColor = .secondaryLabelColor; subtitle.frame = NSRect(x: 24, y: 550, width: 600, height: 20); root.addSubview(subtitle)
-        // Permission controls stay outside the scrolling pages and are always visible.
-        let banner = NSBox(frame: NSRect(x: 20, y: 438, width: 620, height: 103)); banner.boxType = .custom
-        banner.fillColor = .controlBackgroundColor; banner.borderColor = .separatorColor; banner.cornerRadius = 8
-        root.addSubview(banner)
-        let summary = NSTextField(wrappingLabelWithString: "")
-        summary.font = .systemFont(ofSize: 12); summary.frame = NSRect(x: 34, y: 489, width: 590, height: 40)
-        root.addSubview(summary); permissionSummary = summary
-        func permissionButton(_ x: CGFloat, _ width: CGFloat, _ title: String, _ action: Selector) -> NSButton {
-            let b = NSButton(title: title, target: self, action: action); b.bezelStyle = .rounded
-            b.frame = NSRect(x: x, y: 449, width: width, height: 30); root.addSubview(b); return b
-        }
-        inputRequestButton = permissionButton(30, 156, "申请输入监控", #selector(grantInput))
-        accessRequestButton = permissionButton(192, 156, "申请辅助功能", #selector(grantAccessibility))
-        _ = permissionButton(354, 126, "重新检测", #selector(refreshPermissions))
-        _ = permissionButton(486, 140, "重启应用", #selector(restartApplication))
-        let tabs = NSTabView(frame: NSRect(x: 16, y: 42, width: 628, height: 385)); root.addSubview(tabs)
-        controlTabs = tabs; tabs.delegate = self
-        addGeneral(tabs); addInput(tabs); addHead(tabs); addPose(tabs); addSkins(tabs); addStartup(tabs)
-        let hint = NSTextField(labelWithString: "穿透时请用菜单栏的方块图标控制桌宠；关闭窗口后仍在后台运行。")
-        hint.textColor = .secondaryLabelColor; hint.font = .systemFont(ofSize: 11)
-        hint.frame = NSRect(x: 24, y: 14, width: 610, height: 18); root.addSubview(hint)
-        tabs.layoutSubtreeIfNeeded(); scrollPageToTop(tabs.selectedTabViewItem)
-        panel = w; w.center(); w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); updatePermission()
-    }
-    func windowWillClose(_ notification: Notification) { save() }
-    func scrollPageToTop(_ item: NSTabViewItem?) {
-        guard let scroll = item?.view as? NSScrollView, let document = scroll.documentView else { return }
-        scroll.layoutSubtreeIfNeeded()
-        scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.frame.height-scroll.contentView.bounds.height)))
-        scroll.reflectScrolledClipView(scroll.contentView)
-    }
-    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
-        scrollPageToTop(tabViewItem)
-        DispatchQueue.main.async { [weak self, weak tabViewItem] in self?.scrollPageToTop(tabViewItem) }
-    }
-    func page(_ tabs: NSTabView, _ name: String, _ height: CGFloat = 600) -> NSView {
-        let item = NSTabViewItem(identifier: name); item.label = name
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 600, height: 452)); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = false; scroll.scrollerStyle = .legacy; scroll.drawsBackground = false
-        let doc = NSView(frame: NSRect(x: 0, y: 0, width: 594, height: height)); scroll.documentView = doc
-        item.view = scroll; tabs.addTabViewItem(item)
-        scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, height - scroll.contentSize.height)))
-        scroll.reflectScrolledClipView(scroll.contentView)
-        return doc
-    }
-    func note(_ doc: NSView, _ y: CGFloat, _ text: String) {
-        let label = NSTextField(wrappingLabelWithString: text); label.textColor = .secondaryLabelColor
-        label.font = .systemFont(ofSize: 12); label.frame = NSRect(x: 22, y: y, width: 546, height: 45); doc.addSubview(label)
-    }
-    func button(_ doc: NSView, _ y: CGFloat, _ title: String, _ action: Selector) {
-        let b = NSButton(title: title, target: self, action: action); b.bezelStyle = .rounded
-        b.frame = NSRect(x: 20, y: y, width: 220, height: 30); doc.addSubview(b)
-    }
-    func check(_ doc: NSView, _ y: CGFloat, _ title: String, _ key: String) {
-        let b = NSButton(checkboxWithTitle: title, target: self, action: #selector(controlChanged(_:)))
-        b.state = flag(key) ? .on : .off; b.frame = NSRect(x: 24, y: y, width: 530, height: 26)
-        bindings[ObjectIdentifier(b)] = Binding(key); doc.addSubview(b)
-    }
-    func popup(_ doc: NSView, _ y: CGFloat, _ title: String, _ key: String, _ names: [String], _ values: [Any]) {
-        let label = NSTextField(labelWithString: title); label.frame = NSRect(x: 24, y: y+4, width: 168, height: 20); doc.addSubview(label)
-        let b = NSPopUpButton(frame: NSRect(x: 196, y: y, width: 348, height: 28), pullsDown: false); b.addItems(withTitles: names)
-        let current = String(describing: settings[key] ?? "")
-        if let i = values.firstIndex(where: { String(describing: $0) == current }) { b.selectItem(at: i) }
-        b.target = self; b.action = #selector(controlChanged(_:)); bindings[ObjectIdentifier(b)] = Binding(key, values); doc.addSubview(b)
-    }
-    func value(_ key: String) -> Double {
-        let parts = key.split(separator: ".").map(String.init)
-        if parts.count == 1 { return number(key) }
-        if parts.count == 2, let index = Int(parts[1]), let list = settings[parts[0]] as? [Double] { return list[index] }
-        if parts.count == 3, let dict = settings[parts[0]] as? [String: Any], let list = dict[parts[1]] as? [Double], let index = Int(parts[2]) { return list[index] }
-        return 0
-    }
-    func setValue(_ key: String, _ value: Double) {
-        let p = key.split(separator: ".").map(String.init)
-        if p.count == 1 { settings[key] = value }
-        else if p.count == 2, let i = Int(p[1]), var list = settings[p[0]] as? [Double] { list[i] = value; settings[p[0]] = list }
-        else if p.count == 3, let i = Int(p[2]), var dict = settings[p[0]] as? [String: Any], var list = dict[p[1]] as? [Double] {
-            list[i] = value; dict[p[1]] = list; settings[p[0]] = dict
-        }
-    }
-    func slider(_ doc: NSView, _ y: CGFloat, _ title: String, _ key: String, _ min: Double, _ max: Double) {
-        let label = NSTextField(labelWithString: title); label.frame = NSRect(x: 24, y: y+3, width: 166, height: 20); doc.addSubview(label)
-        let v = value(key), out = NSTextField(labelWithString: String(format: "%.1f", v))
-        out.alignment = .right; out.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        out.frame = NSRect(x: 492, y: y+3, width: 62, height: 20); doc.addSubview(out)
-        let s = NSSlider(value: v, minValue: min, maxValue: max, target: self, action: #selector(controlChanged(_:)))
-        s.frame = NSRect(x: 196, y: y, width: 282, height: 26); s.isContinuous = true
-        bindings[ObjectIdentifier(s)] = Binding(key, [], out); doc.addSubview(s)
-    }
-    @objc func controlChanged(_ sender: NSControl) {
-        guard let b = bindings[ObjectIdentifier(sender)] else { return }
-        if let s = sender as? NSSlider { setValue(b.key, s.doubleValue); b.label?.stringValue = String(format: "%.1f", s.doubleValue) }
-        else if let p = sender as? NSPopUpButton { settings[b.key] = b.choices[p.indexOfSelectedItem] }
-        else if let c = sender as? NSButton { settings[b.key] = c.state == .on }
-        if b.key == "autostart" || b.key == "startupPriority" {
-            do {
-                if !smoke {
-                    if b.key == "autostart" { try syncLoginStartup() }
-                    else { try RenderPriority.apply(settings["startupPriority"] as? String ?? "normal") }
-                }
-                startupStatus?.stringValue = "已应用。登录启动与延迟将在下次登录时生效。"
-            } catch {
-                loadSettings()
-                if let c = sender as? NSButton { c.state = flag(b.key) ? .on : .off }
-                if let p = sender as? NSPopUpButton, let index = b.choices.firstIndex(where: { String(describing: $0) == String(describing: settings[b.key] ?? "") }) { p.selectItem(at: index) }
-                startupStatus?.stringValue = error.localizedDescription
-                return
-            }
-        }
-        changed()
-        if b.key == "autostart" || b.key == "startupPriority" { save() }
-        if b.key == "keyboardEnabled" || b.key == "hypQuickChat" {
-            save(); configureInput()
-            if b.key == "keyboardEnabled" && flag("keyboardEnabled") && !input.running { grantInput() }
-            if b.key == "hypQuickChat" && flag("hypQuickChat") && !input.accessibilityAllowed { grantAccessibility() }
-        }
-    }
-    func addInput(_ tabs: NSTabView) {
-        let d = page(tabs, "输入与聊天", 480)
-        check(d, 430, "启用 hyp 快速队伍聊天：# → /p chat ", "hypQuickChat")
-        note(d, 369, "与 Windows 版一致：仅替换半角 #，末尾保留空格，不自动发送。长按只触发一次；Command / Control 快捷键保持原行为。")
-        let label = NSTextField(wrappingLabelWithString: "")
-        label.frame = NSRect(x: 24, y: 312, width: 540, height: 48); label.font = .systemFont(ofSize: 12); label.textColor = .secondaryLabelColor
-        d.addSubview(label); accessLabel = label
-        let field = NSTextField(frame: NSRect(x: 24, y: 266, width: 530, height: 28))
-        field.placeholderString = "在这里输入 # 测试；应显示 /p chat（不会发送）"
-        d.addSubview(field); diagnosticsField = field
-        button(d, 215, "预览一次挥臂", #selector(previewSwing))
-        let health = NSTextField(wrappingLabelWithString: input.diagnosticSummary)
-        health.frame = NSRect(x: 24, y: 140, width: 540, height: 66)
-        health.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        d.addSubview(health); inputHealthLabel = health
-        note(d, 80, "辅助功能用于拦截井号并插入前缀。功能开启时对当前输入窗口生效；不使用剪贴板，不模拟松开物理修饰键。")
-        note(d, 18, "更新后权限可能需要重新授权：在系统设置移除旧的桌宠条目，重新添加当前应用并打开开关，再重启。若提示安全输入，请退出密码输入框。")
-    }
-    @objc func previewSwing() {
-        // The local mouse monitor is the single click source; keyboard activation needs a click.
-        if NSApp.currentEvent?.type != .leftMouseUp { handleMousePress() }
-        wake()
-    }
-
-    func addGeneral(_ tabs: NSTabView) {
-        let d = page(tabs, "基本", 640)
-        popup(d, 592, "姿态", "posture", ["站立", "坐下", "自定义"], ["standing", "sitting", "custom"])
-        popup(d, 552, "手臂模型", "armModel", ["经典 · 4 像素", "纤细 · 3 像素"], ["classic", "slim"])
-        popup(d, 512, "帧率上限", "fps", ["30", "60", "90", "120", "144", "165", "240"], [30,60,90,120,144,165,240])
-        slider(d, 470, "桌宠缩放", "scale", 0.65, 1.8)
-        check(d, 430, "始终置顶", "alwaysOnTop")
-        check(d, 394, "完全鼠标穿透（悬停淡化）", "clickThrough")
-        check(d, 358, "头部跟随鼠标", "trackMouse")
-        check(d, 322, "显示皮肤外层", "outerLayer")
-        check(d, 286, "全局键盘互动 / Shift 潜行", "keyboardEnabled")
-        popup(d, 244, "打字动作", "typingMode", ["按键位置精准敲击", "双手交替"], ["precise", "alternating"])
-        popup(d, 204, "点击挥动主手", "mainHand", ["右手", "左手"], ["right", "left"])
-        slider(d, 164, "打字下压幅度 %", "typingSquash", 0, 30)
-        let p = NSTextField(wrappingLabelWithString: ""); p.frame = NSRect(x: 24, y: 100, width: 540, height: 42); p.font = .systemFont(ofSize: 12); p.textColor = .secondaryLabelColor
-        d.addSubview(p); permissionLabel = p
-        button(d, 58, "立即申请输入监控…", #selector(grantInput))
-        note(d, 4, "取消穿透后可拖动桌宠；双击或右键打开控制台。静止时暂停渲染。")
-    }
-    func addHead(_ tabs: NSTabView) {
-        let d = page(tabs, "视角", 480)
-        let items: [(String,String,Double,Double)] = [
-            ("水平灵敏度 %","headSensitivityX",0,300),("垂直灵敏度 %","headSensitivityY",0,300),
-            ("水平范围 °","headRangeX",0,85),("垂直范围 °","headRangeY",0,85),
-            ("水平中心 °","headCenterX",-60,60),("垂直中心 °","headCenterY",-60,60),
-            ("整体旋转 X °","modelRotation.0",-180,180),("整体旋转 Y °","modelRotation.1",-180,180),
-            ("整体旋转 Z °","modelRotation.2",-180,180)]
-        for (i,v) in items.enumerated() { slider(d, CGFloat(432-i*43), v.0, v.1, v.2, v.3) }
-        note(d, 8, "头部跟随以全局鼠标位置为准，支持多个显示器。")
-    }
-    func addPose(_ tabs: NSTabView) {
-        let d = page(tabs, "自定义姿态", 1770)
-        popup(d, 1720, "自定义基础姿态", "customBase", ["站姿", "坐姿"], ["standing", "sitting"])
-        note(d, 1660, "在“基本”页将姿态设为“自定义”即可使用。分别保存站姿与坐姿；以下为各部位 X / Y / Z 旋转角度。")
-        let rows = [("head","头部"),("body","身体"),("leftArm","左臂"),("rightArm","右臂"),("leftLeg","左腿"),("rightLeg","右腿")]
-        var y: CGFloat = 1610
-        for (key, title) in [("customPose", "自定义站姿"),("customSittingPose", "自定义坐姿")] {
-            let l = NSTextField(labelWithString: title); l.font = .boldSystemFont(ofSize: 14); l.frame = NSRect(x: 24, y: y, width: 540, height: 24); d.addSubview(l); y -= 38
-            for (part,name) in rows {
-                for axis in 0..<3 { slider(d, y, "\(name) \(["X","Y","Z"][axis]) °", "\(key).\(part).\(axis)", -180, 180); y -= 39 }
-            }
-            y -= 22
-        }
-    }
-    func syncLoginStartup() throws {
-        try LoginStartup.setEnabled(flag("autostart"), app: Bundle.main.bundleURL, data: dataDir, directory: loginDirectory)
-    }
-    func addStartup(_ tabs: NSTabView) {
-        let d = page(tabs, "启动与性能", 400)
-        check(d, 350, "登录 macOS 后自动启动", "autostart")
-        popup(d, 302, "登录启动延迟", "autostartDelay", ["立即", "5 秒", "15 秒", "30 秒", "60 秒", "120 秒"], LoginStartup.delays)
-        note(d, 240, "仅登录自动启动时延迟，手动启动立即显示。移动应用后请手动打开一次，以更新启动路径。")
-        popup(d, 193, "渲染线程 QoS", "startupPriority", ["空闲（后台）", "较低（节能）", "正常（默认）", "较高（用户发起）", "高（交互）"], RenderPriority.values)
-        note(d, 124, "使用 macOS 的线程服务质量请求，对应五档性能偏好；不同于 Windows 进程优先级。实际调度由系统决定，不需要管理员权限。")
-        let label = NSTextField(wrappingLabelWithString: "通过当前用户 LaunchAgent 在下次登录时启动；不会关闭或重启当前应用。")
-        label.frame = NSRect(x: 24, y: 50, width: 540, height: 60); label.textColor = .secondaryLabelColor
-        d.addSubview(label); startupStatus = label
-    }
-    func addSkins(_ tabs: NSTabView) {
-        let d = page(tabs, "皮肤与关于", 590)
-        check(d, 545, "显示正版披风（随正版皮肤一起获取）", "showCape")
-        let summary = NSTextField(wrappingLabelWithString: "")
-        summary.frame = NSRect(x: 22, y: 452, width: 546, height: 45)
-        summary.textColor = .secondaryLabelColor; summary.font = .systemFont(ofSize: 12)
-        d.addSubview(summary); skinSummary = summary; updateSkinSummary()
-        button(d, 404, "导入本地 PNG 皮肤…", #selector(importSkin))
-        let f = NSTextField(frame: NSRect(x: 24, y: 350, width: 340, height: 26)); f.placeholderString = "Java 版用户名或 UUID"; d.addSubview(f); onlineField = f
-        let b = NSButton(title: "获取皮肤与披风", target: self, action: #selector(downloadSkin)); b.bezelStyle = .rounded; b.frame = NSRect(x: 374, y: 347, width: 175, height: 30); d.addSubview(b)
-        let s = NSTextField(wrappingLabelWithString: "仅主动获取时连接 Mojang 官方资料与纹理服务。")
-        s.frame = NSRect(x: 24, y: 292, width: 530, height: 44); s.textColor = .secondaryLabelColor; d.addSubview(s); onlineStatus = s
-        button(d, 240, "打开设置文件夹", #selector(openDataFolder))
-        button(d, 198, "恢复默认设置和内置皮肤", #selector(resetSettings))
-        note(d, 120, "Minecraft桌宠 v\(appVersion) · macOS\n正版披风 · 登录启动与延迟 · 输入权限与快速聊天")
-        note(d, 56, "独立粉丝作品，与 Mojang Studios / Microsoft 无关联。\n原项目 MIT 许可；项目与依赖许可随应用附带。")
-        button(d, 12, "打开项目主页", #selector(openProject))
-    }
-    func updateSkinSummary() {
-        skinSummary?.stringValue = "当前皮肤：\(settings["skinName"] as? String ?? "内置")\n支持 64×64、64×32 及等比例高清 PNG（最大 1024×1024、8 MB）。"
-    }
-    @objc func importSkin() {
-        let p = NSOpenPanel(); p.allowedContentTypes = [.png]; p.allowsMultipleSelection = false; p.canChooseDirectories = false
-        NSApp.activate(ignoringOtherApps: true)
-        if p.runModal() == .OK, let url = p.url {
-            downloadID = UUID()
-            save()
-            if !url.path.withCString({ pet_import(core, $0) }) { showCoreError(); return }
-            loadSettings(); wake(); panel = closePanel(); showSettings()
-        }
-    }
     var downloadID = UUID()
     @objc func downloadSkin() {
         guard let input = onlineField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), !input.isEmpty else { return }
@@ -705,62 +576,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             catch { alert(error.localizedDescription); return }
         }
         if !pet_reset(core) { showCoreError(); return }
-        if !smoke { try? RenderPriority.apply("normal") }
-        loadSettings(); applyWindow(); restartTimer(); configureInput(); recenter(); wake(); panel = closePanel(); showSettings()
-    }
-    func runUIRegression() {
-        let saved = settings
-        settings["clickThrough"] = false; settings["trackMouse"] = false; settings["hypQuickChat"] = true
-        changed(); save()
-        let before = mousePresses
-        let point = NSPoint(x: pet.frame.width/2, y: pet.frame.height/2)
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp, .otherMouseDown, .otherMouseUp] {
-            if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                windowNumber: pet.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 0.5) { NSApp.sendEvent(event) }
-        }
-        precondition(mousePresses == before+2, "Each physical click must dispatch exactly one swing")
-        loadSettings(); precondition(flag("hypQuickChat"), "Quick chat option must persist")
-        precondition(inputRequestButton?.superview === panel?.contentView, "Permission request must stay outside scroll view")
-        precondition(controlTabs?.numberOfTabViewItems == 6)
-        controlTabs?.selectTabViewItem(at: 1)
-        if let field = diagnosticsField, let window = panel {
-            window.makeFirstResponder(field)
-            for event in QuickChat.replacementEvents()! {
-                if let nsEvent = NSEvent(cgEvent: event) { NSApp.sendEvent(nsEvent) }
-            }
-            precondition(field.stringValue == QuickChat.text, "Injected Unicode events must insert exact text in AppKit")
-            field.stringValue = ""
-        }
-        // Exercise production control bindings, persistence and all page layouts.
-        func controls(_ view: NSView) -> [NSControl] {
-            (view as? NSControl).map { [$0] } ?? view.subviews.flatMap { controls($0) }
-        }
-        let all = controlTabs?.tabViewItems.flatMap { item in item.view.map { controls($0) } ?? [] } ?? []
-        for key in ["showCape", "autostart"] {
-            guard let toggle = all.compactMap({ $0 as? NSButton }).first(where: { bindings[ObjectIdentifier($0)]?.key == key }) else { preconditionFailure("Missing \(key) control") }
-            let expected = !flag(key); toggle.state = expected ? .on : .off
-            controlChanged(toggle); save(); loadSettings(); precondition(flag(key) == expected)
-        }
-        for key in ["autostartDelay", "startupPriority"] {
-            guard let popup = all.compactMap({ $0 as? NSPopUpButton }).first(where: { bindings[ObjectIdentifier($0)]?.key == key }) else { preconditionFailure("Missing \(key) control") }
-            popup.selectItem(at: popup.numberOfItems-1); controlChanged(popup); save(); loadSettings()
-        }
-        precondition(number("autostartDelay") == 120 && settings["startupPriority"] as? String == "high")
-        if let tabs = controlTabs, let content = panel?.contentView {
-            for index in 0..<tabs.numberOfTabViewItems {
-                tabs.selectTabViewItem(at: index); content.layoutSubtreeIfNeeded()
-                scrollPageToTop(tabs.selectedTabViewItem)
-                if let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
-                    content.cacheDisplay(in: content.bounds, to: rep)
-                    if let png = rep.representation(using: .png, properties: [:]) {
-                        try? png.write(to: dataDir.appendingPathComponent("smoke-tab-\(index).png"))
-                    }
-                }
-            }
-        }
-        settings = saved; changed(); save()
-        print("UI regression: cape/startup/delay/QoS bindings and all six tab layouts passed")
-        print("UI regression: click de-duplication, nonblocking mouse-up, quick-chat persistence, AppKit text insertion and fixed permission controls passed")
+        loadSettings(); configureMusic(); applyWindow(); restartTimer(); configureInput(); recenter(); wake(); panel = closePanel(); showSettings()
     }
     func writeSmokeReport() {
         guard let bitmap = view.bitmap else { return }
@@ -784,7 +600,14 @@ struct PetError: LocalizedError {
     init(_ text: String) { self.text = text }
     var errorDescription: String? { text }
 }
+if CommandLine.arguments.contains("--probe-audio") {
+    let result = AudioOutputProbe.snapshot()
+    print("Audio output: \(result.playing.map(String.init) ?? "unavailable"); source: \(result.source)")
+    exit(0)
+}
 if CommandLine.arguments.contains("--self-test-input") { InputSelfTests.run(); exit(0) }
+if CommandLine.arguments.contains(where: { ["--self-test-ui", "--smoke-test", "--memory-test", "--self-test-startup", "--self-test-restart"].contains($0) })
+    && !CommandLine.arguments.contains("--data-dir") { fputs("UI tests require --data-dir\n", stderr); exit(2) }
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
