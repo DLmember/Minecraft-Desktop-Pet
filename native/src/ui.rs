@@ -188,6 +188,7 @@ impl App {
         self.radio("经典（4 px）", 100, 196, 150, 114);
         self.radio("纤细（3 px）", 260, 196, 150, 115);
         self.check("显示皮肤外层", 490, 196, 220, 124);
+        self.check("Q 版小人", 490, 220, 220, 139);
         self.control("STATIC", "姿势", 0, 24, 244, 65, 24, 0);
         self.radio("站立", 100, 240, 100, 110);
         self.radio("坐下", 210, 240, 100, 111);
@@ -235,6 +236,9 @@ impl App {
         self.control("STATIC", "打字压低", 0, 24, 588, 120, 24, 0);
         self.slider(211, 150, 584, 490, 0, 30);
         self.control("STATIC", "", SS_RIGHT, 650, 588, 84, 24, 611);
+        self.control("STATIC", "Q版手腿粗细", 0, 24, 612, 120, 24, 0);
+        self.slider(212, 150, 608, 490, 30, 300);
+        self.control("STATIC", "", SS_RIGHT, 650, 612, 84, 24, 612);
         self.check("显示正版披风", 24, 626, 210, 138);
         self.control("STATIC", "仅在账号有披风时出现", 0, 250, 628, 260, 24, 0);
         self.control("STATIC", "开机自启", 0, 24, 664, 90, 24, 0);
@@ -606,6 +610,7 @@ impl App {
             (123, self.settings.track_mouse),
             (124, self.settings.outer_layer),
             (138, self.settings.show_cape),
+            (139, self.settings.chibi),
             (160, self.settings.autostart),
         ] {
             SendMessageW(
@@ -719,7 +724,7 @@ impl App {
         self.settings.clean();
         self.wake();
         let text = match id {
-            200 | 201 | 204 | 211 => format!("{}%", value as i32),
+            200 | 201 | 204 | 211 | 212 => format!("{}%", value as i32),
             202 | 205 => format!("±{}°", value / 2.),
             207 => format!("{} FPS", self.settings.fps),
             _ => format!("{:+}°", value as i32),
@@ -926,6 +931,11 @@ pub(super) unsafe fn panel_proc(
         WM_CLOSE => {
             a.save();
             DestroyWindow(hwnd);
+            // 关闭控制台后如果托盘图标此前没加上，再重试一轮。
+            if !a.tray_ok {
+                a.tray_retry = 0;
+                a.tray_retry_at = 0.;
+            }
             0
         }
         WM_DESTROY => {
@@ -973,7 +983,7 @@ pub(super) unsafe fn diagnostic_snapshot(a: &mut App) {
         .iter()
         .map(|(id, h)| serde_json::json!({"id":id,"hwnd":*h as usize}))
         .collect();
-    let data = serde_json::json!({"pid":std::process::id(),"pet":a.hwnd as usize,"panel":a.panel as usize,"controls":controls,"settings":a.settings,"page":a.panel_page,"renderCount":a.render_count,"rasterUs":a.raster_us,"presentUs":a.present_us,"dpi":a.dpi,"head":{"yaw":a.pose.yaw,"pitch":a.pose.pitch,"local":a.pose.head_rotation.to_array()},"sit":a.pose.sit,"crouch":a.pose.crouch,"arms":a.pose.arms.map(|q|q.to_array()),"hook":!a.hook.is_null(),"mouseHook":!a.mouse_hook.is_null(),"heldKeys":a.pose.held_codes(),"squash":a.pose.squash,"swingProgress":a.pose.swing_progress,"bodyYaw":a.pose.body_yaw,"onlinePending":a.download.is_some(),"onlineNotice":a.online_notice,"bounds":a.frame.bounds,"position":[a.pos.x,a.pos.y],"size":[a.width,a.height]});
+    let data = serde_json::json!({"pid":std::process::id(),"pet":a.hwnd as usize,"panel":a.panel as usize,"controls":controls,"settings":a.settings,"page":a.panel_page,"renderCount":a.render_count,"rasterUs":a.raster_us,"presentUs":a.present_us,"tickGapMaxUs":a.tick_gap_max_us,"tickGapAvgUs":a.tick_gap_sum_us/a.tick_gap_count.max(1),"clicks":a.click_count,"dpi":a.dpi,"head":{"yaw":a.pose.yaw,"pitch":a.pose.pitch,"local":a.pose.head_rotation.to_array()},"sit":a.pose.sit,"crouch":a.pose.crouch,"arms":a.pose.arms.map(|q|q.to_array()),"hook":!a.hook.is_null(),"clickPolling":true,"trayOk":a.tray_ok,"trayError":a.tray_error,"heldKeys":a.pose.held_codes(),"squash":a.pose.squash,"swingProgress":a.pose.swing_progress,"bodyYaw":a.pose.body_yaw,"onlinePending":a.download.is_some(),"onlineNotice":a.online_notice,"bounds":a.frame.bounds,"position":[a.pos.x,a.pos.y],"size":[a.width,a.height]});
     let _ = config::atomic(
         &a.store.dir.join("diagnostic.json"),
         serde_json::to_string_pretty(&data).unwrap().as_bytes(),

@@ -16,4 +16,5 @@ void pet_clear_keys(PetCore *core);
 void pet_click(PetCore *core, float now);
 const uint8_t *pet_render(PetCore *core, float x, float y, float width, float height, bool shift, float now, float dt);
 bool pet_hit(PetCore *core, float x, float y);
+float pet_blink_at(PetCore *core, float now);
 #endif

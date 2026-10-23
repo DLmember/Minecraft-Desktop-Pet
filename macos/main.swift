@@ -269,7 +269,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if cursor != lastCursor && flag("trackMouse") { awakeUntil = max(awakeUntil, now+0.05) }
         if shift != lastShift && flag("keyboardEnabled") { wake() }
         lastCursor = cursor; lastShift = shift
-        if !hidden && now <= awakeUntil {
+        // 静止时不按帧率重绘；眨眼是时间轴动画，要在这时也出帧，
+        // 否则不动的桌宠永远闭不上眼。
+        let blinking = pet_blink_at(core, now) > 0.0001
+        if !hidden && (now <= awakeUntil || blinking) {
             let r = pet.frame
             let x = Float(cursor.x - r.minX), y = Float(r.maxY - cursor.y)
             if let bytes = pet_render(core, x, y, Float(r.width), Float(r.height), shift, now, min(0.05, max(0.001, now-lastDraw))) {
@@ -513,15 +516,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         note(d, 4, "取消穿透后可拖动桌宠；双击或右键打开控制台。静止时暂停渲染。")
     }
     func addHead(_ tabs: NSTabView) {
-        let d = page(tabs, "视角", 480)
+        let d = page(tabs, "视角", 520)
         let items: [(String,String,Double,Double)] = [
             ("水平灵敏度 %","headSensitivityX",0,300),("垂直灵敏度 %","headSensitivityY",0,300),
             ("水平范围 °","headRangeX",0,85),("垂直范围 °","headRangeY",0,85),
             ("水平中心 °","headCenterX",-60,60),("垂直中心 °","headCenterY",-60,60),
             ("整体旋转 X °","modelRotation.0",-180,180),("整体旋转 Y °","modelRotation.1",-180,180),
-            ("整体旋转 Z °","modelRotation.2",-180,180)]
-        for (i,v) in items.enumerated() { slider(d, CGFloat(432-i*43), v.0, v.1, v.2, v.3) }
-        note(d, 8, "头部跟随以全局鼠标位置为准，支持多个显示器。")
+            ("整体旋转 Z °","modelRotation.2",-180,180),("扭腰幅度 %","sway",0,200)]
+        for (i,v) in items.enumerated() { slider(d, CGFloat(472-i*43), v.0, v.1, v.2, v.3) }
+        note(d, 8, "头部跟随以全局鼠标位置为准，支持多个显示器。按住 Shift 潜行 3 秒后开始扭腰，幅度由上方滑条缩放。")
     }
     func addPose(_ tabs: NSTabView) {
         let d = page(tabs, "自定义姿态", 1770)

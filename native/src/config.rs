@@ -77,6 +77,7 @@ pub struct Settings {
     pub autostart: bool,
     pub show_cape: bool,
     pub cape_path: String,
+    pub chibi: bool,
     pub autostart_delay: u32,
     pub startup_priority: String,
     pub outer_layer: bool,
@@ -112,6 +113,7 @@ impl Default for Settings {
             autostart: false,
             show_cape: true,
             cape_path: String::new(),
+            chibi: false,
             autostart_delay: 0,
             startup_priority: "normal".into(),
             outer_layer: true,
@@ -243,13 +245,31 @@ impl Settings {
         }
     }
 }
+fn write_file(path: &Path, data: &[u8]) -> Result<(), String> {
+    fs::File::create(path)
+        .and_then(|mut file| {
+            file.write_all(data)?;
+            file.sync_all()
+        })
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+/// Write through a temporary file so a crash cannot truncate the settings.
+/// Security software sometimes blocks the rename dance; in that case fall back
+/// to a direct write of the same path instead of losing the user's changes.
 pub fn atomic(path: &Path, data: &[u8]) -> Result<(), String> {
-    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let parent = path.parent().unwrap();
+    fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     let tmp = PathBuf::from(format!("{}.tmp", path.display()));
-    let mut file = fs::File::create(&tmp).map_err(|e| e.to_string())?;
-    file.write_all(data).map_err(|e| e.to_string())?;
-    file.sync_all().map_err(|e| e.to_string())?;
-    drop(file);
+    let staged = fs::File::create(&tmp).and_then(|mut file| {
+        file.write_all(data)?;
+        file.sync_all()
+    });
+    if let Err(staged) = staged {
+        let _ = fs::remove_file(&tmp);
+        return write_file(path, data).map_err(|direct| {
+            format!("临时文件失败：{staged}；直接写入失败：{direct}")
+        });
+    }
     #[cfg(windows)]
     {
         let a: Vec<u16> = tmp.as_os_str().encode_wide_null();
@@ -260,19 +280,24 @@ pub fn atomic(path: &Path, data: &[u8]) -> Result<(), String> {
                 b.as_ptr(),
                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
             )
-        } == 0
+        } != 0
         {
-            return Err(std::io::Error::last_os_error().to_string());
+            return Ok(());
         }
+        let replaced = std::io::Error::last_os_error();
+        let _ = fs::remove_file(&tmp);
+        write_file(path, data).map_err(|direct| {
+            format!("替换失败：{replaced}；直接写入失败：{direct}")
+        })
     }
     #[cfg(not(windows))]
     {
         fs::rename(&tmp, path).map_err(|e| e.to_string())?;
-        fs::File::open(path.parent().unwrap())
+        fs::File::open(parent)
             .and_then(|dir| dir.sync_all())
             .map_err(|e| e.to_string())?;
+        Ok(())
     }
-    Ok(())
 }
 #[cfg(windows)]
 trait Wide {

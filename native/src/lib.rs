@@ -144,6 +144,12 @@ pub unsafe extern "C" fn pet_hit(core: *mut PetCore, x: f32, y: f32) -> bool {
     if x < 0. || y < 0. || x >= 1. || y >= 1. { return false; }
     c.frame.pixels[((y * 525.) as usize * 450 + (x * 450.) as usize) * 4 + 3] != 0
 }
+/// 当前闭眼程度（0 = 睁开，1 = 闭合）。宿主在静止时不重绘，
+/// 用它判断是否需要在眨眼期间额外出帧。
+#[no_mangle]
+pub unsafe extern "C" fn pet_blink_at(core: *mut PetCore, now: f32) -> f32 {
+    core.as_ref().map_or(0., |c| c.pose.blink_at(now))
+}
 
 #[cfg(test)]
 mod ffi_tests {

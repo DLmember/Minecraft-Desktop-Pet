@@ -278,7 +278,7 @@ mod tests {
         let slim = serde_json::json!({"properties":[{"name":"textures","value":"eyJ0ZXh0dXJlcyI6IHsiU0tJTiI6IHsidXJsIjogImh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvYWJjMTIzIiwgIm1ldGFkYXRhIjogeyJtb2RlbCI6ICJzbGltIn19fX0="}]});
         let classic = serde_json::json!({"properties":[{"name":"textures","value":"eyJ0ZXh0dXJlcyI6IHsiU0tJTiI6IHsidXJsIjogImh0dHBzOi8vdGV4dHVyZXMubWluZWNyYWZ0Lm5ldC90ZXh0dXJlL2FiYzEyMyIsICJtZXRhZGF0YSI6IHsibW9kZWwiOiAiY2xhc3NpYyJ9fX19"}]});
         let foreign = serde_json::json!({"properties":[{"name":"textures","value":"eyJ0ZXh0dXJlcyI6IHsiU0tJTiI6IHsidXJsIjogImh0dHBzOi8vb3RoZXIuZXhhbXBsZS90ZXh0dXJlL2FiYzEyMyIsICJtZXRhZGF0YSI6IHsibW9kZWwiOiAic2xpbSJ9fX19"}]});
-        assert_eq!(texture(&slim).unwrap(), ("/texture/abc123".into(), true));
+        assert_eq!(texture(&slim).unwrap(), ("/texture/abc123".into(), true, None));
         assert_eq!(texture(&classic).unwrap().1, false);
         assert!(texture(&foreign).is_err());
     }
