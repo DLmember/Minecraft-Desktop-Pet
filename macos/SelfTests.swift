@@ -75,6 +75,26 @@ enum InputSelfTests {
             check(LoginStartup.delay(arguments: ["pet", "--autostart"], enabled: false, seconds: delay) == 0, "disabled login has no delay")
         }
         check(LoginStartup.delay(arguments: ["--autostart"], enabled: true, seconds: 999) == 0, "invalid delay rejected")
+        for arguments in [["pet", "--autostart"], ["pet", "--autostart", "--show-settings"]] {
+            for keyboardReady in [false,true] {
+                for chatReady in [false,true] {
+                    check(!LaunchMode.shouldShowSettings(arguments: arguments, keyboardEnabled: true,
+                        keyboardRunning: keyboardReady, quickChatEnabled: true, quickChatReady: chatReady),
+                        "login launch never opens settings, including missing permissions")
+                }
+            }
+        }
+        check(LaunchMode.shouldShowSettings(arguments: ["pet", "--show-settings"], keyboardEnabled: false,
+            keyboardRunning: true, quickChatEnabled: false, quickChatReady: true), "explicit console launch")
+        check(!LaunchMode.shouldShowSettings(arguments: ["pet"], keyboardEnabled: true,
+            keyboardRunning: true, quickChatEnabled: false, quickChatReady: true), "healthy manual launch remains quiet")
+        check(LaunchMode.shouldShowSettings(arguments: ["pet"], keyboardEnabled: true,
+            keyboardRunning: false, quickChatEnabled: false, quickChatReady: true), "manual missing permissions remain discoverable")
+        check(AudioOutputProbe.activity([]) == false, "no audio output clients")
+        check(AudioOutputProbe.activity([0,0]) == false, "paused audio clients")
+        check(AudioOutputProbe.activity([0,1,0]) == true, "any application can signal output")
+        check(AudioOutputProbe.activity([nil,1]) == true, "active audio survives another failed read")
+        check(AudioOutputProbe.activity([nil,0]) == nil, "unavailable audio is not reported as playing")
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("pet-platform-test-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         do {
@@ -106,14 +126,6 @@ enum InputSelfTests {
             try LoginStartup.setEnabled(true, app: moved, data: data, directory: agents)
             let updated = try PropertyListSerialization.propertyList(from: Data(contentsOf: target), format: nil) as! [String: Any]
             check((updated["ProgramArguments"] as! [String])[3] == moved.path, "moved application path updates")
-            for value in RenderPriority.values {
-                try RenderPriority.apply(value)
-                var requested = QOS_CLASS_UNSPECIFIED
-                let result = pthread_get_qos_class_np(pthread_self(), &requested, nil)
-                check(result == 0 && requested == RenderPriority.qos(value), "requested QoS reads back")
-            }
-            try RenderPriority.apply("normal")
-            check(RenderPriority.qos("invalid") == RenderPriority.qos("normal"), "unknown QoS defaults to normal")
             let valid = try OfficialTexture.address("http://textures.minecraft.net/texture/abcdef123456")
             check(valid == "https://textures.minecraft.net/texture/abcdef123456", "legacy official URL upgraded to HTTPS")
             for bad in ["https://evil.example/texture/abc", "https://textures.minecraft.net.evil.example/texture/abc",

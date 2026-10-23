@@ -1,3 +1,4 @@
+pub(crate) use effects::install_glyphs;
 #[path = "render_effects.rs"]
 mod effects;
 #[path = "render_gestures.rs"]
@@ -24,7 +25,9 @@ const BLINK_RATE: f32 = 2.5;
 // da_elapsed_ref = (age - last_age) * 3; age = seconds * 20.
 const DANCE_RATE: f32 = 0.175 * 60.;
 /// 六个面的明暗查色表；皮肤和披风共用同一套光照。
-fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
+fn shade_lut() -> &'static [[[u8; 256]; 3]; 6] {
+    static LUT: std::sync::OnceLock<[[[u8; 256]; 3]; 6]> = std::sync::OnceLock::new();
+    LUT.get_or_init(|| {
     let shades = [0.80, 0.80, 1., 0.62, 0.94, 0.86];
     let mut lut = [[[0u8; 256]; 3]; 6];
     for f in 0..6 {
@@ -46,6 +49,13 @@ fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
         }
         }
     }
+        lut
+    })
+}
+fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
+    // macOS uses the same LUT at sampling time, saving 18 MiB for a 1024² skin.
+    if cfg!(all(target_os = "macos", not(test))) { return Vec::new(); }
+    let lut = shade_lut();
     image
         .pixels()
         .map(|p| {
@@ -1888,7 +1898,14 @@ impl Frame {
                     let xx = (tx as u32).min(skin.image.width() - 1);
                     let yy = (ty as u32).min(skin.image.height() - 1);
                     let ti = (yy * skin.image.width() + xx) as usize;
-                    (skin.colors[ti][face], skin.image.get_pixel(xx, yy)[3])
+                    {
+                        let p = skin.image.get_pixel(xx, yy);
+                        let color = if skin.colors.is_empty() {
+                            let lut = shade_lut();
+                            [lut[face][0][p[0] as usize], lut[face][1][p[1] as usize], lut[face][2][p[2] as usize]]
+                        } else { skin.colors[ti][face] };
+                        (color, p[3])
+                    }
                 };
                 if alpha < 16 {
                     continue;
@@ -1939,6 +1956,26 @@ fn edge(a: Vec3, b: Vec3, p: Vec3) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn compact_color_sampling_is_pixel_identical() {
+        let mut skin = Skin::load(DEFAULT_SKIN).unwrap();
+        let mut s = Settings::default();
+        s.da_blink=false; s.track_mouse=false;
+        for chibi in [false,true] {
+            s.chibi=chibi;
+            for posture in ["standing","sitting","custom"] {
+                s.posture=posture.into();
+                let pose=Pose::new(&s);
+                let mut frame=Frame::new(240,280);
+                skin.colors=colors_for(&skin.image);
+                frame.draw(&s,&skin,&pose); let expected=frame.pixels.clone();
+                skin.colors.clear();
+                frame.draw(&s,&skin,&pose);
+                assert_eq!(frame.pixels,expected,"{chibi}/{posture}");
+            }
+        }
+    }
+
     #[test]
     fn breathing_runs_immediately_through_actions_and_preserves_custom_pose() {
         let skin=Skin::load(DEFAULT_SKIN).unwrap();

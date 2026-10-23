@@ -187,8 +187,12 @@ impl Frame {
         }}}
     }
 }
+static GLYPHS:OnceLock<Vec<[u8;576]>>=OnceLock::new();
+pub(crate) fn install_glyphs(bytes: &[u8]) -> bool {
+    if bytes.len() != 95 * 576 { return false; }
+    GLYPHS.set(bytes.chunks_exact(576).map(|c| c.try_into().unwrap()).collect()).is_ok()
+}
 fn glyphs()-> &'static Vec<[u8;576]> {
-    static GLYPHS:OnceLock<Vec<[u8;576]>>=OnceLock::new();
     GLYPHS.get_or_init(|| {
         let mut result=vec![[0;576];95];
         #[cfg(windows)] unsafe {
