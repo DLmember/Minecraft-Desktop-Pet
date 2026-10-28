@@ -7,16 +7,34 @@ pub(super) const CANDY_COLORS:[[u8;3];9]=[
     [248,188,199],[248,176,234],[248,201,173],[248,225,156],
     [220,252,231],[106,222,216],[123,225,249],[155,210,248],[187,185,248],
 ];
-pub(super) struct Letter { pub pos: Vec2, pub ch: u8, pub start: f32, pub color:[u8;3] }
+pub(super) struct Letter {
+    pub pos: Option<Vec2>, pub label: String, pub side: usize,
+    pub hand_origin: Option<Vec3>, pub start: f32, pub color:[u8;3],
+}
 pub(super) struct Note { pub start:f32, pub phase:f32 }
-pub(super) fn key_label(vk:u32)->Option<u8> {
-    match vk {
-        48..=57 | 65..=90 => Some(vk as u8),
-        186=>Some(b';'),187=>Some(b'='),188=>Some(b','),189=>Some(b'-'),
-        190=>Some(b'.'),191=>Some(b'/'),192=>Some(b'`'),219=>Some(b'['),
-        220=>Some(b'\\'),221=>Some(b']'),222=>Some(b'\''),
-        _=>None,
-    }
+pub(super) fn key_label(vk:u32)->Option<String> {
+    if matches!(vk,48..=57 | 65..=90) { return Some((vk as u8 as char).to_string()); }
+    if (96..=105).contains(&vk) { return Some((vk-96).to_string()); }
+    if (112..=135).contains(&vk) { return Some(format!("F{}",vk-111)); }
+    Some(match vk {
+        8=>"Back",9=>"Tab",12=>"Clear",13|0x1000=>"Enter",
+        16|160|161=>"Shift",17|162|163=>"Ctrl",18|164|165=>"Alt",
+        19=>"Pause",20=>"CapsLock",27=>"Esc",32=>"Space",
+        33=>"PageUp",34=>"PageDown",35=>"End",36=>"Home",
+        37=>"Left",38=>"Up",39=>"Right",40=>"Down",
+        44=>"PrintScreen",45=>"Insert",46=>"Delete",91|92=>"Win",93=>"Menu",
+        106=>"*",107=>"+",108=>",",109=>"-",110=>".",111=>"/",
+        144=>"NumLock",145=>"ScrollLock",
+        166=>"BrowserBack",167=>"BrowserForward",168=>"Refresh",169=>"Stop",
+        170=>"Search",171=>"Favorites",172=>"BrowserHome",
+        173=>"Mute",174=>"VolumeDown",175=>"VolumeUp",176=>"NextTrack",
+        177=>"PrevTrack",178=>"MediaStop",179=>"PlayPause",
+        180=>"Mail",181=>"Media",182=>"App1",183=>"App2",
+        186=>";",187=>"=",188=>",",189=>"-",190=>".",191=>"/",192=>"`",
+        219=>"[",220|226=>"\\",221=>"]",222=>"'",
+        1..=6 | 0=>return None,
+        _=>return Some(format!("Key{vk:X}")),
+    }.into())
 }
 struct Apple { image:RgbaImage, colors:Vec<[[u8;3];6]> }
 fn apple()-> &'static Apple {
@@ -29,6 +47,28 @@ fn apple()-> &'static Apple {
 
 impl Frame {
     pub(super) fn draw_effects(&mut self,s:&Settings,skin:&Skin,pose:&Pose) {
+        if let Some(height)=pose.question_height() {
+            let boxes=parts_with_cape(s,skin,pose,None);
+            let head=&boxes[if s.chibi {0} else {1}];
+            let top=head.transform.transform_point3(Vec3::new(0.,head.size.y/2.+0.5,0.));
+            let origin=project(top,self.width as f32,self.height as f32);
+            let scale=self.width as f32/44.;
+            let size=(4.2*scale).max(12.);
+            let unit=(size/7.).max(1.);
+            // Original seven-row pixel question mark; solid pink and shadow.
+            let rows=[0b01110u8,0b11011,0b00011,0b00110,0b00100,0,0b00100];
+            for shadow in [true,false] {
+                let offset=if shadow {unit*0.6} else {0.};
+                for (y,row) in rows.iter().enumerate() {for x in 0..5 {
+                    if row&(1<<(4-x))==0 {continue;}
+                    let left=(origin.x-2.5*unit+x as f32*unit+offset).round() as i32;
+                    let top=(origin.y-2.*scale-4.*scale*height-size/2.+y as f32*unit+offset).round() as i32;
+                    for yy in 0..unit.ceil() as i32 {for xx in 0..unit.ceil() as i32 {
+                        self.overlay(left+xx,top+yy,if shadow {[98,46,77]} else {[255,158,199]},1.);
+                    }}
+                }}
+            }
+        }
         if !pose.notes.is_empty() {
             static NOTE:OnceLock<RgbaImage>=OnceLock::new();
             let tex=NOTE.get_or_init(||image::load_from_memory(include_bytes!("../assets/note.png")).expect("note texture").to_rgba8());
@@ -87,10 +127,14 @@ impl Frame {
             for letter in &pose.letters {
                 let t=((pose.clock-letter.start)/0.8).clamp(0.,1.);
                 let rise=if s.chibi {3.7*1.5*s.chibi_body_scale/100.*0.9} else {10.8};
-                let world=model_transform(s).transform_point3(Vec3::new(letter.pos.x,if s.chibi {5.1} else {10.3},9.4+letter.pos.y));
+                let local = if let Some(origin) = letter.hand_origin { origin } else if let Some(pos) = letter.pos { if s.chibi {
+                    let q = s.chibi_body_scale / 100.;
+                    Vec3::new(pos.x * 0.4 * q, 3. + 0.45 * q, (2.8 + pos.y * 0.18) * q) * 1.5
+                } else { Vec3::new(pos.x, 10.3, 9.4 + pos.y) } } else { continue };
+                let world=model_transform(s).transform_point3(local);
                 let mut screen=project(world,self.width as f32,self.height as f32);
                 screen.y-=rise*t*self.width as f32/44.;
-                self.letter(letter.ch,screen,1.-t*t,letter.color);
+                self.label(&letter.label,screen,1.-t*t,letter.color);
             }
         }
     }
@@ -117,6 +161,21 @@ impl Frame {
         self.bounds[0]=self.bounds[0].min(x);self.bounds[1]=self.bounds[1].min(y);
         self.bounds[2]=self.bounds[2].max(x+1);self.bounds[3]=self.bounds[3].max(y+1);
     }
+    fn label(&mut self,text:&str,pos:Vec3,alpha:f32,color:[u8;3]) {
+        let scale=(self.width as f32/360.).clamp(0.65,3.);
+        let widths:Vec<f32>=text.bytes().map(|ch| {
+            let glyph=&glyphs()[(ch.saturating_sub(32)).min(94) as usize];
+            let left=(0..24).find(|&x|(0..24).any(|y|glyph[y*24+x]>0)).unwrap_or(8);
+            let right=(0..24).rev().find(|&x|(0..24).any(|y|glyph[y*24+x]>0)).unwrap_or(15);
+            (right-left+3) as f32*scale
+        }).collect();
+        let total: f32=widths.iter().sum();
+        let mut x=pos.x-total/2.;
+        for (ch,width) in text.bytes().zip(widths) {
+            self.letter(ch,Vec3::new(x+width/2.,pos.y,pos.z),alpha,color);
+            x+=width;
+        }
+    }
     fn letter(&mut self,ch:u8,pos:Vec3,alpha:f32,color:[u8;3]) {
         let glyph=&glyphs()[(ch.saturating_sub(32)).min(94) as usize];
         let scale=(self.width as f32/360.).clamp(0.65,3.);
@@ -128,12 +187,8 @@ impl Frame {
         }}}
     }
 }
-static GLYPHS:OnceLock<Vec<[u8;576]>>=OnceLock::new();
-pub(crate) fn install_glyphs(bytes: &[u8]) -> bool {
-    if bytes.len() != 95 * 576 { return false; }
-    GLYPHS.set(bytes.chunks_exact(576).map(|c| c.try_into().unwrap()).collect()).is_ok()
-}
 fn glyphs()-> &'static Vec<[u8;576]> {
+    static GLYPHS:OnceLock<Vec<[u8;576]>>=OnceLock::new();
     GLYPHS.get_or_init(|| {
         let mut result=vec![[0;576];95];
         #[cfg(windows)] unsafe {
@@ -169,6 +224,47 @@ fn glyphs()-> &'static Vec<[u8;576]> {
 mod tests {
     use super::*;
     #[test]
+    fn labels_include_function_modifier_and_numpad_keys() {
+        for (vk,label) in [(8,"Back"),(115,"F4"),(20,"CapsLock"),(96,"0"),(105,"9"),
+            (106,"*"),(107,"+"),(109,"-"),(110,"."),(111,"/"),(0x1000,"Enter"),
+            (160,"Shift"),(163,"Ctrl"),(165,"Alt"),(144,"NumLock")] {
+            assert_eq!(key_label(vk).as_deref(),Some(label));
+        }
+    }
+    #[test]
+    fn fallback_letters_use_selected_hand_and_keep_their_origin() {
+        let skin=Skin::load(DEFAULT_SKIN).unwrap();
+        for chibi in [false,true] { for mode in ["precise","alternating"] {
+            let mut s=Settings::default();s.posture="sitting".into();s.typing_letters=true;
+            s.chibi=chibi;s.typing_mode=mode.into();
+            let mut p=Pose::new(&s);
+            p.key(96,true,0.,&s);p.key(97,true,0.,&s);
+            p.update(&s,&skin,Vec2::ZERO,360.,420.,false,0.01,0.01);
+            assert_eq!(p.letters.len(),2);
+            assert_ne!(p.letters[0].side,p.letters[1].side);
+            let boxes=parts(&s,&skin,&p);
+            for letter in &p.letters {
+                let arm=&boxes[2+letter.side];
+                let expected=model_transform(&s).inverse().transform_point3(arm.transform.transform_point3(Vec3::new(0.,if chibi {-2.} else {-6.},0.)));
+                assert!(letter.hand_origin.unwrap().abs_diff_eq(expected,1e-5));
+            }
+            let origin=p.letters[0].hand_origin;
+            p.update(&s,&skin,Vec2::ZERO,360.,420.,false,0.2,0.1);
+            assert_eq!(p.letters[0].hand_origin,origin);
+            p.key(96,true,0.3,&s);assert_eq!(p.letters.len(),2);
+            p.key(65,true,0.3,&s);
+            assert_eq!(p.letters[2].pos.is_none(),mode=="alternating");
+        }}
+    }
+    #[test]
+    #[cfg(windows)]
+    fn multi_character_labels_render_and_extend_past_one_glyph() {
+        let mut f=Frame::new(360,420);
+        f.label("CapsLock",Vec3::new(180.,100.,0.),1.,CANDY_COLORS[0]);
+        assert!(f.bounds[2]-f.bounds[0]>60);
+        assert!(f.pixels.chunks_exact(4).filter(|p|p[3]>0).count()>100);
+    }
+    #[test]
     fn feeding_renders_and_recovers_across_models_and_postures() {
         let skin=Skin::load(DEFAULT_SKIN).unwrap();
         for chibi in [false,true] {for posture in ["standing","sitting"] {
@@ -176,13 +272,13 @@ mod tests {
             let mut p=Pose::new(&s);p.feed(0.);
             for step in 0..96 {p.update(&s,&skin,Vec2::ZERO,360.,420.,false,step as f32/120.,1./120.);}
             assert!(p.feed_blend>0.99);
-            p.click(0.8,false);assert!(p.swing_start.is_none());
             let mut f=Frame::new(360,420);f.draw(&s,&skin,&p);
             let red=f.pixels.chunks_exact(4).filter(|p|p[2]>120 && p[2]>p[1].saturating_add(45) && p[3]>128).count();
             assert!(red>5,"apple should be visible: {chibi} {posture}");
             if let Ok(dir)=std::env::var("PET_EFFECT_SHOTS") {
                 image::save_buffer(std::path::Path::new(&dir).join(format!("feed-{chibi}-{posture}.png")),&f.rgba(),360,420,image::ColorType::Rgba8).unwrap();
             }
+            p.click(0.8,false);assert!(p.swing_start.is_some());assert!(p.feed_start.is_none());
             for step in 96..300 {p.update(&s,&skin,Vec2::ZERO,360.,420.,false,step as f32/120.,1./120.);}
             assert!(p.feed_start.is_none());assert_eq!(p.feed_blend,0.);
         }}

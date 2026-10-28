@@ -156,20 +156,6 @@ pub unsafe extern "C" fn pet_import_profile(core: *mut PetCore, skin_path: *cons
     }
 }
 #[no_mangle]
-pub unsafe extern "C" fn pet_restore_skin(core: *mut PetCore) -> bool {
-    let Some(c) = core.as_mut() else { return false; };
-    let mut next = c.settings.clone();
-    next.skin_path.clear();
-    next.skin_name = "内置 · 林间旅人".into();
-    // Match the Windows restore-skin command: keep poses, cape, startup and
-    // interaction preferences. Commit successfully before changing the render.
-    if let Err(e) = c.store.save(&next) { return c.error(e); }
-    c.update_settings(next);
-    c.skin = Skin::load(render::DEFAULT_SKIN).unwrap();
-    c.message = CString::default();
-    true
-}
-#[no_mangle]
 pub unsafe extern "C" fn pet_reset(core: *mut PetCore) -> bool {
     let Some(c) = core.as_mut() else { return false; };
     c.settings = Settings::first_run_defaults();
@@ -190,39 +176,6 @@ pub unsafe extern "C" fn pet_clear_keys(core: *mut PetCore) {
 pub unsafe extern "C" fn pet_click(core: *mut PetCore, now: f32) {
     if let Some(c) = core.as_mut() { c.pose.click(now, c.settings.main_hand == "left"); }
 }
-/// These entry points are main-thread only, like the rest of this ABI.
-#[no_mangle]
-pub unsafe extern "C" fn pet_mouse(core: *mut PetCore, button: u32, over: bool, now: f32) {
-    if let Some(c) = core.as_mut() {
-        if c.settings.tease_enabled && over { c.pose.tease(now); }
-        else { c.pose.click(now, c.settings.swing_left(button as usize)); }
-    }
-}
-#[no_mangle]
-pub unsafe extern "C" fn pet_feed(core: *mut PetCore, now: f32) {
-    if let Some(c) = core.as_mut() { c.pose.feed(now); }
-}
-#[no_mangle]
-pub unsafe extern "C" fn pet_music(core: *mut PetCore, playing: bool) {
-    if let Some(c) = core.as_mut() { c.pose.music_playing = playing; }
-}
-#[no_mangle]
-pub unsafe extern "C" fn pet_needs_frames(core: *mut PetCore) -> bool {
-    core.as_ref().is_some_and(|c| c.pose.needs_frames()
-        || c.settings.breathing_animation
-        || (c.settings.da_blink && !c.settings.chibi && c.skin.eyes.is_some())
-        || (c.settings.da_dance && c.settings.posture == "standing")
-        || (c.settings.music_notes && c.pose.music_playing))
-}
-#[no_mangle]
-pub unsafe extern "C" fn pet_pixels(core: *mut PetCore) -> *const u8 {
-    core.as_ref().map_or(ptr::null(), |c| c.frame.pixels.as_ptr())
-}
-#[no_mangle]
-pub unsafe extern "C" fn pet_set_glyphs(bytes: *const u8, length: usize) -> bool {
-    if bytes.is_null() || length != 95 * 576 { return false; }
-    render::install_glyphs(std::slice::from_raw_parts(bytes, length))
-}
 #[no_mangle]
 pub unsafe extern "C" fn pet_render(core: *mut PetCore, x: f32, y: f32, width: f32, height: f32, shift: bool, now: f32, dt: f32) -> *const u8 {
     let Some(c) = core.as_mut() else { return ptr::null(); };
@@ -240,84 +193,6 @@ pub unsafe extern "C" fn pet_hit(core: *mut PetCore, x: f32, y: f32) -> bool {
 #[cfg(test)]
 mod ffi_tests {
     use super::*;
-    #[test]
-    fn restoring_builtin_skin_keeps_other_preferences() {
-        let dir = std::env::temp_dir().join(format!("pet-restore-skin-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
-        unsafe {
-            let core = pet_create(path.as_ptr());
-            assert!(!core.is_null());
-            (*core).settings.skin_name = "Imported skin".into();
-            (*core).settings.skin_path = "custom.png".into();
-            (*core).settings.cape_path = "keep-cape.png".into();
-            (*core).settings.posture = "custom".into();
-            (*core).settings.autostart = true;
-            (*core).settings.music_notes = true;
-            let mut expected = (*core).settings.clone();
-            expected.skin_name = "内置 · 林间旅人".into();
-            expected.skin_path.clear();
-            assert!(pet_restore_skin(core));
-            assert_eq!(serde_json::to_value(&(*core).settings).unwrap(), serde_json::to_value(&expected).unwrap());
-            pet_destroy(core);
-            let reopened = pet_create(path.as_ptr());
-            assert_eq!(serde_json::to_value(&(*reopened).settings).unwrap(), serde_json::to_value(&expected).unwrap());
-            pet_destroy(reopened);
-        }
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-    #[test]
-    fn macos_v25_events_frames_and_settings() {
-        let dir = std::env::temp_dir().join(format!("pet-v25-ffi-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
-        unsafe {
-            let core = pet_create(path.as_ptr());
-            assert!(!core.is_null());
-            (*core).settings.track_mouse = false;
-            (*core).settings.da_blink = false;
-            (*core).settings.da_dance = false;
-            (*core).settings.breathing_animation = false;
-            assert!(!pet_needs_frames(core));
-            for mode in ["left","right","mapped","reverse"] {
-                (*core).settings.main_hand = mode.into();
-                for button in 0..5 {
-                    (*core).pose = Pose::new(&(*core).settings);
-                    let mut expected = Pose::new(&(*core).settings);
-                    expected.click(0., (*core).settings.swing_left(button));
-                    pet_mouse(core, button as u32, false, 0.);
-                    for frame in 0..8 {
-                        let now = frame as f32 / 120.;
-                        expected.update(&(*core).settings, &(*core).skin, Vec2::ZERO,360.,420.,false,now,1./120.);
-                        pet_render(core,0.,0.,360.,420.,false,now,1./120.);
-                        assert_eq!((*core).pose.arms,expected.arms, "{mode}/{button}");
-                    }
-                }
-            }
-            pet_feed(core,1.);
-            assert!(pet_needs_frames(core));
-            assert_eq!((*core).pose.effect_counts()[2],1);
-            (*core).settings.tease_enabled=true;
-            pet_mouse(core,2,true,1.1);
-            assert!((*core).pose.interaction_state().0);
-            assert_eq!((*core).pose.effect_counts()[2],0);
-            (*core).settings.music_notes=true;
-            pet_music(core,true);
-            pet_render(core,0.,0.,360.,420.,false,2.,0.016);
-            assert_eq!((*core).pose.effect_counts()[1],1);
-            assert!(pet_needs_frames(core));
-            pet_music(core,false);
-            pet_render(core,0.,0.,360.,420.,false,3.,0.016);
-            assert_eq!((*core).pose.effect_counts()[1],0);
-            (*core).settings.breathing_animation=true;
-            assert!(pet_needs_frames(core));
-            assert_eq!(pet_pixels(core),(*core).frame.pixels.as_ptr());
-            let json=pet_settings(core);
-            assert!(!CStr::from_ptr(json).to_str().unwrap().contains("startupPriority"));
-            pet_destroy(core);
-        }
-        std::fs::remove_dir_all(dir).unwrap();
-    }
     #[test]
     fn macos_profile_import_cape_toggle_failure_restart_and_clear() {
         let dir = std::env::temp_dir().join(format!("pet-macos-cape-{}",std::process::id()));
@@ -437,7 +312,6 @@ mod ffi_tests {
     #[test]
     fn macos_bridge_renders_persists_and_rejects_invalid_skin() {
         let dir = std::env::temp_dir().join(format!("pet-macos-bridge-{}",std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
         let path = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
         unsafe {
             let core = pet_create(path.as_ptr());

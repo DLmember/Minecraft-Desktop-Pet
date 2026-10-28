@@ -3,18 +3,6 @@ import Darwin
 
 let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"
 
-enum LaunchMode {
-    static func shouldShowSettings(arguments: [String], keyboardEnabled: Bool,
-                                   keyboardRunning: Bool, quickChatEnabled: Bool,
-                                   quickChatReady: Bool) -> Bool {
-        // Login launches remain quiet, including when input permissions are missing.
-        guard !arguments.contains("--autostart") else { return false }
-        return arguments.contains("--show-settings")
-            || (keyboardEnabled && !keyboardRunning)
-            || (quickChatEnabled && !quickChatReady)
-    }
-}
-
 /// The login agent exits after handing off to LaunchServices. No KeepAlive and
 /// no bootstrap/bootout on edits: registration never kills or relaunches the app.
 enum LoginStartup {
@@ -48,6 +36,24 @@ enum LoginStartup {
             }
             try FileManager.default.removeItem(at: target)
         }
+    }
+}
+
+/// A scheduling request for the main/render thread, not a Windows process class.
+enum RenderPriority {
+    static let values = ["idle", "below", "normal", "above", "high"]
+    static func qos(_ value: String) -> qos_class_t {
+        switch value {
+        case "idle": return QOS_CLASS_BACKGROUND
+        case "below": return QOS_CLASS_UTILITY
+        case "above": return QOS_CLASS_USER_INITIATED
+        case "high": return QOS_CLASS_USER_INTERACTIVE
+        default: return QOS_CLASS_DEFAULT
+        }
+    }
+    static func apply(_ value: String) throws {
+        let result = pthread_set_qos_class_self_np(qos(value), 0)
+        guard result == 0 else { throw PetError("无法调整渲染线程 QoS：\(String(cString: strerror(result)))") }
     }
 }
 

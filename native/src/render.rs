@@ -1,6 +1,8 @@
-pub(crate) use effects::install_glyphs;
 #[path = "render_effects.rs"]
 mod effects;
+#[path = "render_gestures.rs"]
+mod gestures;
+pub use gestures::Gesture;
 use crate::config::Settings;
 use glam::{EulerRot, Mat4, Quat, Vec2, Vec3};
 use image::RgbaImage;
@@ -22,9 +24,7 @@ const BLINK_RATE: f32 = 2.5;
 // da_elapsed_ref = (age - last_age) * 3; age = seconds * 20.
 const DANCE_RATE: f32 = 0.175 * 60.;
 /// 六个面的明暗查色表；皮肤和披风共用同一套光照。
-fn shade_lut() -> &'static [[[u8; 256]; 3]; 6] {
-    static LUT: std::sync::OnceLock<[[[u8; 256]; 3]; 6]> = std::sync::OnceLock::new();
-    LUT.get_or_init(|| {
+fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
     let shades = [0.80, 0.80, 1., 0.62, 0.94, 0.86];
     let mut lut = [[[0u8; 256]; 3]; 6];
     for f in 0..6 {
@@ -46,13 +46,6 @@ fn shade_lut() -> &'static [[[u8; 256]; 3]; 6] {
         }
         }
     }
-        lut
-    })
-}
-fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
-    // macOS uses the same LUT at sampling time, saving 18 MiB for a 1024² skin.
-    if cfg!(all(target_os = "macos", not(test))) { return Vec::new(); }
-    let lut = shade_lut();
     image
         .pixels()
         .map(|p| {
@@ -366,8 +359,47 @@ fn smooth(t: f32) -> f32 {
     let t = t.clamp(0., 1.);
     t * t * (3. - 2. * t)
 }
+// Place the forearms only after body/head scaling has finished. This keeps
+// the unchanged head and slider-scaled chibi limbs in the same coordinate space.
+fn cover_cheeks(parts: &mut [BoxPart], head_index: usize, arm_start: usize, layers: usize, weight: f32) {
+    if weight <= 0. { return; }
+    let head = &parts[head_index];
+    let head_transform = head.transform;
+    let (head_scale, head_rotation, _) = head_transform.to_scale_rotation_translation();
+    let head_half = (head.size + Vec3::splat(head.inflate)) * 0.5;
+    for side in 0..2 {
+        let sign = if side == 0 { 1. } else { -1. };
+        let first = arm_start + side * layers;
+        let (scale, from_rotation, from_center) = parts[first].transform.to_scale_rotation_translation();
+        let shell = &parts[first + layers - 1];
+        let half = (shell.size + Vec3::splat(shell.inflate)) * 0.5 * scale / head_scale;
+        // An explicit half turn raises the hands without arbitrarily twisting
+        // the skin. The forearms lean inward slightly, like hands on cheeks.
+        let local_rotation = Quat::from_rotation_x(-std::f32::consts::PI)
+            * Quat::from_rotation_z(-sign * 0.12);
+        let hand_direction = local_rotation * -Vec3::Y;
+        let hand = Vec3::new(sign * head_half.x * 0.56, head_half.y * 0.08,
+            head_half.z + half.z + 0.10);
+        let target_center = head_transform.transform_point3(hand - hand_direction * (half.y - 0.20));
+        let rotation = from_rotation.slerp(head_rotation * local_rotation, weight);
+        // Lift in front of the face, then settle against it. The offset is zero
+        // at both endpoints, so interruption/return does not snap the limbs.
+        let arc = (weight * std::f32::consts::PI).sin() * head_half.z * 0.85;
+        let center = from_center.lerp(target_center, weight) + head_rotation * Vec3::Z * arc;
+        let transform = Mat4::from_scale_rotation_translation(scale, rotation, center);
+        for layer in 0..layers { parts[first + layer].transform = transform; }
+    }
+}
 const SWING_SECONDS: f32 = 0.30; // Vanilla attack animation: six ticks at 20 ticks/s.
 pub struct Pose {
+    gesture: Option<gestures::ActiveGesture>,
+    gesture_return: Option<gestures::ReturnPose>,
+    next_gesture: Option<f32>,
+    occasional_mask: u8,
+    last_gesture_input: f32,
+    gesture_jump: f32,
+    gesture_shake: Vec3,
+    cheek_cover: f32,
     tease_start:Option<f32>,
     tease_kind:usize,
     tease_from_head:Quat,
@@ -463,6 +495,10 @@ fn model_transform(s: &Settings) -> Mat4 {
 impl Pose {
     pub fn new(s: &Settings) -> Self {
         Self {
+            gesture: None, gesture_return: None, next_gesture: None,
+            occasional_mask: 0, last_gesture_input: 0., gesture_jump: 0.,
+            gesture_shake: Vec3::ZERO,
+            cheek_cover: 0.,
             tease_start:None,tease_kind:0,
             tease_from_head:Quat::IDENTITY,tease_from_arms:[Quat::IDENTITY;2],
             breathing_weight:0.,breathing_bob:0.,
@@ -522,9 +558,10 @@ impl Pose {
     /// 潜行计时和扭动都靠每帧推进：按住 Shift 期间必须持续出帧，
     /// 否则静止省电一停帧就永远等不到那 10 秒。
     pub fn needs_frames(&self) -> bool {
-        self.dance > 0.001 || self.feed_start.is_some() || self.tease_start.is_some() || self.breathing_weight>0.001 || !self.letters.is_empty() || !self.notes.is_empty()
+        self.gesture.is_some() || self.gesture_return.is_some() || self.dance > 0.001 || self.feed_start.is_some() || self.tease_start.is_some() || self.breathing_weight>0.001 || !self.letters.is_empty() || !self.notes.is_empty()
     }
     pub fn key(&mut self, vk: u32, down: bool, now: f32, s: &Settings) {
+        if down { self.gesture_input(now); }
         if !down {
             self.held.retain(|k| k.vk != vk);
             return;
@@ -537,13 +574,6 @@ impl Pose {
             return;
         }
         let key = key_position(vk);
-        if s.typing_letters { if let Some(pos)=key {
-            if let Some(ch)=effects::key_label(vk) {
-                if self.letters.len()==64 {self.letters.remove(0);}
-                let color=effects::CANDY_COLORS[self.random_choice(9)];
-                self.letters.push(effects::Letter {pos, ch, start:now,color});
-            }
-        }}
         let side = if s.typing_mode == "alternating" || key.is_none() {
             let side = if self.counter % 2 == 0 { 1 } else { 0 };
             self.counter += 1;
@@ -563,6 +593,13 @@ impl Pose {
                 None
             },
         };
+        if s.typing_letters { if let Some(label)=effects::key_label(vk) {
+            if self.letters.len()==64 {self.letters.remove(0);}
+            let color=effects::CANDY_COLORS[self.random_choice(9)];
+            self.letters.push(effects::Letter {
+                pos:self.hands[side].key, label, side, hand_origin:None, start:now,color,
+            });
+        }}
         self.held.push(HeldKey {
             vk,
             side,
@@ -573,6 +610,8 @@ impl Pose {
         self.squash = 1.;
     }
     pub fn tease(&mut self,now:f32) {
+        self.cancel_gesture(now);
+        self.last_gesture_input = now;
         self.tease_from_head=self.head_rotation;
         self.tease_from_arms=self.arms;
         self.tease_kind=self.random_choice(3);
@@ -592,11 +631,13 @@ impl Pose {
     }
     pub fn feed(&mut self, now: f32) {
         if self.tease_start.is_some() {return;}
+        self.cancel_gesture(now);
+        self.last_gesture_input = now;
         self.feed_start=Some(now); self.reset_swing();
     }
     pub fn click(&mut self, now: f32, left: bool) {
+        self.gesture_input(now);
         if self.tease_start.is_some() {return;}
-        if self.feed_start.is_some() {return;}
         let side = if left { 0 } else { 1 };
         if side != self.swing_side {
             self.reset_swing();
@@ -647,6 +688,7 @@ impl Pose {
         dt: f32,
     ) {
         self.clock=now;
+        self.schedule_gesture(s,now);
         if self.tease_start.is_some_and(|t|now-t>=0.5) {self.tease_start=None;}
         if !s.tease_enabled {self.tease_start=None;}
         let breathing=if s.breathing_animation {1.} else {0.};
@@ -742,15 +784,19 @@ impl Pose {
         self.pitch = vertical;
         // Only the periodic blink changes the eye patch. Looking down never closes it.
         self.pupil = Vec2::ZERO;
-        self.eyelid = if s.da_blink && !s.chibi { 1. - closure } else { 1. };
+        self.eyelid = if s.da_blink { 1. - closure } else { 1. };
         self.sneak_timer = 0.;
-        self.dance = if s.da_dance && s.posture == "standing" { 1. } else { 0. };
+        self.dance = if s.da_dance && s.posture == "standing" && !self.gesture.is_some_and(|g| !g.automatic) { 1. } else { 0. };
         self.dance_timer = if self.dance > 0. { self.dance_timer + dt * DANCE_RATE } else { 0. };
-        let i = self.dance * 0.15;
+        // Adapt only DA motion, not authored poses, typing or mouse swings.
+        let dance_scale = if s.chibi { (3.7 / 12.) * s.chibi_body_scale / 100. } else { 1. };
+        let i = self.dance * 0.15 * dance_scale;
         let t = self.dance_timer;
         // Game downward-Y/forward-negative-Z -> renderer upward-Y/positive-Z.
         self.body_roll = -t.sin() * i;
-        self.body_bob = (t * 2.).cos() * i;
+        // Chibi geometry receives the slider scale later; do not apply it twice
+        // to translations. Rotations do need the slider's amplitude here.
+        self.body_bob = (t * 2.).cos() * i / if s.chibi { s.chibi_body_scale / 100. } else { 1. };
         self.head_nod = (t * 2. - 0.5).cos() * i * 0.1;
         self.head_roll = -(t - 0.5).sin() * i * 0.5;
         self.arm_roll = -(t - 0.25).sin() * i;
@@ -832,7 +878,7 @@ impl Pose {
                     .inverse()
                     .transform_vector3(target - shoulder)
                     .normalize();
-                let typing = Quat::from_rotation_arc(-Vec3::Y, dir);
+                let typing = if s.chibi { chibi_typing_rotation(s, self, side, k, active) } else { Quat::from_rotation_arc(-Vec3::Y, dir) };
                 typing_target = typing;
                 rest = rest.slerp(typing, self.sit);
                 if s.posture == "custom" && s.is_sitting() {
@@ -846,7 +892,7 @@ impl Pose {
                         .inverse()
                         .transform_vector3(idle_target - shoulder)
                         .normalize();
-                    rest = Quat::from_rotation_arc(-Vec3::Y, idle_dir)
+                    rest = (if s.chibi { chibi_typing_rotation(s, self, side, None, false) } else { Quat::from_rotation_arc(-Vec3::Y, idle_dir) })
                         * degrees(s.active_custom_pose().row(2 + side));
                 }
             }
@@ -924,6 +970,7 @@ impl Pose {
             self.head_rotation*=rotation(breath*0.012,0.,0.);
             for side in 0..2 {self.arms[side]*=rotation(breath*0.014,0.,breath*0.008*if side==0 {1.}else{-1.});}
         }
+        self.apply_gesture(s,now);
         if let Some(start)=self.tease_start {
             let t=((now-start)/0.5).clamp(0.,1.);
             let envelope=smooth(t/0.12)*(1.-smooth((t-0.78)/0.22));
@@ -936,6 +983,19 @@ impl Pose {
                 self.arms[0]*=rotation(wave*0.55,0.,wave*0.70);
                 self.arms[1]*=rotation(-wave*0.55,0.,-wave*0.70);
             }
+        }
+        self.resolve_letter_origins(s,skin);
+    }
+    fn resolve_letter_origins(&mut self, s: &Settings, skin: &Skin) {
+        if !self.letters.iter().any(|l|l.pos.is_none() && l.hand_origin.is_none()) { return; }
+        let boxes=parts(s,skin,self);
+        let inverse=model_transform(s).inverse();
+        let hands=[0,1].map(|side| {
+            let arm=&boxes[2+side];
+            inverse.transform_point3(arm.transform.transform_point3(Vec3::new(0.,if s.chibi {-2.} else {-6.},0.)))
+        });
+        for letter in &mut self.letters {
+            if letter.pos.is_none() && letter.hand_origin.is_none() {letter.hand_origin=Some(hands[letter.side]);}
         }
     }
     fn base_body(&self) -> Mat4 {
@@ -1009,7 +1069,7 @@ struct ChibiBox {
 // 面顺序=draw_box face 0..5(+x左/-x右/+y顶/-y底/+z前/-z后)。左右臂/腿几何完全对称。
 // 纤细/粗壮仅手臂面 UV 采样宽度不同。
 const CHIBI_HEAD: ChibiBox = ChibiBox { off: [0.0,3.6,0.0], size: [7.2,7.2,7.2], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 4.0, v0: 2.0, u1: 6.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 0.0, v0: 2.0, u1: 2.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 2.0, v0: 2.0, u1: 4.0, v1: 0.0, rotation: 0 }, FaceUv { u0: 4.0, v0: 0.0, u1: 6.0, v1: 2.0, rotation: 0 }, FaceUv { u0: 2.0, v0: 2.0, u1: 4.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 6.0, v0: 2.0, u1: 8.0, v1: 4.0, rotation: 0 }] };
-const CHIBI_HAT: ChibiBox = ChibiBox { off: [0.05,3.7,0.2], size: [7.6,7.6,7.6], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 12.0, v0: 2.0, u1: 14.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 8.0, v0: 2.0, u1: 10.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 10.0, v0: 2.0, u1: 12.0, v1: 0.0, rotation: 0 }, FaceUv { u0: 12.0, v0: 0.0, u1: 14.0, v1: 2.0, rotation: 0 }, FaceUv { u0: 10.0, v0: 2.0, u1: 12.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 14.0, v0: 2.0, u1: 16.0, v1: 4.0, rotation: 0 }] };
+const CHIBI_HAT: ChibiBox = ChibiBox { off: [0.05,3.7,0.2], size: [7.6,7.6,7.6], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 12.0, v0: 2.0, u1: 14.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 8.0, v0: 2.0, u1: 10.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 10.0, v0: 0.0, u1: 12.0, v1: 2.0, rotation: 0 }, FaceUv { u0: 12.0, v0: 0.0, u1: 14.0, v1: 2.0, rotation: 0 }, FaceUv { u0: 10.0, v0: 2.0, u1: 12.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 14.0, v0: 2.0, u1: 16.0, v1: 4.0, rotation: 0 }] };
 const CHIBI_BODY: ChibiBox = ChibiBox { off: [0.0,0.0,0.0], size: [3.5,3.7,2.5], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 7.0, v0: 5.0, u1: 8.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 4.0, v0: 5.0, u1: 5.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 5.0, v0: 5.0, u1: 7.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 7.0, v0: 5.0, u1: 9.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 5.0, v0: 5.0, u1: 7.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 8.0, v0: 5.0, u1: 10.0, v1: 8.0, rotation: 0 }] };
 const CHIBI_BODY_LAYER: ChibiBox = ChibiBox { off: [0.0,0.0,0.0], size: [3.7,3.9,2.7], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 7.0, v0: 9.0, u1: 8.0, v1: 12.0, rotation: 0 }, FaceUv { u0: 4.0, v0: 9.0, u1: 5.0, v1: 12.0, rotation: 0 }, FaceUv { u0: 5.0, v0: 9.0, u1: 7.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 7.0, v0: 9.0, u1: 9.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 5.0, v0: 9.0, u1: 7.0, v1: 12.0, rotation: 0 }, FaceUv { u0: 8.0, v0: 9.0, u1: 10.0, v1: 12.0, rotation: 0 }] };
 const CHIBI_ARM_LEFT_NARROW: ChibiBox = ChibiBox { off: [0.0,-2.0,0.0], size: [1.2,4.0,1.2], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 9.75, v0: 13.0, u1: 10.5, v1: 16.0, rotation: 0 }, FaceUv { u0: 8.0, v0: 13.0, u1: 8.75, v1: 16.0, rotation: 0 }, FaceUv { u0: 9.0, v0: 12.0, u1: 9.75, v1: 13.0, rotation: 0 }, FaceUv { u0: 9.75, v0: 12.0, u1: 10.5, v1: 13.0, rotation: 0 }, FaceUv { u0: 9.0, v0: 13.0, u1: 9.75, v1: 16.0, rotation: 0 }, FaceUv { u0: 10.5, v0: 13.0, u1: 11.25, v1: 16.0, rotation: 0 }] };
@@ -1055,7 +1115,7 @@ fn parts_with_cape(
     cape: Option<&Cape>,
 ) -> Vec<BoxPart> {
     if s.chibi {
-        return parts_chibi(s, skin, pose);
+        return parts_chibi(s, skin, pose, cape);
     }
     let custom = s.posture == "custom";
     let custom_body = if custom {
@@ -1070,6 +1130,10 @@ fn parts_with_cape(
         4.
     };
     let mut v = Vec::with_capacity(15);
+    let anchor = 6. * pose.sit;
+    let squash = Mat4::from_translation(Vec3::Y * anchor)
+        * Mat4::from_scale(Vec3::new(1., pose.squash, 1.))
+        * Mat4::from_translation(-Vec3::Y * anchor);
     let mut part = |transform: Mat4,
                     size: Vec3,
                     u: f32,
@@ -1087,7 +1151,7 @@ fn parts_with_cape(
             keyboard: false,
             cape: false,
             faces: None,
-            eyes: if eyes && s.da_blink && !s.chibi { skin.eyes } else { None },
+            eyes: if eyes && s.da_blink { skin.eyes } else { None },
             eyelid: pose.eyelid,
             pupil: if eyes { pose.pupil } else { Vec2::ZERO },
         });
@@ -1136,11 +1200,8 @@ fn parts_with_cape(
         let left = side == 0;
         let sign = if left { 1. } else { -1. };
         let tr = pose.torso_space() * Mat4::from_rotation_y(pose.body_yaw) * custom_body
-            * Mat4::from_translation(Vec3::new(
-                sign * (4. + aw / 2.) + pose.arm_slide,
-                10. + sign * pose.arm_bob,
-                0.,
-            ))
+            * Mat4::from_translation(Vec3::new(sign * (4. + aw / 2.) + pose.arm_slide,
+                10. + sign * pose.arm_bob, 0.))
             * Mat4::from_quat(pose.arms[side])
             * Mat4::from_translation(Vec3::new(0., -4., 0.));
         let (u, w, outer) = if left && !skin.legacy {
@@ -1221,12 +1282,8 @@ fn parts_with_cape(
     }
     // Squash only the character about its seated support height, never the keyboard
     // or native window. This cannot accumulate into the user-selected scale.
-    let anchor = 6. * pose.sit;
-    let squash = Mat4::from_translation(Vec3::Y * anchor)
-        * Mat4::from_scale(Vec3::new(1., pose.squash, 1.))
-        * Mat4::from_translation(-Vec3::Y * anchor);
     for part in &mut v {
-        part.transform = squash * part.transform;
+        part.transform = Mat4::from_translation(Vec3::Y * pose.gesture_jump + pose.gesture_shake) * squash * part.transform;
     }
     if pose.sit > 0.4 {
         v.push(BoxPart {
@@ -1245,6 +1302,10 @@ fn parts_with_cape(
             pupil: Vec2::ZERO,
         });
     }
+    let limb_layers = if s.outer_layer && !skin.legacy { 2 } else { 1 };
+    let head_layers = if s.outer_layer { 2 } else { 1 };
+    cover_cheeks(&mut v, limb_layers + head_layers - 1,
+        limb_layers + head_layers, limb_layers, pose.cheek_cover);
     let global = model_transform(s);
     for part in &mut v {
         part.transform = global * part.transform;
@@ -1266,7 +1327,24 @@ fn parts_with_cape(
 
 /// Q 版(图腾玩偶)模式：用 Q 版 cuboid + 标准皮肤贴图，挂到现有骨骼动画上。
 /// 复用 Pose 的角度，但髋高度、身体尺寸、肩/髋 pivot 按 Q 版比例。
-fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
+fn chibi_typing_rotation(s: &Settings, pose: &Pose, side: usize, key: Option<Vec2>, active: bool) -> Quat {
+    let sign = if side == 0 { 1. } else { -1. };
+    let custom = if s.posture == "custom" { Mat4::from_quat(degrees(&s.active_custom_pose().body)) } else { Mat4::IDENTITY };
+    let parent = Mat4::from_translation(Vec3::new(0., 4.8 - 3. * pose.sit + pose.breathing_bob, 0.))
+        * custom * Mat4::from_rotation_y(pose.body_yaw);
+    let shoulder = parent.transform_point3(Vec3::new(sign * 2.35, 3.7, 0.));
+    // Solve a four-unit arm against the board plane. Both board and character
+    // receive the same body-slider transform; undo only the typing squash here.
+    let y = 3. * pose.sit + (3.4 + if active { 0. } else { 0.4 } - 3. * pose.sit) / pose.squash.max(0.1);
+    let x = key.map(|k| k.x * 0.4).unwrap_or(sign * 1.7);
+    let dy = y - shoulder.y;
+    let z = 2.8 + key.map(|k| k.y * 0.18).unwrap_or(0.);
+    let horizontal = Vec2::new(x - shoulder.x, z - shoulder.z).normalize_or_zero()
+        * (16. - dy * dy).max(0.1).sqrt();
+    let target = Vec3::new(shoulder.x + horizontal.x, y, shoulder.z + horizontal.y);
+    Quat::from_rotation_arc(-Vec3::Y, parent.inverse().transform_vector3(target - shoulder).normalize())
+}
+fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose, cape: Option<&Cape>) -> Vec<BoxPart> {
     let slim = s.arm_model == "slim" && !skin.legacy;
     let body_scale = s.chibi_body_scale / 100.;
     let thickness = 1.;
@@ -1295,20 +1373,28 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
         * custom_body;
 
     let mut v = Vec::with_capacity(14);
-    let push = |v: &mut Vec<BoxPart>, cb: &ChibiBox, transform: Mat4, layer: bool, eyes: bool| {
+    let push = |v: &mut Vec<BoxPart>, cb: &ChibiBox, geometry: &ChibiBox, transform: Mat4, layer: bool, eyes: bool, original_size: Vec3| {
         let t = transform
-            * Mat4::from_quat(degrees(&cb.rot))
-            * Mat4::from_translation(Vec3::from_array(cb.off));
+            * Mat4::from_quat(degrees(&geometry.rot))
+            * Mat4::from_translation(Vec3::from_array(geometry.off));
+        let inner_size = Vec3::from_array(geometry.size);
+        // Match the normal model's shell ratio on each axis. Keep inflate as
+        // the renderer's translucent-pass marker, accounting for it exactly
+        // once in draw_box. Layer cuboids supply UVs, never extra enlargement.
+        let inflate = if layer { 0.5 } else { 0. };
+        let expansion = if layer {
+            inner_size / original_size * if original_size == Vec3::splat(8.) { 1. } else { 0.5 }
+        } else { Vec3::ZERO };
         v.push(BoxPart {
-            size: Vec3::from_array(cb.size),
+            size: inner_size + expansion - Vec3::splat(inflate),
             uv: Vec2::ZERO,
             transform: t,
-            inflate: if layer { 0.5 } else { 0. },
+            inflate,
             mirror: false,
             keyboard: false,
             cape: false,
             faces: Some(cb.faces),
-            eyes: if eyes && s.da_blink && !s.chibi { skin.eyes } else { None },
+            eyes: if eyes && s.da_blink { skin.eyes } else { None },
             eyelid: pose.eyelid,
             pupil: if eyes { pose.pupil } else { Vec2::ZERO },
         });
@@ -1318,28 +1404,37 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
     let head = torso
         * Mat4::from_translation(Vec3::new(0., 3.7, 0.))
         * Mat4::from_quat(pose.head_rotation);
-    push(&mut v, &CHIBI_HEAD, head, false, true);
+    push(&mut v, &CHIBI_HEAD, &CHIBI_HEAD, head, false, true, Vec3::splat(8.));
     if s.outer_layer {
-        push(&mut v, &CHIBI_HAT, head, true, false);
+        push(&mut v, &CHIBI_HAT, &CHIBI_HEAD, head, true, false, Vec3::splat(8.));
     }
+
+    let anchor = 3. * pose.sit;
+    let squash = Mat4::from_translation(Vec3::Y * anchor)
+        * Mat4::from_scale(Vec3::new(1., pose.squash, 1.))
+        * Mat4::from_translation(-Vec3::Y * anchor);
+    let body_scale_mat = Mat4::from_translation(Vec3::Y * anchor)
+        * Mat4::from_scale(Vec3::splat(body_scale))
+        * Mat4::from_translation(-Vec3::Y * anchor);
+    let neck = (squash * head).transform_point3(Vec3::ZERO);
+    let neck_delta = body_scale_mat.transform_point3(neck) - neck;
 
     // 身体（中心在 Y=3）
     let body_t = body * Mat4::from_translation(Vec3::new(0., 1.85, 0.));
-    push(&mut v, &CHIBI_BODY, body_t, false, false);
+    push(&mut v, &CHIBI_BODY, &CHIBI_BODY, body_t, false, false, Vec3::new(8., 12., 4.));
     if s.outer_layer {
-        push(&mut v, &CHIBI_BODY_LAYER, body_t, true, false);
+        push(&mut v, &CHIBI_BODY_LAYER, &CHIBI_BODY, body_t, true, false, Vec3::new(8., 12., 4.));
     }
 
     // 手臂（肩在 Y=5 两侧）
     for side in 0..2 {
         let left = side == 0;
         let sign = if left { 1. } else { -1. };
-        let arm = torso * Mat4::from_rotation_y(pose.body_yaw)
-            * Mat4::from_translation(Vec3::new(
-                sign * (1.75 + arm_w / 2.) + pose.arm_slide,
-                3.7 + sign * pose.arm_bob,
-                0.,
-            ))
+        // Shoulder pivots belong to the animated torso. Normal-body slide/bob
+        // offsets are not valid for this much shorter skeleton.
+        let shoulder_space = if pose.dance > 0. { body } else { torso * Mat4::from_rotation_y(pose.body_yaw) };
+        let arm = shoulder_space
+            * Mat4::from_translation(Vec3::new(sign * (1.75 + arm_w / 2.), 3.7, 0.))
             * Mat4::from_quat(pose.arms[side])
             * Mat4::from_scale(Vec3::new(thickness, 1., thickness));
         let (inner, outer) = if left {
@@ -1353,9 +1448,10 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
         } else {
             (&CHIBI_ARM_RIGHT_WIDE, &CHIBI_ARM_RIGHT_LAYER_WIDE)
         };
-        push(&mut v, inner, arm, false, false);
+        let original_size = Vec3::new(if slim { 3. } else { 4. }, 12., 4.);
+        push(&mut v, inner, inner, arm, false, false, original_size);
         if s.outer_layer {
-            push(&mut v, outer, arm, true, false);
+            push(&mut v, outer, inner, arm, true, false, original_size);
         }
     }
 
@@ -1373,8 +1469,13 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
                 0.,
             )
         };
-        let leg = base
-            * Mat4::from_translation(Vec3::new(sign * 0.75 * thickness + pose.leg_slide, 0., 0.))
+        // Anchor each hip to the actual torso bottom, rather than approximating
+        // it with the normal model's 12-unit lateral slide. Keep the leg's
+        // independent counter-rotation, so the dance does not cancel itself.
+        let hip_space = if pose.dance > 0. { body } else { base };
+        let hip = hip_space.transform_point3(Vec3::new(sign * 0.75 * thickness, 0., 0.));
+        let leg = Mat4::from_translation(hip)
+            * Mat4::from_rotation_x(0.34 * pose.crouch)
             * Mat4::from_rotation_z(pose.leg_roll)
             * Mat4::from_quat(leg_rot)
             * Mat4::from_scale(Vec3::new(thickness, 1., thickness));
@@ -1383,26 +1484,31 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
         } else {
             (&CHIBI_LEG_RIGHT, &CHIBI_LEG_RIGHT_LAYER)
         };
-        push(&mut v, inner, leg, false, false);
+        push(&mut v, inner, inner, leg, false, false, Vec3::new(4., 12., 4.));
         if s.outer_layer {
-            push(&mut v, outer, leg, true, false);
+            push(&mut v, outer, inner, leg, true, false, Vec3::new(4., 12., 4.));
         }
     }
 
     // Squash 只作用在角色上（锚点按 Q 版支撑高度）。
-    let anchor = 3. * pose.sit;
-    let squash = Mat4::from_translation(Vec3::Y * anchor)
-        * Mat4::from_scale(Vec3::new(1., pose.squash, 1.))
-        * Mat4::from_translation(-Vec3::Y * anchor);
+    if cape.is_some() {
+        // Keep atlas dimensions unchanged; scale geometry with the torso.
+        // All subsequent character transforms apply to the attached cape too.
+        v.push(BoxPart {
+            size: Vec3::new(10., 16., 1.),
+            uv: Vec2::new(-11., 0.),
+            transform: body
+                * Mat4::from_translation(Vec3::new(0., 3.6 * (3.7 / 12.), -2.9 * (2.5 / 4.)))
+                * Mat4::from_scale(Vec3::new(3.5 / 8., 3.7 / 12., 2.5 / 4.))
+                * Mat4::from_rotation_x(0.14),
+            inflate: 0., mirror: false, keyboard: false, cape: true,
+            faces: None, eyes: None, eyelid: 1., pupil: Vec2::ZERO,
+        });
+    }
     for part in &mut v {
         part.transform = squash * part.transform;
     }
     // Scale body/limbs together about the seated support; keep head dimensions.
-    let body_scale_mat = Mat4::from_translation(Vec3::Y * anchor)
-        * Mat4::from_scale(Vec3::splat(body_scale))
-        * Mat4::from_translation(-Vec3::Y * anchor);
-    let neck = (squash * head).transform_point3(Vec3::ZERO);
-    let neck_delta = body_scale_mat.transform_point3(neck) - neck;
     let head_count = if s.outer_layer { 2 } else { 1 };
     for (index, part) in v.iter_mut().enumerate() {
         part.transform = if index < head_count {
@@ -1412,16 +1518,16 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
     // Q 版整体放大（脚仍在 Y=0，头顶约 19.3，缩放后约 29）。
     let chibi_scale = Mat4::from_scale(Vec3::splat(1.5));
     for part in &mut v {
-        part.transform = chibi_scale * part.transform;
+        part.transform = Mat4::from_translation((Vec3::Y * pose.gesture_jump + pose.gesture_shake) * body_scale * 0.6) * chibi_scale * part.transform;
     }
     // 坐姿打字键盘：和标准人形同一套尺寸/渐入，放在 Q 版坐姿身体前方。
     if pose.sit > 0.4 {
         v.push(BoxPart {
-            size: Vec3::new(19.6, 0.65, 7.8),
+            size: Vec3::new(9., 0.4, 2.4),
             uv: Vec2::ZERO,
-            transform: Mat4::from_translation(Vec3::new(0., 5., 9.4))
+            transform: chibi_scale * body_scale_mat * Mat4::from_translation(Vec3::new(0., 3.2, 2.8))
                 * Mat4::from_scale(Vec3::splat(pose.sit))
-                * Mat4::from_translation(Vec3::new(0., -0.3, 0.)),
+                ,
             inflate: 0.,
             mirror: false,
             keyboard: true,
@@ -1432,6 +1538,7 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose) -> Vec<BoxPart> {
             pupil: Vec2::ZERO,
         });
     }
+    cover_cheeks(&mut v, head_count - 1, head_count * 2, head_count, pose.cheek_cover);
     let global = model_transform(s);
     for part in &mut v {
         part.transform = global * part.transform;
@@ -1455,6 +1562,7 @@ pub struct Frame {
     pub pixels: Vec<u8>,
     depth: Vec<f32>,
     pub bounds: [i32; 4],
+    keyboard_color: [u8; 3],
 }
 impl Frame {
     pub fn new(w: usize, h: usize) -> Self {
@@ -1464,6 +1572,7 @@ impl Frame {
             pixels: vec![0; w * h * 4],
             depth: vec![f32::INFINITY; w * h],
             bounds: [0; 4],
+            keyboard_color: [131, 135, 138],
         }
     }
     pub fn draw(&mut self, s: &Settings, skin: &Skin, pose: &Pose) {
@@ -1471,6 +1580,8 @@ impl Frame {
     }
     /// 带披风的绘制；披风只在正版账号取到的时候才传进来。
     pub fn draw_ext(&mut self, s: &Settings, skin: &Skin, cape: Option<&Cape>, pose: &Pose) {
+        let rgb = u32::from_str_radix(s.keyboard_color.trim_start_matches('#'), 16).unwrap_or(0x83878A);
+        self.keyboard_color = [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
         self.pixels.fill(0);
         self.depth.fill(f32::INFINITY);
         self.bounds = [self.width as i32, self.height as i32, 0, 0];
@@ -1649,11 +1760,11 @@ impl Frame {
         let sz = b.size + Vec3::splat(b.inflate);
         // 面部正面在头盒 +Z 一侧；眼皮比其他面靠前一丁点，避免与脸部抢占深度。
         let z = sz.z / 2. + 0.02;
-        let x0 = eye.x0 as f32 - 4.;
-        let x1 = eye.x1 as f32 + 1. - 4.;
-        let top = 4. - eye.y0 as f32;
+        let x0 = (eye.x0 as f32 - 4.) * sz.x / 8.;
+        let x1 = (eye.x1 as f32 + 1. - 4.) * sz.x / 8.;
+        let top = (4. - eye.y0 as f32) * sz.y / 8.;
         // 眼皮从上边缘向下长满眼睛所在的那一行（材质包的 blink.sy 0→1）。
-        let bottom = top - eye.rows as f32 * closed;
+        let bottom = top - eye.rows as f32 * closed * sz.y / 8.;
         // UV 直接取识别格里的眼皮像素；识别格坐标本身就是贴图坐标，
         // 不能再叠加脸部 8×8 的偏移。
         let lx0 = eye.lid.0 as f32;
@@ -1714,7 +1825,7 @@ impl Frame {
             .min(self.height as f32) as usize;
         let texscale = skin.image.width() as f32 / 64.;
         let shades = [0.80f32, 0.80, 1., 0.62, 0.94, 0.86];
-        let gray = [131u8, 135, 138].map(|c| {
+        let gray = self.keyboard_color.map(|c| {
             let l = (((c as f32 / 255. + 0.055) / 1.055).powf(2.4) * shades[face]).max(0.);
             ((1.055 * l.powf(1. / 2.4) - 0.055) * 255. + 0.5) as u8
         });
@@ -1777,14 +1888,7 @@ impl Frame {
                     let xx = (tx as u32).min(skin.image.width() - 1);
                     let yy = (ty as u32).min(skin.image.height() - 1);
                     let ti = (yy * skin.image.width() + xx) as usize;
-                    {
-                        let p = skin.image.get_pixel(xx, yy);
-                        let color = if skin.colors.is_empty() {
-                            let lut = shade_lut();
-                            [lut[face][0][p[0] as usize], lut[face][1][p[1] as usize], lut[face][2][p[2] as usize]]
-                        } else { skin.colors[ti][face] };
-                        (color, p[3])
-                    }
+                    (skin.colors[ti][face], skin.image.get_pixel(xx, yy)[3])
                 };
                 if alpha < 16 {
                     continue;
@@ -1835,26 +1939,6 @@ fn edge(a: Vec3, b: Vec3, p: Vec3) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn compact_color_sampling_is_pixel_identical() {
-        let mut skin = Skin::load(DEFAULT_SKIN).unwrap();
-        let mut s = Settings::default();
-        s.da_blink=false; s.track_mouse=false;
-        for chibi in [false,true] {
-            s.chibi=chibi;
-            for posture in ["standing","sitting","custom"] {
-                s.posture=posture.into();
-                let pose=Pose::new(&s);
-                let mut frame=Frame::new(240,280);
-                skin.colors=colors_for(&skin.image);
-                frame.draw(&s,&skin,&pose); let expected=frame.pixels.clone();
-                skin.colors.clear();
-                frame.draw(&s,&skin,&pose);
-                assert_eq!(frame.pixels,expected,"{chibi}/{posture}");
-            }
-        }
-    }
-
     #[test]
     fn breathing_runs_immediately_through_actions_and_preserves_custom_pose() {
         let skin=Skin::load(DEFAULT_SKIN).unwrap();
@@ -2403,6 +2487,94 @@ mod tests {
         }
     }
     #[test]
+    fn keyboard_custom_color_is_rendered() {
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        let mut s = Settings::default(); s.posture = "sitting".into(); s.keyboard_color = "#FF0000".into();
+        let p = Pose::new(&s); let mut f = Frame::new(360, 420);
+        f.draw(&s, &skin, &p);
+        assert!(f.pixels.chunks_exact(4).filter(|p| p[0] == 0 && p[1] == 0 && p[2] > 200 && p[3] > 0).count() > 100);
+    }
+    #[test]
+    fn chibi_typing_hands_reach_scaled_keyboard_surface() {
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        for scale in [50., 100., 180.] { for squash in [1., 0.95, 0.7] {
+            let mut s = Settings::default(); s.chibi = true; s.chibi_body_scale = scale;
+            s.posture = "sitting".into(); s.outer_layer = false; s.breathing_animation = false;
+            s.model_rotation = [0.; 3];
+            let mut p = Pose::new(&s); p.sit = 1.; p.squash = squash;
+            for key in [65, 81, 90, 80, 13, 32, 112, 123] {
+                let pos = key_position(key).unwrap();
+                let side = if pos.x >= 0. { 0 } else { 1 };
+                p.arms[side] = chibi_typing_rotation(&s, &p, side, Some(pos), true);
+                let b = parts(&s, &skin, &p);
+                let board = b.iter().find(|b| b.keyboard).unwrap();
+                let wrist = b[2 + side].transform.transform_point3(Vec3::new(0., -2., 0.));
+                let local = board.transform.inverse().transform_point3(wrist);
+                assert!((local.y - 0.2).abs() < 1e-4, "key {key}, scale {scale}: {local:?}");
+                assert!(local.x.abs() < 4.5 && local.z.abs() < 1.2, "outside board: {local:?}");
+            }
+        }}
+    }
+    #[test]
+    fn chibi_eyelids_cover_correct_face_pixels_at_all_body_scales() {
+        let skin = blinkable_skin();
+        for scale in [50., 100., 180.] {
+            let mut s = Settings::default(); s.chibi = true; s.da_blink = true; s.chibi_body_scale = scale;
+            let p = Pose::new(&s);
+            let mut head = parts(&s, &skin, &p).into_iter().find(|b| b.eyes.is_some()).unwrap();
+            head.transform = Mat4::from_translation(Vec3::Y * 15.)
+                * Mat4::from_quat(Quat::from_rotation_arc(Vec3::Z, Vec3::new(30., 23., 70.).normalize()));
+            head.eyelid = 0.;
+            let mut f = Frame::new(450, 525);
+            f.draw_box(&head, Tex::of(&skin.image, &skin.colors));
+            for eye in [head.eyes.unwrap().left, head.eyes.unwrap().right] {
+                let point = Vec3::new(((eye.x0 as f32 + eye.x1 as f32 + 1.)/2.-4.) * 0.9,
+                    (4.-eye.y0 as f32-eye.rows as f32/2.)*0.9, 3.62);
+                let screen = project(head.transform.transform_point3(point), 450., 525.);
+                let offset = (screen.y as usize * 450 + screen.x as usize)*4;
+                let expected = skin.colors[(eye.lid.1 as u32*skin.image.width()+eye.lid.0 as u32) as usize][4];
+                assert_eq!([f.pixels[offset+2],f.pixels[offset+1],f.pixels[offset]], expected);
+            }
+        }
+    }
+    #[test]
+    fn chibi_hat_top_matches_skin_atlas_front_back_and_left_right() {
+        for factor in [1u32, 2] {
+            let mut atlas = RgbaImage::new(64 * factor, 64 * factor);
+            for (x, y, pixel) in atlas.enumerate_pixels_mut() {
+                *pixel = image::Rgba([(x / factor * 3 + 10) as u8, (y / factor * 3 + 10) as u8, 100, 255]);
+            }
+            let mut png = std::io::Cursor::new(Vec::new());
+            atlas.write_to(&mut png, image::ImageFormat::Png).unwrap();
+            let skin = Skin::load(png.get_ref()).unwrap();
+            for scale in [50., 100., 180.] {
+                let mut s = Settings::default();
+                s.chibi = true; s.outer_layer = true; s.chibi_body_scale = scale;
+                let p = Pose::new(&s);
+                let mut hat = parts(&s, &skin, &p).into_iter().find(|b| {
+                    b.inflate > 0. && b.faces.is_some_and(|f| f[2].u0 == 10.)
+                }).expect("Q版头部外层");
+                let orientation = Quat::from_rotation_arc(Vec3::Y, Vec3::new(30., 23., 70.).normalize());
+                hat.transform = Mat4::from_translation(Vec3::Y * 15.) * Mat4::from_quat(orientation);
+                let size = hat.size + Vec3::splat(hat.inflate);
+                let mut frame = Frame::new(450, 525);
+                frame.draw_box(&hat, Tex::of(&skin.image, &skin.colors));
+                // Anatomical coordinates: +Z is front, +X is character-left.
+                // The hat top occupies atlas x=40..48, y=0..8, just like the
+                // regular model. Four different corner colors catch both flips.
+                for x in [0.5f32, 7.5] { for z in [0.5f32, 7.5] {
+                    let local = Vec3::new((x / 8. - 0.5) * size.x, size.y / 2., (z / 8. - 0.5) * size.z);
+                    let screen = project(hat.transform.transform_point3(local), 450., 525.);
+                    let offset = (screen.y as usize * 450 + screen.x as usize) * 4;
+                    let texel = (z * factor as f32) as u32 * skin.image.width() + ((40. + x) * factor as f32) as u32;
+                    let expected = skin.colors[texel as usize][2];
+                    assert_eq!([frame.pixels[offset+2], frame.pixels[offset+1], frame.pixels[offset]], expected,
+                        "hat top: factor={factor}, scale={scale}, corner=({x},{z})");
+                }}
+            }
+        }
+    }
+    #[test]
     fn unfolded_skin_faces_and_corner_directions() {
         // Coordinate-coded PNG is independent of the former Electron renderer:
         // every texel identifies its own atlas X/Y, so opposite ends cannot alias.
@@ -2707,7 +2879,7 @@ mod tests {
     /// 潜行扭动：材质包先累计 `var.SneakingTimer` 才启动 `SneakyDanceTimer`，
     /// 依照所提供资源包约 3.33 秒开始，松开后回落。
     #[test]
-    fn da_blink_is_independent_of_gaze_and_disabled_for_chibi() {
+    fn da_blink_is_independent_of_gaze_and_available_for_chibi() {
         let mut s = Settings::default();
         let skin = blinkable_skin();
         let mut p = Pose::new(&s);
@@ -2724,8 +2896,8 @@ mod tests {
         assert!(parts(&s, &skin, &p).iter().all(|b| b.eyes.is_none()));
         s.da_blink = true; s.chibi = true;
         p.update(&s, &skin, Vec2::ZERO, 360., 420., false, 1., 0.);
-        assert_eq!(p.eyelid, 1.);
-        assert!(parts(&s, &skin, &p).iter().all(|b| b.eyes.is_none()));
+        assert_eq!(p.eyelid, 1. - p.blink_at(1.));
+        assert_eq!(parts(&s, &skin, &p).iter().filter(|b| b.eyes.is_some()).count(), 1);
     }
     #[test]
     fn dance_starts_immediately_and_auto_crouches_only_when_standing() {
@@ -2741,6 +2913,146 @@ mod tests {
             p.update(&s,&skin,Vec2::ZERO,360.,420.,false,0.02,0.01);
             assert_eq!(p.dance,0.);assert_eq!(p.body_roll,0.);
         }}
+    }
+    #[test]
+    #[ignore = "writes a local visual review sheet when CHIBI_REVIEW_PATH is set"]
+    fn chibi_dance_review_sheet() {
+        let output = std::env::var("CHIBI_REVIEW_PATH").expect("CHIBI_REVIEW_PATH");
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        let mut sheet = image::RgbaImage::from_pixel(1440, 1260, image::Rgba([225, 229, 235, 255]));
+        for (row, scale) in [50., 100., 180.].iter().enumerate() {
+            let mut s = Settings::default();
+            s.chibi = true; s.chibi_body_scale = *scale; s.da_dance = true;
+            s.track_mouse = false; s.outer_layer = true; s.breathing_animation = false;
+            let mut p = Pose::new(&s);
+            for frame in 0..120 {
+                p.update(&s, &skin, Vec2::ZERO, 360., 420., false, frame as f32 / 60., 1. / 60.);
+                if frame % 30 == 15 {
+                    let mut f = Frame::new(360, 420);
+                    f.draw(&s, &skin, &p);
+                    let tile = image::RgbaImage::from_raw(360, 420, f.rgba()).unwrap();
+                    image::imageops::overlay(&mut sheet, &tile, (frame / 30 * 360) as i64, (row * 420) as i64);
+                }
+            }
+        }
+        sheet.save(output).unwrap();
+    }
+    #[test]
+    fn chibi_cape_tracks_torso_and_body_slider() {
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        let cape = Cape { image: image::RgbaImage::new(64, 32), colors: vec![] };
+        for posture in ["standing", "sitting", "custom"] {
+            for scale in [50., 100., 180.] {
+                let mut s = Settings::default();
+                s.chibi = true; s.chibi_body_scale = scale; s.posture = posture.into();
+                s.da_dance = true; s.outer_layer = false;
+                let mut p = Pose::new(&s);
+                p.update(&s, &skin, Vec2::ZERO, 360., 420., false, 1.2, 1./60.);
+                let without = parts_with_cape(&s, &skin, &p, None);
+                let with = parts_with_cape(&s, &skin, &p, Some(&cape));
+                assert_eq!(with.len(), without.len() + 1);
+                let c = with.iter().find(|p| p.cape).unwrap();
+                let torso = &with[1];
+                let local = torso.transform.inverse() * c.transform;
+                let expected = Mat4::from_translation(Vec3::new(0., 3.6 * (3.7 / 12.) - 1.85, -2.9 * (2.5 / 4.)))
+                    * Mat4::from_scale(Vec3::new(3.5 / 8., 3.7 / 12., 2.5 / 4.))
+                    * Mat4::from_rotation_x(0.14);
+                assert!(local.abs_diff_eq(expected, 0.0001));
+                assert_eq!(c.size, Vec3::new(10., 16., 1.));
+            }
+        }
+    }
+    #[test]
+    #[ignore = "local DLmember visual review"]
+    fn dlmember_chibi_cape_review() {
+        let dir = std::path::PathBuf::from(std::env::var("CAPE_REVIEW_DIR").unwrap());
+        let skin = Skin::load(&std::fs::read(dir.join("skin.png")).unwrap()).unwrap();
+        let cape = Cape::load(&std::fs::read(dir.join("cape.png")).unwrap()).unwrap();
+        let mut sheet = image::RgbaImage::new(1440, 1260);
+        for (row, scale) in [50.,100.,180.].into_iter().enumerate() {
+            for (col, (posture, dance, yaw)) in [("standing",false,150.),("sitting",false,150.),("standing",true,150.),("standing",false,0.)].into_iter().enumerate() {
+                let mut s = Settings::default();
+                s.chibi = true; s.chibi_body_scale = scale; s.posture = posture.into();
+                s.arm_model = "slim".into(); s.show_cape = true; s.da_dance = dance; s.model_rotation = [0.,yaw,0.]; s.track_mouse = false;
+                let mut p = Pose::new(&s);
+                for i in 0..120 { p.update(&s,&skin,Vec2::ZERO,360.,420.,false,i as f32/60.,1./60.); }
+                let mut f = Frame::new(360,420); f.draw_ext(&s,&skin,Some(&cape),&p);
+                let shown = f.rgba();
+                s.show_cape = false; f.draw_ext(&s,&skin,Some(&cape),&p);
+                if col < 3 { assert!(shown != f.rgba(), "cape not visible: row={row}, col={col}"); }
+                let tile = image::RgbaImage::from_raw(360,420,shown).unwrap();
+                image::imageops::overlay(&mut sheet,&tile,(col*360) as i64,(row*420) as i64);
+            }
+        }
+        sheet.save(dir.join("review.png")).unwrap();
+    }
+    #[test]
+    fn chibi_dance_joint_pivots_remain_attached_at_all_scales() {
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        for scale in [50., 100., 180.] { for slim in [false, true] {
+            let mut s = Settings::default();
+            s.chibi = true; s.chibi_body_scale = scale; s.da_dance = true;
+            s.outer_layer = false; s.track_mouse = false;
+            s.arm_model = if slim { "slim" } else { "classic" }.into();
+            let mut p = Pose::new(&s);
+            for frame in 0..240 {
+                p.update(&s, &skin, Vec2::ZERO, 360., 420., false, frame as f32 / 60., 1. / 60.);
+                let b = parts(&s, &skin, &p);
+                for side in 0..2 {
+                    let sign = if side == 0 { 1. } else { -1. };
+                    let hip = b[1].transform.transform_point3(Vec3::new(sign * 0.75, -1.85, 0.));
+                    let leg_top = b[4 + side].transform.transform_point3(Vec3::Y * 2.4);
+                    assert!(hip.distance(leg_top) < 0.0001, "hip drift: scale={scale}, frame={frame}");
+                    let shoulder = b[1].transform.transform_point3(Vec3::new(sign * 2.35, 1.85, 0.));
+                    let arm_top = b[2 + side].transform.transform_point3(Vec3::Y * 2.);
+                    assert!(shoulder.distance(arm_top) < 0.0001, "shoulder drift: scale={scale}, frame={frame}");
+                }
+            }
+        }}
+    }
+    #[test]
+    fn chibi_dance_amplitude_scales_without_scaling_other_actions() {
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        let sample = |chibi, scale| {
+            let mut s = Settings::default();
+            s.posture = "standing".into(); s.da_dance = true; s.chibi = chibi; s.chibi_body_scale = scale;
+            let mut p = Pose::new(&s);
+            p.update(&s, &skin, Vec2::ZERO, 360., 420., false, 0.1, 0.1);
+            p
+        };
+        let normal = sample(false, 100.);
+        for scale in [50., 100., 180.] {
+            let p = sample(true, scale);
+            let factor = 3.7 / 12. * scale / 100.;
+            for (actual, source) in [(p.body_roll, normal.body_roll), (p.arm_roll, normal.arm_roll), (p.leg_roll, normal.leg_roll)] {
+                assert!((actual - source * factor).abs() < 1e-6);
+            }
+            assert!((p.body_bob * scale / 100. - normal.body_bob * factor).abs() < 1e-6);
+        }
+    }
+    #[test]
+    fn chibi_shells_are_centered_and_scale_with_their_own_body_part() {
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        for scale in [50., 100., 180.] { for slim in [false, true] { for posture in ["standing", "sitting", "custom"] {
+            let mut s = Settings::default();
+            s.chibi = true; s.chibi_body_scale = scale; s.outer_layer = true;
+            s.posture = posture.into(); s.arm_model = if slim { "slim" } else { "classic" }.into();
+            let p = Pose::new(&s);
+            let b = parts(&s, &skin, &p);
+            let originals = [Vec3::splat(8.), Vec3::new(8.,12.,4.), Vec3::new(if slim {3.} else {4.},12.,4.), Vec3::new(if slim {3.} else {4.},12.,4.), Vec3::new(4.,12.,4.), Vec3::new(4.,12.,4.)];
+            for (index, original) in originals.iter().enumerate() {
+                let inner = &b[index];
+                let outer = b.iter().find(|part| part.inflate > 0. && part.transform.abs_diff_eq(inner.transform, 1e-6)).expect("centered matching shell");
+                let gap = outer.size + Vec3::splat(outer.inflate) - inner.size;
+                let expected = inner.size / *original * if index == 0 {1.} else {0.5};
+                assert!(gap.abs_diff_eq(expected, 1e-6));
+                for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+                    let world_gap = outer.transform.transform_vector3(gap * axis).length();
+                    let body_factor = if index == 0 {1.} else {scale/100.};
+                    assert!((world_gap - (expected * axis).length() * 1.5 * body_factor).abs() < 1e-5);
+                }
+            }
+        }}}
     }
     #[test]
     fn chibi_body_scales_uniformly_but_head_keeps_dimensions() {
