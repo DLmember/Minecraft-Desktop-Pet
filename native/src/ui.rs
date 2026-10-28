@@ -150,7 +150,10 @@ impl App {
         self.control("STATIC", "敲字", 0, 24, 274, 110, 24, 0);
         self.radio("精准按键", 150, 270, 155, 112);
         self.radio("双手交替", 330, 270, 155, 113);
-        self.control("STATIC", "坐姿下响应键盘", 0, 490, 274, 244, 24, 0);
+        self.control("STATIC", "键盘色号", 0, 490, 274, 80, 24, 0);
+        let color = self.control("EDIT", &self.settings.keyboard_color.clone(), WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32, 574, 270, 116, 28, 334);
+        SendMessageW(color, EM_SETLIMITTEXT, 7, 0);
+        self.control("BUTTON", "✓", BS_PUSHBUTTON as u32 | WS_TABSTOP, 698, 270, 36, 28, 174);
         self.control("STATIC", "主手", 0, 24, 306, 110, 24, 0);
         self.radio("右手挥动", 150, 302, 140, 118);
         self.radio("左手挥动", 295, 302, 140, 119);
@@ -159,15 +162,15 @@ impl App {
         self.control("STATIC", "桌面", 0, 24, 338, 110, 24, 0);
         self.check("保持置顶", 150, 334, 150, 120);
         self.check("完全鼠标穿透", 330, 334, 220, 121);
-        self.control("BUTTON", "找回桌宠", BS_PUSHBUTTON as u32 | WS_TABSTOP, 594, 332, 140, 30, 130);
         self.control("STATIC", "键盘", 0, 24, 370, 110, 24, 0);
         self.check("全局键盘互动", 150, 366, 170, 122);
         self.check("hyp快速队伍聊天", 330, 366, 220, 137);
         self.control("STATIC", "# → /p chat", 0, 555, 370, 179, 24, 0);
         self.control("STATIC", "动画", 0, 24, 402, 110, 24, 0);
-        self.check("DA眨眼（需修改过皮肤）", 150, 398, 298, 163);
-        self.check("DA扭腰", 450, 398, 120, 164);
-        self.check("敲字浮现字", 580, 398, 154, 167);
+        self.check("DA眨眼（需修改过皮肤）", 150, 398, 260, 163);
+        self.check("DA扭腰", 414, 398, 92, 164);
+        self.check("敲字浮现字", 510, 398, 128, 167);
+        self.check("可调戏", 642, 398, 92, 172);
         self.control("STATIC", "大小", 0, 24, 466, 110, 24, 0);
         self.slider(200, 150, 462, 490, 65, 180);
         self.control("STATIC", "", SS_RIGHT, 650, 466, 84, 24, 310);
@@ -185,9 +188,10 @@ impl App {
         self.check("随 Windows 登录自动启动", 430, 590, 304, 160);
         self.control("STATIC", "音乐", 0, 24, 626, 110, 24, 0);
         self.check("播放音乐时冒音符", 150, 622, 260, 171);
-        self.check("可调戏", 150, 430, 150, 172);
-        self.check("呼吸动画", 330, 430, 155, 173);
-        self.control("STATIC", "开启后持续轻微呼吸", 0, 490, 434, 244, 24, 0);
+        self.check("呼吸动画", 150, 430, 124, 173);
+        self.check("偶尔伸懒腰", 282, 430, 146, 175);
+        self.check("偶尔歪头", 436, 430, 138, 176);
+        self.check("偶尔犯困", 582, 430, 152, 177);
         self.building_page = 1;
         self.control("STATIC", "整体角度偏移", 0, 24, 78, 280, 24, 0);
         self.control(
@@ -516,7 +520,7 @@ impl App {
         SendMessageW(h, TBM_SETRANGEMAX, 1, max as isize);
         SendMessageW(h, TBM_SETPAGESIZE, 0, if id == 207 { 1 } else { 5 });
     }
-    fn ctrl(&self, id: i32) -> HWND {
+    pub(super) fn ctrl(&self, id: i32) -> HWND {
         self.controls
             .iter()
             .find(|p| p.0 == id)
@@ -559,7 +563,7 @@ impl App {
             (124, self.settings.outer_layer),
             (138, self.settings.show_cape),
             (139, self.settings.chibi),
-            (163, self.settings.da_blink && !self.settings.chibi),
+            (163, self.settings.da_blink),
             (164, self.settings.da_dance),
             (165, self.settings.main_hand == "mapped"),
             (166, self.settings.main_hand == "reverse"),
@@ -567,6 +571,9 @@ impl App {
             (171, self.settings.music_notes),
             (172, self.settings.tease_enabled),
             (173, self.settings.breathing_animation),
+            (175, self.settings.occasional_stretch),
+            (176, self.settings.occasional_tilt),
+            (177, self.settings.occasional_sleepy),
             (160, self.settings.autostart),
         ] {
             SendMessageW(
@@ -580,7 +587,7 @@ impl App {
                 0,
             );
         }
-        EnableWindow(self.ctrl(163), if self.settings.chibi { 0 } else { 1 });
+        EnableWindow(self.ctrl(163), 1);
         EnableWindow(self.ctrl(212), if self.settings.chibi { 1 } else { 0 });
         SetWindowTextW(self.ctrl(300), wide(&self.settings.skin_name).as_ptr());
         let values = [

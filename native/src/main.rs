@@ -10,6 +10,7 @@ mod updates;
 mod music;
 mod theme;
 mod window_order;
+mod menu_clock;
 use config::{Position, Settings, Store};
 use glam::Vec2;
 use render::{Cape, Frame, Pose, Skin};
@@ -593,10 +594,10 @@ impl App {
         // 静止时项目会停止重绘以省 CPU；眨眼是时间轴动画，必须在这时也允许出帧，
         // 否则桌宠不动就永远不会眨眼。潜行扭动的计时同样靠每帧推进，按住 Shift
         // 期间也要保持出帧，眨眼和扭动之外仍然不绘制，空闲开销不变。
-        let blinking = self.settings.da_blink && !self.settings.chibi && self.skin.eyes.is_some()
+        let blinking = self.settings.da_blink && self.skin.eyes.is_some()
             && (self.pose.blink_at(now) > 0.0001 || self.pose.eyelid < 0.9999);
         let dancing = (self.settings.da_dance && self.settings.posture == "standing") || self.pose.music_playing || self.pose.needs_frames() || self.settings.breathing_animation;
-        if !self.hidden && (now <= self.awake || blinking || dancing) && clock >= self.next_draw {
+        if !self.hidden && (now <= self.awake || blinking || dancing || self.pose.gesture_due(&self.settings,now)) && clock >= self.next_draw {
             self.draw(now, dt);
             self.last_draw = clock;
             let period = 1. / self.settings.fps as f64;
@@ -839,11 +840,11 @@ impl App {
             }
             139 => {
                 self.settings.chibi = !self.settings.chibi;
-                if self.settings.chibi { self.settings.da_blink = false; }
+
                 self.changed();
             }
             163 => {
-                if !self.settings.chibi { self.settings.da_blink = !self.settings.da_blink; }
+                self.settings.da_blink = !self.settings.da_blink;
                 self.changed();
             }
             164 => {
@@ -870,6 +871,15 @@ impl App {
                         self.refresh_panel();
                     }
                 }
+            }
+            174 => {
+                let mut text = [0u16; 32];
+                let len = GetWindowTextW(self.ctrl(334), text.as_mut_ptr(), text.len() as i32);
+                if let Some(color) = config::normalize_keyboard_color(&String::from_utf16_lossy(&text[..len as usize])) {
+                    self.settings.keyboard_color = color;
+                    SetWindowTextW(self.ctrl(334), wide(&self.settings.keyboard_color).as_ptr());
+                    self.changed();
+                } else { report_error("请输入六位十六进制色号，例如 #83878A。"); }
             }
             130 => self.center(),
             131 => {
@@ -917,6 +927,13 @@ impl App {
             171 => { self.settings.music_notes = !self.settings.music_notes; self.changed(); }
             172 => { self.settings.tease_enabled = !self.settings.tease_enabled; self.changed(); }
             173 => { self.settings.breathing_animation = !self.settings.breathing_animation;  self.changed(); }
+            175 => { self.settings.occasional_stretch = !self.settings.occasional_stretch; self.changed(); }
+            176 => { self.settings.occasional_tilt = !self.settings.occasional_tilt; self.changed(); }
+            177 => { self.settings.occasional_sleepy = !self.settings.occasional_sleepy; self.changed(); }
+            178..=181 => {
+                let kind=[render::Gesture::Wave,render::Gesture::Bounce,render::Gesture::Shy,render::Gesture::Clap][(id-178) as usize];
+                self.pose.trigger_gesture(kind,self.start.elapsed().as_secs_f32()); self.wake();
+            }
             150..=152 => self.show_page((id - 150) as u8),
             140..=143 => {
                 self.settings.scale = [0.75, 1., 1.25, 1.5][(id - 140) as usize];
@@ -953,65 +970,79 @@ impl App {
         self.menu_open = true;
         self.drag = None;
         let menu = CreatePopupMenu();
-        let items = [
-            (100, "打开控制台", false),
-            (101, "导入皮肤…", false),
-            (168, "喂食苹果", false),
-            (0, "", false),
+        // DestroyMenu(menu) also releases all attached submenus.
+        let append = |target: HMENU, id: u32, label: &str, checked: bool| {
+            AppendMenuW(target, if id == 0 { MF_SEPARATOR } else {
+                MF_STRING | if checked { MF_CHECKED } else { 0 }
+            }, id as usize, wide(label).as_ptr());
+        };
+        let submenu = |label: &str, items: &[(u32, &str, bool)]| {
+            let child = CreatePopupMenu();
+            for &(id, text, checked) in items { append(child, id, text, checked); }
+            AppendMenuW(menu, MF_POPUP | MF_STRING, child as usize, wide(label).as_ptr());
+        };
+        append(menu, 100, "打开控制台", false);
+        submenu("触发动作", &[
+            (178,"打招呼",false),(179,"开心蹦蹦",false),
+            (180,"害羞",false),(181,"鼓掌",false),(168,"喂食苹果",false),
+        ]);
+        append(menu, 0, "", false);
+        let posture = match self.settings.posture.as_str() {
+            "sitting" => "坐下", "custom" => "自定义姿态", _ => "站立",
+        };
+        submenu(&format!("姿态：{posture}"), &[
             (110, "站立", self.settings.posture == "standing"),
             (111, "坐下", self.settings.posture == "sitting"),
             (117, "自定义姿态", self.settings.posture == "custom"),
-            (118, "右手挥动", self.settings.main_hand == "right"),
-            (119, "左手挥动", self.settings.main_hand == "left"),
-            (165, "实际映射", self.settings.main_hand == "mapped"),
-            (166, "反向映射", self.settings.main_hand == "reverse"),
+        ]);
+        submenu("外观", &[
+            (101, "导入皮肤…", false),
             (0, "", false),
-            (112, "精准按键", self.settings.typing_mode == "precise"),
-            (113, "双手交替", self.settings.typing_mode == "alternating"),
             (114, "经典手臂", self.settings.arm_model == "classic"),
             (115, "纤细手臂", self.settings.arm_model == "slim"),
             (0, "", false),
-            (120, "保持置顶", self.settings.always_on_top),
-            (121, "完全鼠标穿透", self.settings.click_through),
-            (122, "全局键盘互动", self.settings.keyboard_enabled),
-            (123, "视线跟随鼠标", self.settings.track_mouse),
             (138, "显示正版披风", self.settings.show_cape),
-            (139, "Q 版小人", self.settings.chibi),
+            (139, "Q版小人", self.settings.chibi),
+        ]);
+        submenu(&format!("大小：{:.0}%", self.settings.scale * 100.), &[
+            (140, "75%", (self.settings.scale - 0.75).abs() < 0.001),
+            (141, "100%", (self.settings.scale - 1.).abs() < 0.001),
+            (142, "125%", (self.settings.scale - 1.25).abs() < 0.001),
+            (143, "150%", (self.settings.scale - 1.5).abs() < 0.001),
+        ]);
+        let hand = match self.settings.main_hand.as_str() {
+            "left" => "左手", "mapped" => "实际映射", "reverse" => "反向映射", _ => "右手",
+        };
+        submenu(&format!("鼠标挥动：{hand}"), &[
+            (118, "右手", self.settings.main_hand == "right"),
+            (119, "左手", self.settings.main_hand == "left"),
+            (165, "实际映射", self.settings.main_hand == "mapped"),
+            (166, "反向映射", self.settings.main_hand == "reverse"),
+        ]);
+        let typing = if !self.settings.keyboard_enabled { "已关闭" }
+            else if self.settings.typing_mode == "alternating" { "双手交替" } else { "精准按键" };
+        submenu(&format!("键盘互动：{typing}"), &[
+            (122, "全局键盘互动", self.settings.keyboard_enabled),
             (0, "", false),
-            (140, "大小 75%", (self.settings.scale - 0.75).abs() < 0.01),
-            (141, "大小 100%", (self.settings.scale - 1.).abs() < 0.01),
-            (142, "大小 125%", (self.settings.scale - 1.25).abs() < 0.01),
-            (143, "大小 150%", (self.settings.scale - 1.5).abs() < 0.01),
-            (130, "把桌宠移到屏幕中央", false),
-            (
-                131,
-                if self.hidden {
-                    "显示桌宠"
-                } else {
-                    "暂时隐藏桌宠"
-                },
-                false,
-            ),
+            (112, "精准按键", self.settings.typing_mode == "precise"),
+            (113, "双手交替", self.settings.typing_mode == "alternating"),
+        ]);
+        append(menu, 0, "", false);
+        append(menu, 120, "保持置顶", self.settings.always_on_top);
+        append(menu, 121, "完全鼠标穿透", self.settings.click_through);
+        append(menu, 123, "视线跟随鼠标", self.settings.track_mouse);
+        submenu("桌面与启动", &[
+            (130, "移到屏幕中央", false),
+            (131, if self.hidden { "显示桌宠" } else { "暂时隐藏桌宠" }, false),
             (0, "", false),
             (160, "随 Windows 登录启动", self.settings.autostart),
-            (0, "", false),
-            (199, "退出Minecraft桌宠", false),
-        ];
-        for (id, label, checked) in items {
-            AppendMenuW(
-                menu,
-                if id == 0 {
-                    MF_SEPARATOR
-                } else {
-                    MF_STRING | if checked { MF_CHECKED } else { 0 }
-                },
-                id as usize,
-                wide(label).as_ptr(),
-            );
-        }
+        ]);
+        append(menu, 0, "", false);
+        append(menu, 199, "退出 Minecraft桌宠", false);
         let mut p = POINT { x: 0, y: 0 };
         GetCursorPos(&mut p);
         SetForegroundWindow(self.hwnd);
+        let menu_clock = menu_clock::MenuClock::start(self.hwnd,self.settings.fps);
         let id = TrackPopupMenu(
             menu,
             TPM_RETURNCMD | TPM_RIGHTBUTTON,
@@ -1021,6 +1052,7 @@ impl App {
             self.hwnd,
             null(),
         );
+        drop(menu_clock);
         DestroyMenu(menu);
         PostMessageW(self.hwnd, WM_NULL, 0, 0);
         self.menu_open = false;
@@ -1099,6 +1131,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                     SetWindowTextW(a.status, wide(message).as_ptr());
                 }
             }
+            0
+        }
+        menu_clock::MESSAGE => {
+            menu_clock::acknowledge();
+            if a.menu_open {a.tick();}
             0
         }
         WM_TIMER => {
@@ -1389,7 +1426,10 @@ fn main() {
         APP = &mut *app;
         app.geometry();
         let hwnd = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            // OBS excludes WS_EX_TOOLWINDOW from its window-capture list.
+            // NOACTIVATE still keeps this passive popup off the taskbar without
+            // hiding it from capture enumeration. Reuse the existing DWM bitmap.
+            WS_EX_LAYERED | WS_EX_NOACTIVATE,
             class.as_ptr(),
             wide(&product_title()).as_ptr(),
             WS_POPUP,

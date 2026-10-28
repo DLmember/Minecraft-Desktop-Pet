@@ -9,6 +9,12 @@ use windows_sys::Win32::Storage::FileSystem::{
     MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
 };
 pub const FPS_OPTIONS: [u32; 7] = [30, 60, 90, 120, 144, 165, 240];
+pub fn normalize_keyboard_color(value: &str) -> Option<String> {
+    let text = value.trim().strip_prefix('#').unwrap_or(value.trim());
+    if text.len() == 6 && text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(format!("#{}", text.to_ascii_uppercase()))
+    } else { None }
+}
 /// 进程优先级档位，与 Windows 的 SetPriorityClass 一一对应。
 #[cfg(not(windows))]
 pub const PRIORITY_OPTIONS: [&str; 5] = ["idle", "below", "normal", "above", "high"];
@@ -75,6 +81,7 @@ pub struct Settings {
     pub click_through: bool,
     pub track_mouse: bool,
     pub keyboard_enabled: bool,
+    pub keyboard_color: String,
     pub hyp_quick_chat: bool,
     pub autostart: bool,
     pub show_cape: bool,
@@ -88,6 +95,9 @@ pub struct Settings {
     // Keep the previous preview setting key so existing preferences survive.
     #[serde(rename = "idleAnimation")]
     pub breathing_animation: bool,
+    pub occasional_stretch: bool,
+    pub occasional_tilt: bool,
+    pub occasional_sleepy: bool,
     pub chibi_body_scale: f32,
     #[cfg(not(windows))]
     pub autostart_delay: u32,
@@ -122,6 +132,7 @@ impl Default for Settings {
             click_through: false,
             track_mouse: true,
             keyboard_enabled: true,
+            keyboard_color: "#83878A".into(),
             hyp_quick_chat: false,
             autostart: false,
             show_cape: true,
@@ -133,6 +144,9 @@ impl Default for Settings {
             music_notes: false,
             tease_enabled: false,
             breathing_animation: false,
+            occasional_stretch: false,
+            occasional_tilt: false,
+            occasional_sleepy: false,
             chibi_body_scale: 100.,
             #[cfg(not(windows))]
             autostart_delay: 0,
@@ -192,7 +206,7 @@ impl Settings {
         }
     }
     pub fn clean(&mut self) {
-        if self.chibi { self.da_blink = false; }
+        self.keyboard_color = normalize_keyboard_color(&self.keyboard_color).unwrap_or_else(|| "#83878A".into());
         self.chibi_body_scale = if self.chibi_body_scale.is_finite() { self.chibi_body_scale.clamp(50., 180.) } else { 100. };
         if self.posture != "sitting" && self.posture != "custom" {
             self.posture = "standing".into();
@@ -697,8 +711,25 @@ mod tests {
         Store::new(dir.clone()).save(&s).unwrap();
         assert_eq!(Store::new(dir.clone()).load(), s);
         s.chibi = true; s.da_blink = true; s.chibi_body_scale = 900.; s.clean();
-        assert!(!s.da_blink); assert_eq!(s.chibi_body_scale, 180.);
+        assert!(s.da_blink); assert_eq!(s.chibi_body_scale, 180.);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn keyboard_color_and_chibi_blink_persist() {
+        assert_eq!(normalize_keyboard_color(" ffaAcc ").as_deref(), Some("#FFAACC"));
+        for invalid in ["#FFF", "#GG0000", "#00000000", "", "##ffffff"] {
+            assert!(normalize_keyboard_color(invalid).is_none(), "{invalid}");
+        }
+        let mut s = Settings::default();
+        s.chibi = true; s.da_blink = true; s.keyboard_color = "#FFAACC".into();
+        s.occasional_stretch = true; s.occasional_tilt = true; s.occasional_sleepy = true;
+        let dir = std::env::temp_dir().join(format!("pet-color-test-{}", std::process::id()));
+        Store::new(dir.clone()).save(&s).unwrap();
+        assert_eq!(Store::new(dir.clone()).load(), s);
+        fs::remove_dir_all(dir).unwrap();
+        let old: Settings = serde_json::from_str(r#"{"chibi":true}"#).unwrap();
+        assert_eq!(old.keyboard_color, "#83878A");
+        assert!(!old.occasional_stretch && !old.occasional_tilt && !old.occasional_sleepy);
     }
     #[test]
     fn migrate() {
