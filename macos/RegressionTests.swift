@@ -50,13 +50,42 @@ extension AppDelegate {
             (view as? NSControl).map { [$0] } ?? view.subviews.flatMap { controls($0) }
         }
         func all() -> [NSControl] { controlTabs!.selectedTabViewItem!.view.map(controls) ?? [] }
-        for key in ["showCape","autostart","typingLetters","daDance","musicNotes","teaseEnabled","idleAnimation","chibi"] {
+        for key in ["showCape","autostart","typingLetters","daDance","musicNotes","teaseEnabled","idleAnimation","chibi",
+                    "occasionalStretch","occasionalTilt","occasionalSleepy"] {
             guard let b = all().compactMap({$0 as? NSButton}).first(where:{bindings[ObjectIdentifier($0)]?.key == key}) else { preconditionFailure("Missing \(key)") }
             let expected = !flag(key)
             b.state = expected ? .on : .off; controlChanged(b); save(); loadSettings()
             precondition(flag(key) == expected, "Setting persists: \(key)")
         }
-        precondition(!flag("daBlink"), "Q mode disables incompatible blink")
+        func button(_ key: String) -> NSButton { all().compactMap { $0 as? NSButton }.first { bindings[ObjectIdentifier($0)]?.key == key }! }
+        settings["daBlink"] = true; settings["chibi"] = false; changed(); save(); populatePage(selectedConsolePage)
+        let chibi = button("chibi"); chibi.state = .on; controlChanged(chibi); save(); loadSettings()
+        precondition(flag("chibi") && flag("daBlink"), "Turning on Q mode keeps DA blink (2.5.1)")
+        precondition(button("daBlink").isEnabled && button("daBlink").state == .on, "DA blink stays available in Q mode")
+        let colorField = keyboardColorField!
+        colorField.stringValue = " ffaacc "; applyKeyboardColor(); save(); loadSettings()
+        precondition(settings["keyboardColor"] as? String == "#FFAACC" && colorField.stringValue == "#FFAACC", "Keyboard color normalizes and persists")
+        colorField.stringValue = "#GG0000"; applyKeyboardColor(); loadSettings()
+        precondition(settings["keyboardColor"] as? String == "#FFAACC" && colorField.stringValue == "#FFAACC", "Invalid color is rejected")
+        for bad in ["#FFF", "##FFFFFF", "", "#00000000"] { precondition(Self.normalizedKeyboardColor(bad) == nil, bad) }
+        let menu = NSMenu(); buildMenu(menu)
+        let tops = menu.items.map(\.title)
+        for prefix in ["打开控制台", "触发动作", "姿态：", "外观", "大小：", "鼠标挥动：", "键盘互动：", "保持置顶", "完全鼠标穿透", "视线跟随鼠标", "桌面与启动", "退出"] {
+            precondition(tops.contains { $0.hasPrefix(prefix) }, "Menu has \(prefix)")
+        }
+        let gestures = menu.items.first { $0.title == "触发动作" }!.submenu!.items.map(\.title)
+        precondition(gestures == ["打招呼", "开心蹦蹦", "害羞", "鼓掌", "喂食苹果"], "Gesture submenu order")
+        let sizeMenu = menu.items.first { $0.title.hasPrefix("大小：") }!.submenu!
+        func click(_ item: NSMenuItem) { precondition(NSApp.sendAction(item.action!, to: item.target, from: item), "Menu action: \(item.title)") }
+        click(sizeMenu.items.first { $0.title == "125%" }!); save(); loadSettings()
+        precondition(abs(number("scale") - 1.25) < 0.001 && pet.frame.width == 450, "Menu size choice applies")
+        click(sizeMenu.items.first { $0.title == "100%" }!); save()
+        let topToggle = menu.items.first { $0.title == "保持置顶" }!, wasTop = flag("alwaysOnTop")
+        click(topToggle); precondition(flag("alwaysOnTop") == !wasTop, "Menu toggle flips setting")
+        click(topToggle); precondition(flag("alwaysOnTop") == wasTop, "Reused menu item flips back")
+        let waveItem = menu.items.first { $0.title == "触发动作" }!.submenu!.items[0]
+        click(waveItem); precondition(pet_needs_frames(core, now), "Wave gesture wakes the frame timer")
+        precondition(!pet_gesture(core, 99, now), "Unknown gesture is rejected")
         let reverse = all().compactMap { $0 as? NSButton }.first {
             let binding = bindings[ObjectIdentifier($0)]
             return binding?.key == "mainHand" && binding?.choices.first as? String == "reverse"
@@ -74,7 +103,7 @@ extension AppDelegate {
         let footerControls = controls(panel!.contentView!)
         let github = footerControls.compactMap { $0 as? NSButton }.first { $0.title == "GitHub" }!
         precondition(github.image != nil, "Bundled GitHub icon is present")
-        precondition(footerControls.compactMap { $0 as? NSTextField }.contains { $0.stringValue == "由 GPT 6 Astra 制作" })
+        precondition(!footerControls.compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("制作") }, "Console has no credit line")
         precondition(!footerControls.compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("Apple Music") })
         loadSettings(); precondition(settings["mainHand"] as? String == "reverse")
         precondition(number("autostartDelay") == 120)
@@ -120,11 +149,53 @@ extension AppDelegate {
             }
             precondition(field.stringValue == QuickChat.text, "Exact quick-chat text insertion")
         }
+        let inputOK = paneSatisfied(.inputMonitoring), access = input.accessibilityAllowed
+        let problem = PermissionLook.problem(listen: input.listeningAllowed, access: access, inputOK: inputOK)
+        let level = PermissionLook.level(inputOK: inputOK, access: access)
+        let tint = NSColor(cgColor: permissionTint!.layer!.backgroundColor!)!.usingColorSpace(.sRGB)!
+        let expected = PermissionLook.color(level).usingColorSpace(.sRGB)!
+        precondition(permissionTint!.frame == permissionPanel!.contentView!.bounds, "Tint covers the whole window")
+        precondition(abs(tint.redComponent - expected.redComponent) < 0.01 && abs(tint.greenComponent - expected.greenComponent) < 0.01,
+                     "Permission window is green with both, yellow with one, red with neither")
+        precondition(accessLabel!.stringValue.hasPrefix(problem == nil ? "✓" : "✕"))
+        func capture(_ window: NSWindow, _ name: String) {
+            // Cache the frame view so the tinted window background is included.
+            guard let v = window.contentView?.superview, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return }
+            v.cacheDisplay(in: v.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: dataDir.appendingPathComponent(name))
+        }
+        capture(permissionPanel!, "smoke-permissions.png")
         closePermissions()
+        for pane in [PrivacyPane.inputMonitoring, .accessibility] {
+            showGuide(pane)
+            let guide = guidePanel!
+            precondition(guide.isVisible && !guide.hidesOnDeactivate && guide.level == .floating, "Guide stays beside System Settings")
+            let source = guide.contentView!.subviews.compactMap { $0 as? DraggableAppView }.first!
+            precondition(source.bundleURL == Bundle.main.bundleURL, "Drag carries this app bundle")
+            precondition(source.hitTest(NSPoint(x: source.frame.midX, y: source.frame.midY)) === source)
+            capture(guide, "smoke-guide-\(pane.service).png")
+            guide.performClose(nil)
+            precondition(guidePanel == nil && guideTimer == nil && !guide.isVisible)
+        }
+        let beside = SystemSettingsWindow.placement(for: NSSize(width: 340, height: 262),
+            beside: NSRect(x: 100, y: 200, width: 700, height: 500), in: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        precondition(beside == NSPoint(x: 812, y: 398), "Guide docks right of System Settings")
+        let left = SystemSettingsWindow.placement(for: NSSize(width: 340, height: 262),
+            beside: NSRect(x: 700, y: 200, width: 700, height: 500), in: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        precondition(left.x == 348, "Guide docks left when the right edge is full")
+        pageButtons[0].performClick(nil)
+        let console = panel
+        for (key, toggle) in [("clickThrough", { self.toggleClickThrough() }), ("alwaysOnTop", { self.toggleTop() })] {
+            let expected = !flag(key)
+            toggle()
+            precondition(panel === console && permissionPanel == nil, "Menu-bar toggles never reopen the console")
+            let box = all().compactMap { $0 as? NSButton }.first { bindings[ObjectIdentifier($0)]?.key == key }!
+            precondition(flag(key) == expected && box.state == (expected ? .on : .off), "Open console mirrors menu-bar toggle: \(key)")
+        }
         settings = saved; changed(); save()
         for _ in 0..<5 { panel?.close(); precondition(panel == nil && controlTabs == nil && bindings.isEmpty && pageButtons.isEmpty && consoleWindow?.contentView?.subviews.isEmpty == true); showSettings(); checkCompactConsole() }
         controlTabs?.selectTabViewItem(at:0)
-        print("UI regression passed: Windows-aligned native layout, GitHub icon and credit, radio groups, FPS slider, three lazy native pages, v2.5 settings, isolated poses, input permissions, quick chat, click dispatch, window release")
+        print("UI regression passed: Windows-aligned native layout, GitHub icon without credit, radio groups, FPS slider, three lazy native pages, v2.5 settings, isolated poses, input permissions, quick chat, click dispatch, window release")
     }
 
     /// Explicit isolated test mode; never installed as a background service.

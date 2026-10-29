@@ -5,7 +5,7 @@ mod keyboard;
 mod render;
 use config::{Settings, Store};
 use glam::Vec2;
-use render::{Cape, Frame, Pose, Skin};
+use render::{Cape, Frame, Gesture, Pose, Skin};
 use std::{ffi::{c_char, CStr, CString}, path::PathBuf, ptr};
 
 pub struct PetCore {
@@ -207,10 +207,19 @@ pub unsafe extern "C" fn pet_music(core: *mut PetCore, playing: bool) {
     if let Some(c) = core.as_mut() { c.pose.music_playing = playing; }
 }
 #[no_mangle]
-pub unsafe extern "C" fn pet_needs_frames(core: *mut PetCore) -> bool {
+pub unsafe extern "C" fn pet_gesture(core: *mut PetCore, kind: u32, now: f32) -> bool {
+    let Some(c) = core.as_mut() else { return false; };
+    let Some(&kind) = [Gesture::Wave, Gesture::Bounce, Gesture::Shy, Gesture::Clap].get(kind as usize) else { return false; };
+    c.pose.trigger_gesture(kind, now);
+    true
+}
+/// `now` lets the occasional-action deadline wake the idle frame timer.
+#[no_mangle]
+pub unsafe extern "C" fn pet_needs_frames(core: *mut PetCore, now: f32) -> bool {
     core.as_ref().is_some_and(|c| c.pose.needs_frames()
+        || c.pose.gesture_due(&c.settings, now)
         || c.settings.breathing_animation
-        || (c.settings.da_blink && !c.settings.chibi && c.skin.eyes.is_some())
+        || (c.settings.da_blink && c.skin.eyes.is_some())
         || (c.settings.da_dance && c.settings.posture == "standing")
         || (c.settings.music_notes && c.pose.music_playing))
 }
@@ -278,7 +287,7 @@ mod ffi_tests {
             (*core).settings.da_blink = false;
             (*core).settings.da_dance = false;
             (*core).settings.breathing_animation = false;
-            assert!(!pet_needs_frames(core));
+            assert!(!pet_needs_frames(core,0.));
             for mode in ["left","right","mapped","reverse"] {
                 (*core).settings.main_hand = mode.into();
                 for button in 0..5 {
@@ -295,7 +304,7 @@ mod ffi_tests {
                 }
             }
             pet_feed(core,1.);
-            assert!(pet_needs_frames(core));
+            assert!(pet_needs_frames(core,0.));
             assert_eq!((*core).pose.effect_counts()[2],1);
             (*core).settings.tease_enabled=true;
             pet_mouse(core,2,true,1.1);
@@ -305,12 +314,26 @@ mod ffi_tests {
             pet_music(core,true);
             pet_render(core,0.,0.,360.,420.,false,2.,0.016);
             assert_eq!((*core).pose.effect_counts()[1],1);
-            assert!(pet_needs_frames(core));
+            assert!(pet_needs_frames(core,0.));
             pet_music(core,false);
             pet_render(core,0.,0.,360.,420.,false,3.,0.016);
             assert_eq!((*core).pose.effect_counts()[1],0);
             (*core).settings.breathing_animation=true;
-            assert!(pet_needs_frames(core));
+            assert!(pet_needs_frames(core,0.));
+            (*core).settings.breathing_animation=false;
+            pet_render(core,0.,0.,360.,420.,false,10.,0.016);
+            assert!(!pet_needs_frames(core,10.));
+            (*core).settings.occasional_tilt=true;
+            assert!(pet_needs_frames(core,10.), "mask change wakes the frame timer");
+            pet_render(core,0.,0.,360.,420.,false,10.,0.016);
+            let due=(*core).pose.next_gesture_at().unwrap();
+            assert!(!pet_needs_frames(core,due-0.1));
+            assert!(pet_needs_frames(core,due));
+            (*core).settings.occasional_tilt=false;
+            assert!(!pet_gesture(core,4,20.));
+            assert!(pet_gesture(core,0,20.));
+            assert!(pet_needs_frames(core,20.));
+            (*core).settings.breathing_animation=true;
             assert_eq!(pet_pixels(core),(*core).frame.pixels.as_ptr());
             let json=pet_settings(core);
             assert!(!CStr::from_ptr(json).to_str().unwrap().contains("startupPriority"));

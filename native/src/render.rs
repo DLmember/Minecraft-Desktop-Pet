@@ -354,6 +354,11 @@ pub fn key_position(vk: u32) -> Option<Vec2> {
     }
     None
 }
+/// macOS：交替模式和未收录的按键没有键位，手原本只下沉一点点（约 7°）。
+/// 让这只手落到自己这半边的主键行，按动和精确模式一样看得清，且不离开键盘。
+fn keyless_press(sign: f32) -> Option<Vec2> {
+    if cfg!(target_os = "macos") { Some(Vec2::new(sign * 1.5, -0.64)) } else { None }
+}
 #[derive(Clone, Copy)]
 struct Hand {
     until: f32,
@@ -860,7 +865,8 @@ impl Pose {
                 pressed = active;
                 let k = held
                     .map(|k| k.key)
-                    .unwrap_or(if active { hand.key } else { None });
+                    .unwrap_or(if active { hand.key } else { None })
+                    .or(if active { keyless_press(sign) } else { None });
                 // Q 版键盘更靠下、更近，肩也更低；坐标都是 chibi 缩放前的世界值。
                 let (key_y, idle_y, key_z, idle_z, shoulder_y, shoulder_x) = if s.chibi {
                     (3.33, 3.98, 6.27, 6.0, 6., 3.15)
@@ -870,7 +876,7 @@ impl Pose {
                 let mut target = Vec3::new(
                     k.map(|v| v.x).unwrap_or(sign * 4.2),
                     if active { key_y } else { idle_y },
-                    key_z + k.map(|v| v.y).unwrap_or(if active { 7.0 } else { -0.65 }),
+                    key_z + k.map(|v| v.y).unwrap_or(-0.65),
                 );
                 if !active {
                     target.y += 0.65;
@@ -1348,7 +1354,7 @@ fn chibi_typing_rotation(s: &Settings, pose: &Pose, side: usize, key: Option<Vec
     let y = 3. * pose.sit + (3.4 + if active { 0. } else { 0.4 } - 3. * pose.sit) / pose.squash.max(0.1);
     let x = key.map(|k| k.x * 0.4).unwrap_or(sign * 1.7);
     let dy = y - shoulder.y;
-    let z = 2.8 + key.map(|k| k.y * 0.18).unwrap_or(if active { 2.5 } else { 0. });
+    let z = 2.8 + key.map(|k| k.y * 0.18).unwrap_or(0.);
     let horizontal = Vec2::new(x - shoulder.x, z - shoulder.z).normalize_or_zero()
         * (16. - dy * dy).max(0.1).sqrt();
     let target = Vec3::new(shoulder.x + horizontal.x, y, shoulder.z + horizontal.y);
@@ -3519,18 +3525,23 @@ mod tests {
         assert_ne!(p.held[0].side, side);
     }
     #[test]
-    fn zz_probe_alternating_amplitude() {
-        for chibi in [false,true] { for mode in ["precise","alternating"] { for hand_vk in [81u32,80] {
+    #[cfg(target_os = "macos")]
+    fn alternating_press_is_as_visible_as_precise() {
+        for chibi in [false, true] {
             let (mut s, skin, mut p) = if chibi { seated_chibi() } else { seated() };
-            s.typing_mode = mode.into();
+            s.typing_mode = "alternating".into();
             for i in 0..120 { tick(&mut p, &s, &skin, 0.5 + i as f32 / 120., false); }
             let idle = p.arms;
-            p.key(hand_vk, true, 2., &s);
-            let mut maxd=[0f32;2];
-            for i in 0..60 { tick(&mut p, &s, &skin, 2. + i as f32 / 120., false);
-                for k in 0..2 { maxd[k]=maxd[k].max(p.arms[k].angle_between(idle[k])); } }
-            println!("PROBE chibi={chibi} mode={mode} vk={hand_vk} max_angle_deg L={:.1} R={:.1} held_side={:?}", maxd[0].to_degrees(), maxd[1].to_degrees(), p.held.iter().map(|k|k.side).collect::<Vec<_>>());
-        }}}
+            p.key(81, true, 2., &s);
+            let side = p.held[0].side;
+            let mut reach = 0f32;
+            for i in 0..60 {
+                tick(&mut p, &s, &skin, 2. + i as f32 / 120., false);
+                reach = reach.max(p.arms[side].angle_between(idle[side]));
+            }
+            assert!(reach.to_degrees() > 15., "chibi={chibi} reach={}", reach.to_degrees());
+            assert!(p.arms[1 - side].angle_between(idle[1 - side]) < 0.02);
+        }
     }
     #[test]
     fn swing_overrides_then_returns_to_live_keyboard_pose() {

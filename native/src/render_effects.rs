@@ -13,6 +13,10 @@ pub(super) struct Letter {
 }
 pub(super) struct Note { pub start:f32, pub phase:f32 }
 pub(super) fn key_label(vk:u32)->Option<String> {
+    // The macOS input layer maps Mac key codes onto these virtual keys; label them
+    // as printed on a Mac keyboard. The glyph atlas is ASCII only, so no ⌘/⌥ symbols.
+    #[cfg(target_os = "macos")]
+    if let Some(label)=mac_key_label(vk) { return Some(label.into()); }
     if matches!(vk,48..=57 | 65..=90) { return Some((vk as u8 as char).to_string()); }
     if (96..=105).contains(&vk) { return Some((vk-96).to_string()); }
     if (112..=135).contains(&vk) { return Some(format!("F{}",vk-111)); }
@@ -35,6 +39,14 @@ pub(super) fn key_label(vk:u32)->Option<String> {
         1..=6 | 0=>return None,
         _=>return Some(format!("Key{vk:X}")),
     }.into())
+}
+#[cfg(any(target_os = "macos", test))]
+fn mac_key_label(vk:u32)->Option<&'static str> {
+    Some(match vk {
+        91|92=>"Cmd",18|164|165=>"Option",17|162|163=>"Control",93=>"Fn",
+        8=>"Delete",46=>"FwdDel",13|0x1000=>"Return",
+        _=>return None,
+    })
 }
 struct Apple { image:RgbaImage, colors:Vec<[[u8;3];6]> }
 fn apple()-> &'static Apple {
@@ -232,8 +244,19 @@ mod tests {
         for (vk,label) in [(8,"Back"),(115,"F4"),(20,"CapsLock"),(96,"0"),(105,"9"),
             (106,"*"),(107,"+"),(109,"-"),(110,"."),(111,"/"),(0x1000,"Enter"),
             (160,"Shift"),(163,"Ctrl"),(165,"Alt"),(144,"NumLock")] {
+            #[cfg(target_os = "macos")]
+            let label=mac_key_label(vk).unwrap_or(label);
             assert_eq!(key_label(vk).as_deref(),Some(label));
         }
+    }
+    #[test]
+    fn mac_labels_use_mac_key_names() {
+        for (vk,label) in [(91,"Cmd"),(92,"Cmd"),(164,"Option"),(165,"Option"),(162,"Control"),
+            (93,"Fn"),(8,"Delete"),(46,"FwdDel"),(0x1000,"Return")] {
+            assert_eq!(mac_key_label(vk),Some(label));
+        }
+        assert_eq!(mac_key_label(65),None);
+        assert_eq!(mac_key_label(160),None);
     }
     #[test]
     fn fallback_letters_use_selected_hand_and_keep_their_origin() {

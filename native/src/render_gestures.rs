@@ -78,7 +78,8 @@ mod tests {
             a.trigger_gesture(Gesture::Shy,0.);b.trigger_gesture(Gesture::Shy,0.);
             a.update(&s,&skin,Vec2::new(-5000.,-5000.),360.,420.,false,0.7,0.01);
             b.update(&s,&skin,Vec2::new(5000.,5000.),360.,420.,false,0.7,0.01);
-            assert!(a.head_rotation.angle_between(b.head_rotation)<0.001);
+            // f32 angle_between bottoms out near 0.001 rad (arm64 FMA lands just above); real gaze leakage is degrees.
+            assert!(a.head_rotation.angle_between(b.head_rotation)<0.002);
             a.gesture_return=None;a.gesture=Some(ActiveGesture{kind:Gesture::Stretch,start:0.,automatic:true});
             advance(&mut a,&s,&skin,1.);
             for side in 0..2 {let direction=a.arms[side]*-Vec3::Y;
@@ -218,6 +219,8 @@ impl Pose {
         mask!=self.occasional_mask || (mask!=0 && self.next_gesture.is_some_and(|t| now>=t)
             && self.gesture_idle(now))
     }
+    #[cfg(test)]
+    pub fn next_gesture_at(&self) -> Option<f32> { self.next_gesture }
     fn gesture_mask(s: &Settings) -> u8 {
         s.occasional_stretch as u8 | ((s.occasional_tilt as u8)<<1) | ((s.occasional_sleepy as u8)<<2)
     }

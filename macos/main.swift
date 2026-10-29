@@ -90,9 +90,17 @@ final class Binding {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, NSTabViewDelegate {
     var startupPending = true
+    /// Launch arguments, with "--autostart" added for a System Settings login item.
+    var launchArguments = CommandLine.arguments
+    var startupDelay = 0
     var restartPending = false
     let music = MusicMonitor()
     var permissionPanel: NSWindow?
+    var permissionTint: NSView?
+    var guidePanel: NSPanel?
+    var guidePane: PrivacyPane?
+    var guideStatus: NSTextField?
+    var guideTimer: Timer?
     var updateInFlight = false
     var glyphsReady = false
     var renderedFrames = 0
@@ -134,6 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     var bindings: [ObjectIdentifier: Binding] = [:]
     var permissionLabel: NSTextField?
     var onlineField: NSTextField?
+    var keyboardColorField: NSTextField?
     var onlineStatus: NSTextField?
     var skinSummary: NSTextField?
     var lastCursor = NSPoint(x: -9999, y: -9999)
@@ -158,6 +167,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard let ptr = pet_settings(core), let data = String(cString: ptr).data(using: .utf8),
               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         settings = dict
+    }
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // The open-application event is current only while launching.
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        let loginItem = event?.paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem)) != nil
+            || event?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
+        launchArguments = LaunchMode.loginArguments(CommandLine.arguments, launchedAsLoginItem: loginItem)
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -202,7 +218,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
             } catch { alert(error.localizedDescription) }
         }
-        let delay = smoke ? 0 : LoginStartup.delay(arguments: CommandLine.arguments, enabled: flag("autostart"), seconds: Int(number("autostartDelay")))
+        let delay = smoke ? 0 : LoginStartup.delay(arguments: launchArguments, enabled: flag("autostart"), seconds: Int(number("autostartDelay")))
+        startupDelay = delay
         if delay > 0 {
             status.button?.toolTip = "Minecraft桌宠：登录启动等待 \(delay) 秒；打开控制台可立即启动"
             DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(delay)) { [weak self] in self?.finishStartup() }
@@ -247,7 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         configureMusic()
         if flag("typingLetters") { prepareGlyphs() }
         applyWindow(); restartTimer(); wake(); tick(); pet.orderFrontRegardless()
-        if (!smoke || CommandLine.arguments.contains("--self-test-startup")) && LaunchMode.shouldShowSettings(arguments: CommandLine.arguments,
+        if (!smoke || CommandLine.arguments.contains("--self-test-startup")) && LaunchMode.shouldShowSettings(arguments: launchArguments,
             keyboardEnabled: flag("keyboardEnabled"), keyboardRunning: input.running,
             quickChatEnabled: flag("hypQuickChat"), quickChatReady: input.quickChatReady) {
             showSettings()
@@ -281,38 +298,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             DispatchQueue.main.asyncAfter(deadline: .now() + duration) { NSApp.terminate(nil) }
         }
     }
-    func buildMenu(_ menu: NSMenu) {
-        menu.removeAllItems()
-        func item(_ title: String, _ action: Selector, _ state: Bool? = nil, _ key: String = "") {
-            let i = NSMenuItem(title: title, action: action, keyEquivalent: key); i.target = self
-            if let state { i.state = state ? .on : .off }; menu.addItem(i)
-        }
-        item("打开控制台…", #selector(showSettings), nil, ",")
-        if startupPending {
-            item("退出 Minecraft桌宠", #selector(quit), nil, "q")
-            return
-        }
-        item("申请输入监控…", #selector(grantInput))
-        item("申请辅助功能（快速聊天）…", #selector(grantAccessibility))
-        item("hyp 快速聊天：# → /p chat ", #selector(toggleQuickChat), flag("hypQuickChat"))
-        menu.addItem(.separator())
-        item("完全鼠标穿透", #selector(toggleClickThrough), flag("clickThrough"))
-        item("始终置顶", #selector(toggleTop), flag("alwaysOnTop"))
-        item(hidden ? "显示桌宠" : "隐藏桌宠", #selector(toggleHidden))
-        item("重新居中", #selector(recenter))
-        menu.addItem(.separator())
-        item("喂食苹果", #selector(feedApple))
-        item("导入 PNG 皮肤…", #selector(importSkin))
-        item("退出 Minecraft桌宠", #selector(quit), nil, "q")
-    }
-    func menuWillOpen(_ menu: NSMenu) { buildMenu(menu) }
     @objc func toggleQuickChat() {
         settings["hypQuickChat"] = !flag("hypQuickChat"); changed(); save()
         configureInput()
         if flag("hypQuickChat") && !input.accessibilityAllowed { grantAccessibility() }
+        refreshConsoleControls()
     }
-    @objc func toggleClickThrough() { settings["clickThrough"] = !flag("clickThrough"); changed() }
-    @objc func toggleTop() { settings["alwaysOnTop"] = !flag("alwaysOnTop"); changed() }
+    // Menu-bar toggles change settings directly; an open console only mirrors them.
+    @objc func toggleClickThrough() { settings["clickThrough"] = !flag("clickThrough"); changed(); refreshConsoleControls() }
+    @objc func toggleTop() { settings["alwaysOnTop"] = !flag("alwaysOnTop"); changed(); refreshConsoleControls() }
     @objc func toggleHidden() { hidden.toggle(); hidden ? pet.orderOut(nil) : pet.orderFrontRegardless(); wake() }
     @objc func recenter() {
         let s = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -331,14 +325,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         wake()
     }
     @objc func feedApple() { guard core != nil else { return }; pet_feed(core, now); wake() }
-    func showPetMenu(_ event: NSEvent, in view: NSView) {
-        let menu = NSMenu()
-        for (title, action) in [("喂食苹果", #selector(feedApple)), ("打开控制台…", #selector(showSettings))] {
-            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-            item.target = self; menu.addItem(item)
-        }
-        NSMenu.popUpContextMenu(menu, with: event, for: view)
-    }
     func wake() {
         awakeUntil = now + 0.85
         if !timerActive { timerActive = true; restartTimer() }
@@ -389,7 +375,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if cursor != lastCursor && flag("trackMouse") { awakeUntil = max(awakeUntil, now+0.05) }
         if shift != lastShift && flag("keyboardEnabled") { wake() }
         lastCursor = cursor; lastShift = shift
-        let active = !hidden && (now <= awakeUntil || pet_needs_frames(core))
+        let active = !hidden && (now <= awakeUntil || pet_needs_frames(core, now))
         if active != timerActive { timerActive = active; restartTimer() }
         if active {
             let r = pet.frame
@@ -414,18 +400,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSApp.activate(ignoringOtherApps: true)
         _ = CGRequestListenEventAccess()
         configureInput()
-        if !input.listeningAllowed {
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!)
-        }
+        // Also when a stale grant from a previous build reports "allowed" but no keys arrive.
+        if !paneSatisfied(.inputMonitoring) { showGuide(.inputMonitoring) }
     }
     @objc func grantAccessibility() {
         NSApp.activate(ignoringOtherApps: true)
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
         configureInput()
-        if !input.accessibilityAllowed {
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-        }
+        if !input.accessibilityAllowed { showGuide(.accessibility) }
     }
     @objc func refreshPermissions() { input.refresh(force: true); updatePermission() }
     @objc func restartApplication() {
@@ -468,18 +451,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let keyboard = !flag("keyboardEnabled") ? "键盘互动已关闭" : (input.running ? "键盘互动已连接" : ((listen || access) ? "键盘权限已获准，连接待恢复" : "键盘互动等待授权"))
         let chat = !flag("hypQuickChat") ? "快速聊天已关闭" : (input.quickChatReady ? "快速聊天已连接" : (access ? "聊天权限已获准，连接待恢复" : "快速聊天等待辅助功能权限"))
         permissionSummary?.stringValue = "\(keyboard) · \(chat)"
-        inputRequestButton?.title = listen ? "输入监控已授权" : "申请输入监控"
+        let inputOK = paneSatisfied(.inputMonitoring)
+        inputRequestButton?.title = inputOK ? "输入监控已授权" : (listen ? "重新授权输入监控" : "申请输入监控")
         accessRequestButton?.title = access ? "辅助功能已授权" : "申请辅助功能"
         permissionLabel?.stringValue = "\(keyboard)。只用于角色动作，不保存或上传输入内容。"
-        accessLabel?.stringValue = "输入监控：\(listen ? "已授权" : "待授权") · 辅助功能：\(access ? "已授权" : "待授权")\n\(keyboard) · \(chat)"
+        let problem = PermissionLook.problem(listen: listen, access: access, inputOK: inputOK)
+        let level = PermissionLook.level(inputOK: inputOK, access: access)
+        accessLabel?.stringValue = (problem.map { "✕ \($0)" } ?? "✓ 权限正常")
+            + "\n输入监控：\(listen ? "已授权" : "待授权") · 辅助功能：\(access ? "已授权" : "待授权") · \(keyboard) · \(chat)"
         inputHealthLabel?.stringValue = input.diagnosticSummary
+        // Whole window: green with both items, yellow with one, red with neither.
+        // A layer behind the controls: sheets draw their own material over backgroundColor.
+        permissionTint?.layer?.backgroundColor = PermissionLook.color(level).cgColor
+        refreshGuide()
         // Opt-in diagnostics contain counts and permissions, never key text/codes.
         if CommandLine.arguments.contains("--input-diagnostics"),
            let data = try? JSONSerialization.data(withJSONObject: input.diagnostic, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: dataDir.appendingPathComponent("input-status.json"), options: .atomic)
         }
     }
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showSettings(); return true }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if LaunchMode.ignoresReopen(arguments: launchArguments, secondsSinceLaunch: ProcessInfo.processInfo.systemUptime - start,
+                                    delay: startupDelay) { return false }
+        showSettings(); return true
+    }
     func applicationWillTerminate(_ notification: Notification) {
         guard core != nil else { return }
         if pet != nil && !startupPending { savePosition() }; input.stop(); music.stop(); timer?.invalidate(); permissionTimer?.invalidate()
@@ -600,8 +595,18 @@ struct PetError: LocalizedError {
     var errorDescription: String? { text }
 }
 if CommandLine.arguments.contains("--probe-audio") {
-    let result = AudioOutputProbe.snapshot()
-    print("Audio output: \(result.playing.map(String.init) ?? "unavailable"); source: \(result.source)")
+    // --watch: print once a second for 30 s, including Apple Music/Spotify broadcasts.
+    let watcher = PlayerStateWatcher()
+    let rounds = CommandLine.arguments.contains("--watch") ? 30 : 1
+    if rounds > 1 { watcher.start() }
+    for round in 0..<rounds {
+        if round > 0 { RunLoop.main.run(until: Date().addingTimeInterval(1)) }
+        let result = AudioOutputProbe.snapshot(reported: watcher.reported)
+        let reported = watcher.reported.map { "\($0.key)=\($0.value ? "playing" : "paused")" }.sorted().joined(separator: ",")
+        print("[\(round)] Music playing: \(result.playing.map(String.init) ?? "unavailable"); source: \(result.source); players: \(result.players.joined(separator: ",")); reported: \(reported)")
+        for line in result.processes { print("    " + line) }
+        fflush(stdout)
+    }
     exit(0)
 }
 if CommandLine.arguments.contains("--self-test-input") { InputSelfTests.run(); exit(0) }

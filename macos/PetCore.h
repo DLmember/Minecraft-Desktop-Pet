@@ -22,7 +22,9 @@ bool pet_hit(PetCore *core, float x, float y);
 void pet_mouse(PetCore *core, uint32_t button, bool over, float now);
 void pet_feed(PetCore *core, float now);
 void pet_music(PetCore *core, bool playing);
-bool pet_needs_frames(PetCore *core);
+/// kind: 0 wave, 1 bounce, 2 shy, 3 clap. Returns false for an unknown kind.
+bool pet_gesture(PetCore *core, uint32_t kind, float now);
+bool pet_needs_frames(PetCore *core, float now);
 const uint8_t *pet_pixels(PetCore *core);
 bool pet_set_glyphs(const uint8_t *bytes, size_t length);
 #endif

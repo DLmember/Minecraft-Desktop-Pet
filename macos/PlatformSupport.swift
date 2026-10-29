@@ -4,6 +4,16 @@ import Darwin
 let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"
 
 enum LaunchMode {
+    /// "--autostart" comes from our LaunchAgent; a System Settings login item
+    /// carries keyAELaunchedAsLogInItem in its open-application event instead.
+    static func loginArguments(_ arguments: [String], launchedAsLoginItem: Bool) -> [String] {
+        launchedAsLoginItem && !arguments.contains("--autostart") ? arguments + ["--autostart"] : arguments
+    }
+    /// With both our LaunchAgent and a login item, the second launch at login
+    /// reaches the running app as a reopen event. It must not open the console.
+    static func ignoresReopen(arguments: [String], secondsSinceLaunch: Double, delay: Int) -> Bool {
+        arguments.contains("--autostart") && secondsSinceLaunch < Double(delay) + 30
+    }
     static func shouldShowSettings(arguments: [String], keyboardEnabled: Bool,
                                    keyboardRunning: Bool, quickChatEnabled: Bool,
                                    quickChatReady: Bool) -> Bool {
@@ -12,6 +22,29 @@ enum LaunchMode {
         return arguments.contains("--show-settings")
             || (keyboardEnabled && !keyboardRunning)
             || (quickChatEnabled && !quickChatReady)
+    }
+}
+
+/// What the input-permission window reports: green once keyboard capture and
+/// Accessibility both work, yellow with one of them, red with neither.
+enum PermissionLook {
+    enum Level { case green, yellow, red }
+    static func level(inputOK: Bool, access: Bool) -> Level {
+        inputOK && access ? .green : (inputOK || access ? .yellow : .red)
+    }
+    /// Problems first line; `nil` when both items work.
+    static func problem(listen: Bool, access: Bool, inputOK: Bool) -> String? {
+        var parts: [String] = []
+        if !inputOK {
+            parts.append(listen ? "系统显示输入监控已授权，但键盘仍未连接：多半是重装前留下的旧授权记录。"
+                                : "输入监控未授权：角色只能在本应用窗口内敲字。")
+        }
+        if !access { parts.append("辅助功能未授权：快速聊天不可用。") }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+    /// Input Monitoring is satisfied once global keys actually arrive.
+    static func inputSatisfied(listen: Bool, keyboardEnabled: Bool, keyboardRunning: Bool) -> Bool {
+        keyboardEnabled ? keyboardRunning : listen
     }
 }
 

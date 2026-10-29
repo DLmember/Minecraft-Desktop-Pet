@@ -9,7 +9,7 @@ enum ConsoleSize {
 extension AppDelegate {
     @objc func showSettings() {
         guard core != nil else { return }
-        if startupPending { finishStartup(); return }
+        if startupPending { finishStartup() }
         if let panel { panel.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
         let w = consoleWindow ?? NSWindow(contentRect: NSRect(origin: .zero, size: ConsoleSize.compact),
             styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
@@ -48,10 +48,12 @@ extension AppDelegate {
         saveStatus = label(root, "已保存", 24, 43, 80)
         permissionSummary = label(root, "", 112, 43, 420)
         permissionSummary?.font = .systemFont(ofSize: 11); permissionSummary?.textColor = .secondaryLabelColor
-        let credit = label(root, "由 GPT 6 Astra 制作", 534, 43, 202)
-        credit.alignment = .right
         label(root, "拖动摆放 · 右键菜单 · 双击设置；关闭此窗口不会退出桌宠。", 24, 16, 712).textColor = .secondaryLabelColor
         updatePermission(); w.center(); w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+    }
+    func refreshConsoleControls() {
+        guard panel != nil, controlTabs != nil else { return }
+        populatePage(selectedConsolePage)
     }
     @objc func selectConsolePage(_ sender: NSButton) {
         // Selecting the current tab does not call NSTabViewDelegate again.
@@ -62,12 +64,13 @@ extension AppDelegate {
     func releaseConsole() {
         uiReady = false; bindings.removeAll(); pageButtons.removeAll(); saveStatus = nil
         controlTabs = nil; panel = nil
-        permissionSummary = nil; skinSummary = nil; onlineField = nil; onlineStatus = nil
+        permissionSummary = nil; skinSummary = nil; onlineField = nil; onlineStatus = nil; keyboardColorField = nil
         permissionLabel = nil; startupStatus = nil; musicToggle = nil
         consoleWindow?.contentView = NSView(frame: NSRect(origin: .zero, size: ConsoleSize.compact))
     }
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
+        if window === guidePanel { closeGuide() }
         if window === panel {
             closePermissions(); save(); selectedConsolePage = controlTabs?.indexOfTabViewItem(controlTabs!.selectedTabViewItem!) ?? 0
             releaseConsole()
@@ -79,7 +82,7 @@ extension AppDelegate {
     }
     func populatePage(_ index: Int) {
         guard let tabs = controlTabs else { return }
-        bindings.removeAll(); skinSummary = nil; onlineField = nil; onlineStatus = nil; musicToggle = nil
+        bindings.removeAll(); skinSummary = nil; onlineField = nil; onlineStatus = nil; keyboardColorField = nil; musicToggle = nil
         for (i, item) in tabs.tabViewItems.enumerated() where i != index { item.view = NSView() }
         selectedConsolePage = index
         for button in pageButtons { button.state = button.tag == index ? .on : .off }
@@ -107,9 +110,25 @@ extension AppDelegate {
         let b = NSButton(checkboxWithTitle: title, target: self, action: #selector(controlChanged(_:)))
         b.font = .systemFont(ofSize: 13); b.state = flag(key) ? .on : .off
         b.frame = NSRect(x: x, y: y, width: width, height: 24)
-        if key == "daBlink" { b.isEnabled = !flag("chibi"); b.toolTip = "需要专门修改过的皮肤；Q 版自动关闭眨眼。" }
+        if key == "daBlink" { b.toolTip = "需要专门修改过的皮肤。" }
         if key == "musicNotes" { musicToggle = b; refreshMusicLabel() }
         bindings[ObjectIdentifier(b)] = Binding(key); view.addSubview(b)
+    }
+    /// Same rule as the Windows console and `normalize_keyboard_color`: six hex digits, optional #.
+    static func normalizedKeyboardColor(_ text: String) -> String? {
+        var hex = text.trimmingCharacters(in: .whitespaces)
+        if hex.hasPrefix("#") { hex.removeFirst() }
+        guard hex.count == 6, hex.allSatisfy(\.isHexDigit) else { return nil }
+        return "#" + hex.uppercased()
+    }
+    @objc func applyKeyboardColor() {
+        guard let field = keyboardColorField else { return }
+        guard let color = Self.normalizedKeyboardColor(field.stringValue) else {
+            field.stringValue = settings["keyboardColor"] as? String ?? "#83878A"
+            if !smoke { alert("请输入六位十六进制色号，例如 #83878A。") }
+            return
+        }
+        field.stringValue = color; settings["keyboardColor"] = color; changed()
     }
     func popup(_ view: NSView, _ title: String, _ key: String, _ names: [String], _ values: [Any],
                _ x: CGFloat, _ y: CGFloat, _ width: CGFloat = 290) {
@@ -216,7 +235,6 @@ extension AppDelegate {
         }
         if b.key.hasPrefix("custom") { settings["posture"] = "custom" }
         if let page = controlTabs?.selectedTabViewItem?.view { syncRadioStates(page) }
-        if b.key == "chibi" && flag("chibi") { settings["daBlink"] = false }
         if b.key == "typingLetters" && flag("typingLetters") { prepareGlyphs() }
         changed()
         if b.key == "autostart" { save() }
@@ -251,7 +269,12 @@ extension AppDelegate {
         radios(view, "posture", ["站立","坐下","自定义"], ["standing","sitting","custom"], 126, 388, 112)
         label(view, "站立时按住 Shift 潜行", 478, 391, 234)
         radios(view, "typingMode", ["精准按键","双手交替"], ["precise","alternating"], 126, 356, 230)
-        label(view, "坐姿下响应键盘", 478, 359, 234)
+        label(view, "键盘色号", 478, 359, 74)
+        let color = NSTextField(frame: NSRect(x: 556, y: 355, width: 112, height: 25))
+        color.stringValue = settings["keyboardColor"] as? String ?? "#83878A"; color.placeholderString = "#83878A"
+        color.target = self; color.action = #selector(applyKeyboardColor); color.setAccessibilityLabel("键盘色号")
+        view.addSubview(color); keyboardColorField = color
+        action(view, "✓", #selector(applyKeyboardColor), 674, 353, 42).setAccessibilityLabel("应用键盘色号")
         radios(view, "mainHand", ["右手挥动","左手挥动","实际映射","反向映射"],
                ["right","left","mapped","reverse"], 126, 324, 146)
         check(view, "保持置顶", "alwaysOnTop", 126, 292, 210)
@@ -260,12 +283,14 @@ extension AppDelegate {
         check(view, "全局键盘互动", "keyboardEnabled", 126, 260, 220)
         check(view, "hyp 快速队伍聊天", "hypQuickChat", 356, 260, 220)
         label(view, "# → /p chat", 594, 263, 118)
-        check(view, "DA 眨眼（需修改过皮肤）", "daBlink", 126, 228, 274)
-        check(view, "DA 扭腰", "daDance", 418, 228, 126)
-        check(view, "敲字浮现字", "typingLetters", 560, 228, 152)
-        check(view, "可调戏", "teaseEnabled", 126, 196, 210)
-        check(view, "呼吸动画", "idleAnimation", 356, 196, 138)
-        label(view, "开启后持续轻微呼吸", 500, 199, 212)
+        check(view, "DA 眨眼（需修改过皮肤）", "daBlink", 126, 228, 230)
+        check(view, "DA 扭腰", "daDance", 360, 228, 100)
+        check(view, "敲字浮现字", "typingLetters", 464, 228, 124)
+        check(view, "可调戏", "teaseEnabled", 592, 228, 120)
+        check(view, "呼吸动画", "idleAnimation", 126, 196, 120)
+        check(view, "偶尔伸懒腰", "occasionalStretch", 250, 196, 140)
+        check(view, "偶尔歪头", "occasionalTilt", 394, 196, 130)
+        check(view, "偶尔犯困", "occasionalSleepy", 528, 196, 140)
         generalSlider(view, "大小", "scale", 0.65, 1.8, 164)
         generalSlider(view, "帧率", "fps", 0, 6, 132, choices: [30,60,90,120,144,165,240])
         generalSlider(view, "打字压低", "typingSquash", 0, 30, 100)
@@ -366,8 +391,11 @@ extension AppDelegate {
         guard permissionPanel == nil else { permissionPanel?.makeKeyAndOrderFront(nil); return }
         let w = NSPanel(contentRect: NSRect(x:0,y:0,width:580,height:270), styleMask:[.titled], backing:.buffered, defer:false)
         w.title = "输入权限与诊断"; let root = w.contentView!; permissionPanel = w
-        accessLabel = label(root, "", 18, 214, 544, 44)
-        accessLabel?.lineBreakMode = .byWordWrapping
+        w.titlebarAppearsTransparent = true; w.appearance = NSAppearance(named: .darkAqua)
+        let tint = NSView(frame: root.bounds); tint.wantsLayer = true; tint.autoresizingMask = [.width, .height]
+        root.addSubview(tint); permissionTint = tint
+        accessLabel = label(root, "", 18, 210, 544, 50)
+        accessLabel?.lineBreakMode = .byWordWrapping; accessLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
         inputRequestButton = action(root, "申请输入监控", #selector(grantInput), 12, 176, 174)
         accessRequestButton = action(root, "申请辅助功能", #selector(grantAccessibility), 194, 176, 174)
         action(root, "重新检测", #selector(refreshPermissions), 380, 176, 178)
@@ -381,7 +409,7 @@ extension AppDelegate {
     }
     @objc func closePermissions() {
         if let w = permissionPanel { w.sheetParent?.endSheet(w); w.orderOut(nil) }
-        permissionPanel = nil; accessLabel = nil; inputRequestButton = nil; accessRequestButton = nil
+        permissionPanel = nil; permissionTint = nil; accessLabel = nil; inputRequestButton = nil; accessRequestButton = nil
         inputHealthLabel = nil; diagnosticsField = nil
     }
     @objc func previewSwing() { handleMousePress(); wake() }

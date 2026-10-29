@@ -11,7 +11,7 @@ for PAIR in 'aarch64-apple-darwin arm64' 'x86_64-apple-darwin x86_64'; do
     read -r RUST_TARGET SWIFT_ARCH <<< "$PAIR"
     cargo build --manifest-path "$ROOT/native/Cargo.toml" --locked --release --lib --target "$RUST_TARGET"
     swiftc -O -file-prefix-map "$HOME=/build-user" -swift-version 5 -target "$SWIFT_ARCH-apple-macosx12.0" \
-        -import-objc-header "$ROOT/macos/PetCore.h" "$ROOT/macos/main.swift" "$ROOT/macos/InputController.swift" "$ROOT/macos/PlatformSupport.swift" "$ROOT/macos/SelfTests.swift" "$ROOT/macos/Console.swift" "$ROOT/macos/MacFeatures.swift" "$ROOT/macos/RegressionTests.swift" \
+        -import-objc-header "$ROOT/macos/PetCore.h" "$ROOT/macos/main.swift" "$ROOT/macos/InputController.swift" "$ROOT/macos/PlatformSupport.swift" "$ROOT/macos/SelfTests.swift" "$ROOT/macos/Console.swift" "$ROOT/macos/MacFeatures.swift" "$ROOT/macos/RegressionTests.swift" "$ROOT/macos/PermissionGuide.swift" "$ROOT/macos/PetMenu.swift" \
         "$ROOT/native/target/$RUST_TARGET/release/libpet_core.a" \
         -framework CoreAudio -framework Carbon -framework AppKit -framework ApplicationServices -framework Security -framework SystemConfiguration \
         -o "$ROOT/macos/build/MinecraftPet-$SWIFT_ARCH"
