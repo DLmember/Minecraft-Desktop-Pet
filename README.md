@@ -10,7 +10,7 @@
 
 前往 [最新版本](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest)，下载 **Minecraft-Desktop-Pet-2.5.1-Windows.zip**，解压后双击 **Minecraft桌宠.exe**。
 
-支持 **Windows 10/11 x64 、 macOS 12+**。便携运行，不需要安装 Electron、Java 或额外运行环境。v2.5.1 提供 Windows 版；macOS 尚未更新，请暂时使用 v2.4.12。
+支持 **Windows 10/11 x64 、 macOS 12+**。便携运行，不需要安装 Electron、Java 或额外运行环境。v2.5.2 提供 Windows 及 macOS 版。
 
 **首次启动默认开启完全鼠标穿透。** 请双击任务栏托盘图标打开控制台；想拖动桌宠时先取消“完全鼠标穿透”。图标可能收在任务栏的隐藏图标区域。
 
@@ -44,7 +44,6 @@ Q 版小人、可选 DA 眨眼与扭腰、四种主手映射、喂食苹果、�
 
 本地移植复用原始 Rust 渲染、皮肤与动画，通过 Swift / AppKit 提供透明窗口、菜单栏、控制台及全局键盘互动，以及可选的井号聊天前缀替换。
 支持 macOS 12+，包含 Apple Silicon / Intel 通用架构；支持需辅助功能授权的 hyp 快速队伍聊天。
-2.4.12 的 macOS 功能补齐包括正版披风下载与显示、登录自启、0–120 秒延迟和五档渲染线程 QoS（macOS 调度机制，与 Windows 进程优先级并非完全等价）。
 完整操作说明参见 [macOS 说明](macos/使用说明-macOS.md)。
 
 构建需要 Xcode Command Line Tools、Swift 和 Rust stable：
