@@ -310,9 +310,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         settings["hypQuickChat"] = !flag("hypQuickChat"); changed(); save()
         configureInput()
         if flag("hypQuickChat") && !input.accessibilityAllowed { grantAccessibility() }
-        panel = closePanel(); showSettings()
     }
-    @objc func toggleClickThrough() { settings["clickThrough"] = !flag("clickThrough"); changed(); panel = closePanel(); showSettings() }
+    @objc func toggleClickThrough() { settings["clickThrough"] = !flag("clickThrough"); changed() }
     @objc func toggleTop() { settings["alwaysOnTop"] = !flag("alwaysOnTop"); changed() }
     @objc func toggleHidden() { hidden.toggle(); hidden ? pet.orderOut(nil) : pet.orderFrontRegardless(); wake() }
     @objc func recenter() {

@@ -9,7 +9,7 @@ enum ConsoleSize {
 extension AppDelegate {
     @objc func showSettings() {
         guard core != nil else { return }
-        if startupPending { finishStartup() }
+        if startupPending { finishStartup(); return }
         if let panel { panel.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
         let w = consoleWindow ?? NSWindow(contentRect: NSRect(origin: .zero, size: ConsoleSize.compact),
             styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
