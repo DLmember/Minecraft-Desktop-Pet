@@ -1,6 +1,6 @@
 use super::*;
 use windows_sys::Win32::UI::Controls::Dialogs::*;
-const SLIDER_IDS: [i32; 10] = [200, 201, 202, 203, 204, 205, 206, 207, 211, 212];
+const SLIDER_IDS: [i32; 11] = [200, 201, 202, 203, 204, 205, 206, 207, 211, 212, 213];
 const SS_PATHELLIPSIS: u32 = 0x8000;
 const SS_RIGHT: u32 = 2;
 const TBM_GETPOS: u32 = WM_USER;
@@ -65,7 +65,7 @@ impl App {
             left: 0,
             top: 0,
             right: (760. * d) as i32,
-            bottom: (786. * d) as i32,
+            bottom: (822. * d) as i32,
         };
         AdjustWindowRectExForDpi(
             &mut rect,
@@ -150,10 +150,6 @@ impl App {
         self.control("STATIC", "敲字", 0, 24, 274, 110, 24, 0);
         self.radio("精准按键", 150, 270, 155, 112);
         self.radio("双手交替", 330, 270, 155, 113);
-        self.control("STATIC", "键盘色号", 0, 490, 274, 80, 24, 0);
-        let color = self.control("EDIT", &self.settings.keyboard_color.clone(), WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32, 574, 270, 116, 28, 334);
-        SendMessageW(color, EM_SETLIMITTEXT, 7, 0);
-        self.control("BUTTON", "✓", BS_PUSHBUTTON as u32 | WS_TABSTOP, 698, 270, 36, 28, 174);
         self.control("STATIC", "主手", 0, 24, 306, 110, 24, 0);
         self.radio("右手挥动", 150, 302, 140, 118);
         self.radio("左手挥动", 295, 302, 140, 119);
@@ -183,11 +179,16 @@ impl App {
         self.control("STATIC", "Q版身体大小", 0, 24, 562, 125, 24, 0);
         self.slider(212, 150, 558, 490, 50, 180);
         self.control("STATIC", "", SS_RIGHT, 650, 562, 84, 24, 612);
-        self.control("STATIC", "其他", 0, 24, 594, 110, 24, 0);
-        self.check("显示正版披风", 150, 590, 220, 138);
-        self.check("随 Windows 登录自动启动", 430, 590, 304, 160);
-        self.control("STATIC", "音乐", 0, 24, 626, 110, 24, 0);
-        self.check("播放音乐时冒音符", 150, 622, 260, 171);
+        // PAT喵！与音效大小（2.5.2 的动画行已满，放在原本「其他」这一行）
+        self.control("STATIC", "音效大小", 0, 24, 594, 100, 24, 0);
+        self.check("PAT喵！", 150, 590, 110, 182);
+        self.slider(213, 280, 590, 300, 0, 100);
+        self.control("STATIC", "", SS_RIGHT, 600, 594, 84, 24, 613);
+        self.control("STATIC", "其他", 0, 24, 630, 110, 24, 0);
+        self.check("显示正版披风", 150, 626, 220, 138);
+        self.check("随 Windows 登录自动启动", 430, 626, 304, 160);
+        self.control("STATIC", "音乐", 0, 24, 662, 110, 24, 0);
+        self.check("播放音乐时冒音符", 150, 658, 260, 171);
         self.check("呼吸动画", 150, 430, 124, 173);
         self.check("偶尔伸懒腰", 282, 430, 146, 175);
         self.check("偶尔歪头", 436, 430, 138, 176);
@@ -307,16 +308,24 @@ impl App {
             0,
         );
 
+        self.control("STATIC", "键盘样式", 0, 24, 630, 110, 24, 0);
+        self.radio("简洁", 150, 626, 110, 184);
+        self.radio("细节", 280, 626, 110, 185);
+        self.control("STATIC", "键盘色号", 0, 410, 630, 80, 24, 0);
+        let color = self.control("EDIT", &self.settings.keyboard_color.clone(), WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32, 510, 626, 116, 28, 334);
+        SendMessageW(color, EM_SETLIMITTEXT, 7, 0);
+        self.control("BUTTON", "✓", BS_PUSHBUTTON as u32 | WS_TABSTOP, 634, 626, 36, 28, 174);
         self.building_page = 3;
-        self.control("BUTTON", "检查更新", BS_PUSHBUTTON as u32 | WS_TABSTOP, 24, 690, 120, 30, 170);
-        self.control("BUTTON", "GitHub", BS_PUSHBUTTON as u32 | WS_TABSTOP, 614, 690, 120, 30, 169);
-        self.status = self.control("STATIC", "已保存", 0, 24, 738, 465, 24, 320);
+        self.control("BUTTON", "检查更新", BS_PUSHBUTTON as u32 | WS_TABSTOP, 24, 726, 120, 30, 170);
+        self.control("BUTTON", "GitHub", BS_PUSHBUTTON as u32 | WS_TABSTOP, 614, 726, 120, 30, 169);
+        self.check("锁定双击（双击桌宠不打开设置面板）", 170, 726, 430, 183);
+        self.status = self.control("STATIC", "已保存", 0, 24, 774, 465, 24, 320);
         self.control(
             "STATIC",
             "由GPT 6 Astra制作",
             SS_RIGHT,
             490,
-            738,
+            774,
             244,
             24,
             0,
@@ -326,7 +335,7 @@ impl App {
             "拖动摆放 · 右键菜单 · 双击设置；关闭此窗口不会退出桌宠。",
             0,
             24,
-            764,
+            800,
             710,
             22,
             0,
@@ -371,7 +380,7 @@ impl App {
         info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
         GetMonitorInfoW(monitor, &mut info);
         dpi.min((info.rcWork.right - info.rcWork.left - 32) as f32 / 780.)
-            .min((info.rcWork.bottom - info.rcWork.top - 64) as f32 / 796.)
+            .min((info.rcWork.bottom - info.rcWork.top - 64) as f32 / 832.)
     }
     unsafe fn panel_dpi(&mut self, hwnd: HWND, w: WPARAM, l: LPARAM) {
         let p = *(l as *const RECT);
@@ -383,7 +392,7 @@ impl App {
             left: 0,
             top: 0,
             right: (760. * d) as i32,
-            bottom: (786. * d) as i32,
+            bottom: (822. * d) as i32,
         };
         AdjustWindowRectExForDpi(
             &mut rect,
@@ -528,6 +537,8 @@ impl App {
             .unwrap_or(null_mut())
     }
     pub(super) unsafe fn refresh_panel(&mut self) {
+        SendMessageW(self.ctrl(184), BM_SETCHECK, if self.settings.keyboard_style == "simple" { BST_CHECKED as usize } else { BST_UNCHECKED as usize }, 0);
+        SendMessageW(self.ctrl(185), BM_SETCHECK, if self.settings.keyboard_style == "detailed" { BST_CHECKED as usize } else { BST_UNCHECKED as usize }, 0);
         if self.panel.is_null() {
             return;
         }
@@ -571,9 +582,11 @@ impl App {
             (171, self.settings.music_notes),
             (172, self.settings.tease_enabled),
             (173, self.settings.breathing_animation),
+            (182, self.settings.pat_enabled),
             (175, self.settings.occasional_stretch),
             (176, self.settings.occasional_tilt),
             (177, self.settings.occasional_sleepy),
+            (183, self.settings.lock_double_click),
             (160, self.settings.autostart),
         ] {
             SendMessageW(
@@ -604,11 +617,12 @@ impl App {
                 .unwrap_or(1) as i32,
             self.settings.typing_squash.round() as i32,
             self.settings.chibi_body_scale.round() as i32,
+            self.settings.pat_volume as i32,
         ];
         for (i, &id) in SLIDER_IDS.iter().enumerate() {
             SendMessageW(self.ctrl(id), TBM_SETPOS, 1, values[i] as isize);
             let text = match id {
-                200 | 201 | 204 | 211 | 212 => format!("{}%", values[i]),
+                200 | 201 | 204 | 211 | 212 | 213 => format!("{}%", values[i]),
                 202 | 205 => format!("±{}°", values[i] as f32 / 2.),
                 207 => format!("{} FPS", self.settings.fps),
                 _ => format!("{:+}°", values[i]),
@@ -657,6 +671,7 @@ impl App {
             208..=210 => self.settings.model_rotation[(id - 208) as usize] = value,
             211 => self.settings.typing_squash = value,
             212 => self.settings.chibi_body_scale = value,
+            213 => self.settings.pat_volume = value.clamp(0., 100.) as u32,
             220..=237 => {
                 self.settings
                     .active_custom_pose_mut()
@@ -673,7 +688,7 @@ impl App {
         self.settings.clean();
         self.wake();
         let text = match id {
-            200 | 201 | 204 | 211 | 212 => format!("{}%", value as i32),
+            200 | 201 | 204 | 211 | 212 | 213 => format!("{}%", value as i32),
             202 | 205 => format!("±{}°", value / 2.),
             207 => format!("{} FPS", self.settings.fps),
             _ => format!("{:+}°", value as i32),
@@ -809,7 +824,12 @@ pub(super) unsafe fn panel_proc(
     match msg {
         WM_COMMAND => {
             let id = (w & 0xffff) as u32;
-            a.command(id);
+            if id == 184 || id == 185 {
+                if ((w >> 16) & 0xffff) as u32 == BN_CLICKED {
+                    a.settings.keyboard_style = if id == 185 { "detailed" } else { "simple" }.into();
+                    a.changed();
+                }
+            } else { a.command(id); }
             0
         }
         WM_HSCROLL => {

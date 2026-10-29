@@ -13,10 +13,6 @@ pub(super) struct Letter {
 }
 pub(super) struct Note { pub start:f32, pub phase:f32 }
 pub(super) fn key_label(vk:u32)->Option<String> {
-    // The macOS input layer maps Mac key codes onto these virtual keys; label them
-    // as printed on a Mac keyboard. The glyph atlas is ASCII only, so no ⌘/⌥ symbols.
-    #[cfg(target_os = "macos")]
-    if let Some(label)=mac_key_label(vk) { return Some(label.into()); }
     if matches!(vk,48..=57 | 65..=90) { return Some((vk as u8 as char).to_string()); }
     if (96..=105).contains(&vk) { return Some((vk-96).to_string()); }
     if (112..=135).contains(&vk) { return Some(format!("F{}",vk-111)); }
@@ -40,14 +36,6 @@ pub(super) fn key_label(vk:u32)->Option<String> {
         _=>return Some(format!("Key{vk:X}")),
     }.into())
 }
-#[cfg(any(target_os = "macos", test))]
-fn mac_key_label(vk:u32)->Option<&'static str> {
-    Some(match vk {
-        91|92=>"Cmd",18|164|165=>"Option",17|162|163=>"Control",93=>"Fn",
-        8=>"Delete",46=>"FwdDel",13|0x1000=>"Return",
-        _=>return None,
-    })
-}
 struct Apple { image:RgbaImage, colors:Vec<[[u8;3];6]> }
 fn apple()-> &'static Apple {
     static CACHE:OnceLock<Apple>=OnceLock::new();
@@ -55,6 +43,182 @@ fn apple()-> &'static Apple {
         let image=image::load_from_memory(include_bytes!("../assets/apple.png")).expect("bundled apple").to_rgba8();
         let colors=colors_for(&image);Apple {image,colors}
     })
+}
+
+// ==== 「可调戏」长按手部素材 ====
+// 由 tools/build_hand_asset.py 从用户提供的参考视频里抠出：只有手掌+手指，
+// 不含手腕/前臂，也不做任何延展；5 帧正好是视频里循环的那 5 张画。
+// 容器格式（小端序）：
+//   "MCPH" u16 ver=1 u16 count u16 cell_w u16 cell_h
+//   f32 fps f32 grip_x f32 grip_y f32 grip_diameter
+//   f32 squash[count]
+//   u32 png_len[count] + PNG 数据
+const TEASE_HAND_BIN: &[u8] = include_bytes!("../assets/tease-hand.bin");
+struct TeaseHand {
+    /// 解码后已经预乘 alpha 的帧，直接用于双线性采样与合成。
+    frames: Vec<RgbaImage>,
+    cell: (usize, usize),
+    grip: Vec2,
+    grip_diameter: f32,
+    squash: Vec<f32>,
+}
+static TEASE_HAND: OnceLock<Option<TeaseHand>> = OnceLock::new();
+fn tease_hand() -> Option<&'static TeaseHand> {
+    TEASE_HAND.get_or_init(TeaseHand::load).as_ref()
+}
+/// 每张循环画的垂直压缩系数；素材缺失时退回 1.0（只影响压缩幅度，不会 panic）。
+pub(super) fn hand_squash(index: usize) -> f32 {
+    tease_hand()
+        .and_then(|h| h.squash.get(index).copied())
+        .unwrap_or(1.0)
+}
+fn premultiply(image: RgbaImage) -> RgbaImage {
+    let mut out = image;
+    for p in out.pixels_mut() {
+        let a = p[3] as u32;
+        p[0] = (p[0] as u32 * a / 255) as u8;
+        p[1] = (p[1] as u32 * a / 255) as u8;
+        p[2] = (p[2] as u32 * a / 255) as u8;
+    }
+    out
+}
+fn sample_bilinear(img: &RgbaImage, fx: f32, fy: f32) -> [f32; 4] {
+    let w = img.width() as i32;
+    let h = img.height() as i32;
+    if w <= 0 || h <= 0 { return [0.; 4]; }
+    let x = fx.clamp(0., (w - 1) as f32);
+    let y = fy.clamp(0., (h - 1) as f32);
+    let x0 = x.floor() as i32;
+    let y0 = y.floor() as i32;
+    let x1 = (x0 + 1).min(w - 1);
+    let y1 = (y0 + 1).min(h - 1);
+    let tx = x - x0 as f32;
+    let ty = y - y0 as f32;
+    let px = |xx: i32, yy: i32| img.get_pixel(xx as u32, yy as u32).0.map(|v| v as f32);
+    let p00 = px(x0, y0);
+    let p10 = px(x1, y0);
+    let p01 = px(x0, y1);
+    let p11 = px(x1, y1);
+    let mut out = [0.; 4];
+    for c in 0..4 {
+        let top = p00[c] + (p10[c] - p00[c]) * tx;
+        let bot = p01[c] + (p11[c] - p01[c]) * tx;
+        out[c] = top + (bot - top) * ty;
+    }
+    out
+}
+impl TeaseHand {
+    fn load() -> Option<Self> {
+        let b = TEASE_HAND_BIN;
+        let header = 28;
+        if b.len() < header
+            || b[0] != b'M'
+            || b[1] != b'C'
+            || b[2] != b'P'
+            || b[3] != b'H'
+        {
+            return None;
+        }
+        let u16_at = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]) as usize;
+        let f32_at = |o: usize| f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+        if u16_at(4) != 1 { return None; }
+        let count = u16_at(6);
+        let cell_w = u16_at(8);
+        let cell_h = u16_at(10);
+        if count == 0 || count > 64 || cell_w == 0 || cell_h == 0 { return None; }
+        let fps = f32_at(12);
+        if !(fps.is_finite() && fps > 0.) { return None; }
+        let grip = Vec2::new(f32_at(16), f32_at(20));
+        let grip_diameter = f32_at(24);
+        if !(grip_diameter.is_finite() && grip_diameter > 0.01) { return None; }
+        let lens_at = header + count * 4;
+        if b.len() < lens_at + count * 4 { return None; }
+        let mut squash = Vec::with_capacity(count);
+        for i in 0..count {
+            let value = f32_at(header + i * 4);
+            squash.push(if value.is_finite() { value } else { 1. });
+        }
+        let mut lens = Vec::with_capacity(count);
+        for i in 0..count {
+            let o = lens_at + i * 4;
+            lens.push(u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) as usize);
+        }
+        let mut offset = lens_at + count * 4;
+        let mut frames = Vec::with_capacity(count);
+        for len in lens {
+            if offset + len > b.len() { return None; }
+            let image = image::load_from_memory(&b[offset..offset + len]).ok()?.to_rgba8();
+            if image.width() as usize != cell_w || image.height() as usize != cell_h {
+                return None;
+            }
+            frames.push(premultiply(image));
+            offset += len;
+        }
+        Some(Self { frames, cell: (cell_w, cell_h), grip, grip_diameter, squash })
+    }
+}
+
+impl Frame {
+    /// 把当前循环帧的手部素材画在头部：抓点对准头部中心，整只手随「可调戏」
+    /// 的透明度/弹入缩放淡入淡出。只画手本身，不带手腕/前臂。
+    pub(super) fn draw_tease_hand(&mut self, s: &Settings, skin: &Skin, pose: &Pose) {
+        if pose.hand_alpha <= 0.004 { return; }
+        let Some(hand) = tease_hand() else { return; };
+        if hand.frames.is_empty() || hand.grip_diameter <= 0.01 { return; }
+        let parts = parts_with_cape(s, skin, pose, None);
+        let head_index = if s.chibi || !s.outer_layer { 0 } else { 1 };
+        if parts.len() <= head_index { return; }
+        let head = &parts[head_index];
+        let center = head.transform.transform_point3(Vec3::ZERO);
+        let left = head.transform.transform_point3(Vec3::new(-head.size.x * 0.5, 0., 0.));
+        let right = head.transform.transform_point3(Vec3::new(head.size.x * 0.5, 0., 0.));
+        let w = self.width as f32;
+        let h = self.height as f32;
+        let head_px = (project(left, w, h).x - project(right, w, h).x).abs();
+        let base = project(center, w, h);
+        let anchor = Vec2::new(base.x + w * 0.012, base.y + h * 0.008);
+        let pop = pose.hand_pop.clamp(0.5, 1.2);
+        // 抓点直径 ≈ 1.35 个头宽：手包住脑袋但不至于把整只小人盖住。
+        let scale = (head_px * 1.35 / hand.grip_diameter) * pop;
+        if !(scale.is_finite() && scale > 0.01) { return; }
+        let (cell_w, cell_h) = hand.cell;
+        let dest_w = (cell_w as f32 * scale).round().max(1.) as i32;
+        let dest_h = (cell_h as f32 * scale).round().max(1.) as i32;
+        let drop = ((1. - pop) * h * 0.02).round() as i32;
+        let left_i = (anchor.x - hand.grip.x * scale).round() as i32;
+        let top_i = (anchor.y - hand.grip.y * scale).round() as i32 + drop;
+        let index = pose.hand_frame.min(hand.frames.len() - 1);
+        let img = &hand.frames[index];
+        let alpha = pose.hand_alpha.clamp(0., 1.);
+        for dy in 0..dest_h {
+            let py = top_i + dy;
+            if py < 0 || py >= self.height as i32 { continue; }
+            let sy = (dy as f32 + 0.5) * cell_h as f32 / dest_h as f32 - 0.5;
+            for dx in 0..dest_w {
+                let px = left_i + dx;
+                if px < 0 || px >= self.width as i32 { continue; }
+                let sx = (dx as f32 + 0.5) * cell_w as f32 / dest_w as f32 - 0.5;
+                let src = sample_bilinear(img, sx, sy);
+                let a = (src[3] / 255. * alpha).clamp(0., 1.);
+                if a < 0.004 { continue; }
+                let i = (py as usize * self.width + px as usize) * 4;
+                let inv = 1. - a;
+                for c in 0..3 {
+                    // Frame 像素是 BGRA（draw_box/overlay 都写 color[2-c]，Surface 直接
+                    // 交给 UpdateLayeredWindow），所以这里也要把贴图的 R/G/B 反过来写，
+                    // 否则肤色手会显示成蓝色。
+                    let value = src[2 - c] * alpha + self.pixels[i + c] as f32 * inv;
+                    self.pixels[i + c] = value.round().clamp(0., 255.) as u8;
+                }
+                let value = src[3] * alpha + self.pixels[i + 3] as f32 * inv;
+                self.pixels[i + 3] = value.round().clamp(0., 255.) as u8;
+                self.bounds[0] = self.bounds[0].min(px);
+                self.bounds[1] = self.bounds[1].min(py);
+                self.bounds[2] = self.bounds[2].max(px + 1);
+                self.bounds[3] = self.bounds[3].max(py + 1);
+            }
+        }
+    }
 }
 
 impl Frame {
@@ -160,7 +324,7 @@ impl Frame {
             } else {(7.5,7.5)};
             // Face UVs are expressed in 16-unit space; rasterizer converts to 64 units.
             let uv=FaceUv {u0:x as f32+0.1,v0:y as f32+0.1,u1:x as f32+0.9,v1:y as f32+0.9,rotation:0};
-            let part=BoxPart {size:Vec3::splat(size),uv:Vec2::ZERO,transform:tr*Mat4::from_translation(Vec3::new((x as f32-ox)*size,(oy-y as f32)*size,0.)),inflate:0.,mirror:false,keyboard:false,cape:false,faces:Some([uv;6]),eyes:None,eyelid:1.,pupil:Vec2::ZERO};
+            let part=BoxPart {size:Vec3::splat(size),uv:Vec2::ZERO,uv_size:None,transform:tr*Mat4::from_translation(Vec3::new((x as f32-ox)*size,(oy-y as f32)*size,0.)),inflate:0.,mirror:false,keyboard:false,cape:false,faces:Some([uv;6]),eyes:None,eyelid:1.,pupil:Vec2::ZERO};
             self.draw_box(&part,Tex::of(&tex.image,&tex.colors));
         }
     }
@@ -199,12 +363,8 @@ impl Frame {
         }}}
     }
 }
-static GLYPHS:OnceLock<Vec<[u8;576]>>=OnceLock::new();
-pub(crate) fn install_glyphs(bytes: &[u8]) -> bool {
-    if bytes.len() != 95 * 576 { return false; }
-    GLYPHS.set(bytes.chunks_exact(576).map(|c| c.try_into().unwrap()).collect()).is_ok()
-}
 fn glyphs()-> &'static Vec<[u8;576]> {
+    static GLYPHS:OnceLock<Vec<[u8;576]>>=OnceLock::new();
     GLYPHS.get_or_init(|| {
         let mut result=vec![[0;576];95];
         #[cfg(windows)] unsafe {
@@ -244,19 +404,8 @@ mod tests {
         for (vk,label) in [(8,"Back"),(115,"F4"),(20,"CapsLock"),(96,"0"),(105,"9"),
             (106,"*"),(107,"+"),(109,"-"),(110,"."),(111,"/"),(0x1000,"Enter"),
             (160,"Shift"),(163,"Ctrl"),(165,"Alt"),(144,"NumLock")] {
-            #[cfg(target_os = "macos")]
-            let label=mac_key_label(vk).unwrap_or(label);
             assert_eq!(key_label(vk).as_deref(),Some(label));
         }
-    }
-    #[test]
-    fn mac_labels_use_mac_key_names() {
-        for (vk,label) in [(91,"Cmd"),(92,"Cmd"),(164,"Option"),(165,"Option"),(162,"Control"),
-            (93,"Fn"),(8,"Delete"),(46,"FwdDel"),(0x1000,"Return")] {
-            assert_eq!(mac_key_label(vk),Some(label));
-        }
-        assert_eq!(mac_key_label(65),None);
-        assert_eq!(mac_key_label(160),None);
     }
     #[test]
     fn fallback_letters_use_selected_hand_and_keep_their_origin() {

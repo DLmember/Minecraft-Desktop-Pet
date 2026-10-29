@@ -15,6 +15,9 @@ pub fn normalize_keyboard_color(value: &str) -> Option<String> {
         Some(format!("#{}", text.to_ascii_uppercase()))
     } else { None }
 }
+/// 进程优先级档位，与 Windows 的 SetPriorityClass 一一对应。
+#[cfg(not(windows))]
+pub const PRIORITY_OPTIONS: [&str; 5] = ["idle", "below", "normal", "above", "high"];
 /// 开机自启的启动延迟档位（秒）；0 表示立即出现。
 #[cfg(not(windows))]
 pub const AUTOSTART_DELAYS: [u32; 6] = [0, 5, 15, 30, 60, 120];
@@ -79,6 +82,7 @@ pub struct Settings {
     pub track_mouse: bool,
     pub keyboard_enabled: bool,
     pub keyboard_color: String,
+    pub keyboard_style: String,
     pub hyp_quick_chat: bool,
     pub autostart: bool,
     pub show_cape: bool,
@@ -89,6 +93,12 @@ pub struct Settings {
     pub typing_letters: bool,
     pub music_notes: bool,
     pub tease_enabled: bool,
+    /// PAT喵！：点击时短促手部动画 + 两段喵喵声随机二选一。
+    pub pat_enabled: bool,
+    /// PAT喵！音效音量（0..=100，百分比）。
+    pub pat_volume: u32,
+    /// 锁定双击：勾选后双击桌宠不再打开设置面板（托盘/热键仍可打开）。
+    pub lock_double_click: bool,
     // Keep the previous preview setting key so existing preferences survive.
     #[serde(rename = "idleAnimation")]
     pub breathing_animation: bool,
@@ -98,6 +108,8 @@ pub struct Settings {
     pub chibi_body_scale: f32,
     #[cfg(not(windows))]
     pub autostart_delay: u32,
+    #[cfg(not(windows))]
+    pub startup_priority: String,
     pub outer_layer: bool,
     pub fps: u32,
     pub skin_name: String,
@@ -128,6 +140,7 @@ impl Default for Settings {
             track_mouse: true,
             keyboard_enabled: true,
             keyboard_color: "#83878A".into(),
+            keyboard_style: "simple".into(),
             hyp_quick_chat: false,
             autostart: false,
             show_cape: true,
@@ -138,6 +151,9 @@ impl Default for Settings {
             typing_letters: false,
             music_notes: false,
             tease_enabled: false,
+            pat_enabled: false,
+            pat_volume: 40,
+            lock_double_click: false,
             breathing_animation: false,
             occasional_stretch: false,
             occasional_tilt: false,
@@ -145,6 +161,8 @@ impl Default for Settings {
             chibi_body_scale: 100.,
             #[cfg(not(windows))]
             autostart_delay: 0,
+            #[cfg(not(windows))]
+            startup_priority: "normal".into(),
             outer_layer: true,
             fps: 60,
             skin_name: "内置 · 林间旅人".into(),
@@ -199,6 +217,7 @@ impl Settings {
         }
     }
     pub fn clean(&mut self) {
+        if !["simple", "detailed"].contains(&self.keyboard_style.as_str()) { self.keyboard_style = "simple".into(); }
         self.keyboard_color = normalize_keyboard_color(&self.keyboard_color).unwrap_or_else(|| "#83878A".into());
         self.chibi_body_scale = if self.chibi_body_scale.is_finite() { self.chibi_body_scale.clamp(50., 180.) } else { 100. };
         if self.posture != "sitting" && self.posture != "custom" {
@@ -226,11 +245,15 @@ impl Settings {
         self.head_range_y = self.head_range_y.clamp(0., 85.);
         self.head_center_x = self.head_center_x.clamp(-60., 60.);
         self.head_center_y = self.head_center_y.clamp(-60., 60.);
+        self.pat_volume = self.pat_volume.min(100);
         if !["left", "right", "mapped", "reverse"].contains(&self.main_hand.as_str()) {
             self.main_hand = "right".into();
         }
         #[cfg(not(windows))]
         {
+        if !PRIORITY_OPTIONS.contains(&self.startup_priority.as_str()) {
+            self.startup_priority = "normal".into();
+        }
         self.autostart_delay = *AUTOSTART_DELAYS
             .iter()
             .min_by_key(|&&delay| delay.abs_diff(self.autostart_delay))
@@ -659,16 +682,17 @@ mod tests {
         let mut s = Settings::default();
         assert!(!s.autostart);
         assert_eq!(s.autostart_delay, 0);
-        let old: Settings = serde_json::from_str(r#"{"startupPriority":"high","autostartDelay":30}"#).unwrap();
-        assert!(serde_json::to_value(&old).unwrap().get("startupPriority").is_none());
-        assert_eq!(old.autostart_delay,30);
+        assert_eq!(s.startup_priority, "normal");
         s.autostart_delay = 40;
         s.clean();
         assert_eq!(s.autostart_delay, 30);
+        s.startup_priority = "bogus".into();
         s.clean();
+        assert_eq!(s.startup_priority, "normal");
         let dir = std::env::temp_dir().join(format!("pet-autostart-test-{}", std::process::id()));
         s.autostart = true;
         s.autostart_delay = 60;
+        s.startup_priority = "below".into();
         Store::new(dir.clone()).save(&s).unwrap();
         assert_eq!(Store::new(dir.clone()).load(), s);
         let _ = fs::remove_dir_all(dir);
@@ -764,5 +788,24 @@ mod tests {
         .unwrap();
         assert_eq!(Store::new(dir.clone()).load().head_center_y, -11.);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn keyboard_style_upgrade_and_new_install_defaults() {
+        let dir = std::env::temp_dir().join(format!("pet-style-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut store = Store::new(dir.clone());
+        assert_eq!(Settings::first_run_defaults().keyboard_style, "detailed");
+        std::fs::write(dir.join("settings.json"), br##"{"keyboardColor":"#FFAACC","patEnabled":true}"##).unwrap();
+        let mut old = store.load();
+        assert_eq!(old.keyboard_style, "simple");
+        assert_eq!(old.keyboard_color, "#FFAACC");
+        assert!(old.pat_enabled);
+        for style in ["detailed", "simple"] {
+            old.keyboard_style = style.into();
+            store.save(&old).unwrap();
+            assert_eq!(store.load().keyboard_style, style);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

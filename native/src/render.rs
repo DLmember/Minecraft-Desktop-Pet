@@ -1,4 +1,3 @@
-pub(crate) use effects::install_glyphs;
 #[path = "render_effects.rs"]
 mod effects;
 #[path = "render_gestures.rs"]
@@ -25,9 +24,7 @@ const BLINK_RATE: f32 = 2.5;
 // da_elapsed_ref = (age - last_age) * 3; age = seconds * 20.
 const DANCE_RATE: f32 = 0.175 * 60.;
 /// 六个面的明暗查色表；皮肤和披风共用同一套光照。
-fn shade_lut() -> &'static [[[u8; 256]; 3]; 6] {
-    static LUT: std::sync::OnceLock<[[[u8; 256]; 3]; 6]> = std::sync::OnceLock::new();
-    LUT.get_or_init(|| {
+fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
     let shades = [0.80, 0.80, 1., 0.62, 0.94, 0.86];
     let mut lut = [[[0u8; 256]; 3]; 6];
     for f in 0..6 {
@@ -49,13 +46,6 @@ fn shade_lut() -> &'static [[[u8; 256]; 3]; 6] {
         }
         }
     }
-        lut
-    })
-}
-fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
-    // macOS uses the same LUT at sampling time, saving 18 MiB for a 1024² skin.
-    if cfg!(all(target_os = "macos", not(test))) { return Vec::new(); }
-    let lut = shade_lut();
     image
         .pixels()
         .map(|p| {
@@ -354,11 +344,6 @@ pub fn key_position(vk: u32) -> Option<Vec2> {
     }
     None
 }
-/// macOS：交替模式和未收录的按键没有键位，手原本只下沉一点点（约 7°）。
-/// 让这只手落到自己这半边的主键行，按动和精确模式一样看得清，且不离开键盘。
-fn keyless_press(sign: f32) -> Option<Vec2> {
-    if cfg!(target_os = "macos") { Some(Vec2::new(sign * 1.5, -0.64)) } else { None }
-}
 #[derive(Clone, Copy)]
 struct Hand {
     until: f32,
@@ -406,6 +391,13 @@ fn cover_cheeks(parts: &mut [BoxPart], head_index: usize, arm_start: usize, laye
     }
 }
 const SWING_SECONDS: f32 = 0.30; // Vanilla attack animation: six ticks at 20 ticks/s.
+// 「可调戏」：短按的 Q 弹压缩 + 长按的手部揉捏循环。所有时间都由 now 求值，
+// 不累加状态，掉帧/休眠后仍然连续。
+const PAT_SECONDS: f32 = 0.5; // 点击压缩总时长
+const HOLD_ENTER: f32 = 0.15; // 手部原地淡入
+const HOLD_EXIT: f32 = 0.15; // 松手后手部淡出
+const HAND_FRAMES: usize = 5; // 视频只有 5 张画在循环
+const HAND_FPS: f32 = 16.; // 视频的循环节奏：5 画 / 0.3125 秒
 pub struct Pose {
     gesture: Option<gestures::ActiveGesture>,
     gesture_return: Option<gestures::ReturnPose>,
@@ -444,6 +436,17 @@ pub struct Pose {
     swing_side: usize,
     squash_start: Option<f32>,
     pub squash: f32,
+    /// PAT喵！：点击时一次性手部动画的起点。
+    pat_start: Option<f32>,
+    hold_start: Option<f32>,
+    hold_release: Option<f32>,
+    /// 松手瞬间冻结的手部帧，避免淡出时画面跳帧。
+    hold_frame: usize,
+    /// 手部素材的当前帧 / 透明度 / 弹入缩放，由 update() 写入，渲染层只读。
+    pub hand_frame: usize,
+    pub hand_alpha: f32,
+    pub hand_pop: f32,
+    pub holding: bool,
     pub swing_progress: f32,
     pub body_yaw: f32,
     /// 材质包 SneakyDance 的通道（按使用者要求去掉腿部，其余逐条照抄）：
@@ -544,6 +547,14 @@ impl Pose {
             swing_side: if s.main_hand == "left" { 0 } else { 1 },
             squash_start: None,
             squash: 1.,
+            pat_start: None,
+            hold_start: None,
+            hold_release: None,
+            hold_frame: 0,
+            hand_frame: 0,
+            hand_alpha: 0.,
+            hand_pop: 1.,
+            holding: false,
             swing_progress: 0.,
             body_yaw: 0.,
             body_roll: 0.,
@@ -574,6 +585,7 @@ impl Pose {
     /// 否则静止省电一停帧就永远等不到那 10 秒。
     pub fn needs_frames(&self) -> bool {
         self.gesture.is_some() || self.gesture_return.is_some() || self.dance > 0.001 || self.feed_start.is_some() || self.tease_start.is_some() || self.breathing_weight>0.001 || !self.letters.is_empty() || !self.notes.is_empty()
+            || self.hold_active() || self.pat_start.is_some()
     }
     pub fn key(&mut self, vk: u32, down: bool, now: f32, s: &Settings) {
         if down { self.gesture_input(now); }
@@ -633,7 +645,80 @@ impl Pose {
         self.tease_start=Some(now);
         self.feed_start=None;self.feed_blend=0.;self.reset_swing();
     }
+    /// 诊断快照里的 interaction：现在报告「可调戏」长按状态、手部帧与透明度。
     pub fn interaction_state(&self)->(bool,usize,f32) {(self.tease_start.is_some(),self.tease_kind,self.breathing_weight)}
+    /// 点击「可调戏」：一次 Q 弹垂直压缩（不改变保存的姿态/角度）。
+    /// PAT喵！：点击桌宠时的一次性手部动画（不持续，时长与点击压缩一致）。
+    pub fn pat(&mut self, now: f32) {
+        self.pat_start = Some(now);
+    }
+    /// 长按开始：手部在头部淡入，随后进入素材循环。
+    pub fn start_hold(&mut self, now: f32) {
+        if self.hold_start.is_some() { return; }
+        self.hold_release = None;
+        self.hold_start = Some(now);
+        self.holding = true;
+    }
+    /// 长按结束：冻结当前帧，手部淡出；淡出结束由 update() 自动清空。
+    pub fn end_hold(&mut self, now: f32) {
+        if self.hold_release.is_some() { return; }
+        if self.hold_start.is_none() { return; }
+        let (frame, _, pop, _) = self.hold_state(now);
+        self.hold_frame = frame;
+        self.hand_frame = frame;
+        self.hand_pop = pop;
+        self.hold_start = None;
+        self.hold_release = Some(now);
+        self.holding = false;
+    }
+    pub fn hold_active(&self) -> bool {
+        self.hold_start.is_some() || self.hold_release.is_some()
+    }
+    /// 0.5s 阻尼回弹：t=0 立即压到 0.78，约 0.2s 过冲到 1.03，0.5s 归 1。
+    /// 返回 (手部帧, 透明度, 弹入缩放, 该帧的垂直压缩系数)。
+    fn hold_state(&self, now: f32) -> (usize, f32, f32, f32) {
+        if let Some(release) = self.hold_release {
+            let t = (now - release).max(0.);
+            if t >= HOLD_EXIT { return (self.hold_frame, 0., 1., 1.); }
+            let k = 1. - smooth(t / HOLD_EXIT);
+            let frame = self.hold_frame.min(HAND_FRAMES - 1);
+            return (
+                frame,
+                k,
+                1. - 0.05 * (1. - k),
+                1. + (effects::hand_squash(frame) - 1.) * k,
+            );
+        }
+        if let Some(start) = self.hold_start {
+            let t = (now - start).max(0.);
+            if t < HOLD_ENTER {
+                let k = smooth(t / HOLD_ENTER);
+                let frame = HAND_FRAMES - 1;
+                return (
+                    frame,
+                    k,
+                    0.95 + 0.05 * k,
+                    1. + (effects::hand_squash(frame) - 1.) * k,
+                );
+            }
+            let cycle = (t - HOLD_ENTER) % (HAND_FRAMES as f32 / HAND_FPS);
+            let frame = ((cycle * HAND_FPS) as usize).min(HAND_FRAMES - 1);
+            return (frame, 1., 1., effects::hand_squash(frame));
+        }
+        (0, 0., 1., 1.)
+    }
+    /// PAT喵！：点击的一次性手部动画。0..0.5s，前 0.08s 淡入、最后 0.12s 淡出，
+    /// 帧按和长按相同的 16fps / 5 帧循环；不额外压缩模型（压缩由 bump 驱动）。
+    fn pat_state(&self, now: f32) -> Option<(usize, f32, f32)> {
+        let start = self.pat_start?;
+        let t = now - start;
+        if !(0.0..PAT_SECONDS).contains(&t) {
+            return None;
+        }
+        let alpha = smooth(t / 0.08).min(smooth((PAT_SECONDS - t) / 0.12));
+        let frame = ((t * HAND_FPS) as usize) % HAND_FRAMES;
+        Some((frame, alpha, 1.))
+    }
     fn random_choice(&mut self,count:usize)->usize {
         let mut x=self.random_state;x^=x<<13;x^=x>>7;x^=x<<17;self.random_state=x;
         (x as usize)%count
@@ -733,14 +818,42 @@ impl Pose {
         if (self.crouch - crouch).abs() < 0.0001 {
             self.crouch = crouch;
         }
-        self.squash = if s.is_sitting() {
+        // 站姿没有打字压缩，但仍要保留点击/长按压缩；reset_keys 会重置 squash，
+        // 所以必须在计算 squash 之前调用。
+        if !s.is_sitting() {
+            self.reset_keys();
+        }
+        // 打字压缩 + 点击 Q 弹 + 长按揉捏共同决定 squash。
+        // 三者都只作用在角色骨骼上：parts_with_cape/parts_chibi 里的键盘 BoxPart
+        // 是在 squash 之后才 push 的，所以键盘永远不会被压缩。
+        let typing_squash = if s.is_sitting() {
             1. - self.squash_pulse(now) * s.typing_squash / 100.
         } else {
             1.
         };
-        if !s.is_sitting() {
-            self.reset_keys();
+        let (mut hand_frame, mut hand_alpha, mut hand_pop, mut hand_squash) =
+            self.hold_state(now);
+        if self.hold_release.is_some_and(|r| now - r >= HOLD_EXIT) {
+            self.hold_release = None;
         }
+        // PAT喵！：点击时 0.5 秒的一次性手部动画，只在长按手部不可见时接替；
+        // 它不额外压缩模型，压缩仍由点击 bump 驱动，手的时长和 bump 一致。
+        if hand_alpha <= 0.004 {
+            if let Some((frame, alpha, pop)) = self.pat_state(now) {
+                hand_frame = frame;
+                hand_alpha = alpha;
+                hand_pop = pop;
+                hand_squash = 1.;
+            }
+        }
+        if self.pat_start.is_some_and(|t| now - t >= PAT_SECONDS) {
+            self.pat_start = None;
+        }
+        self.hand_frame = hand_frame;
+        self.hand_alpha = hand_alpha;
+        self.hand_pop = hand_pop;
+        self.holding = self.hold_start.is_some();
+        self.squash = typing_squash * hand_squash;
         // 眨眼只依赖时间轴，和姿势、敲字、挥动互不干预。
         // `eyelid` 还要乘上材质包的 `eye_top.ty` 开合（见下面的 `var.nov1` 一段）。
         let closure = self.blink_at(now);
@@ -865,8 +978,7 @@ impl Pose {
                 pressed = active;
                 let k = held
                     .map(|k| k.key)
-                    .unwrap_or(if active { hand.key } else { None })
-                    .or(if active { keyless_press(sign) } else { None });
+                    .unwrap_or(if active { hand.key } else { None });
                 // Q 版键盘更靠下、更近，肩也更低；坐标都是 chibi 缩放前的世界值。
                 let (key_y, idle_y, key_z, idle_z, shoulder_y, shoulder_x) = if s.chibi {
                     (3.33, 3.98, 6.27, 6.0, 6., 3.15)
@@ -1084,8 +1196,8 @@ struct ChibiBox {
 // Q 版(图腾玩偶)模型数据：Blockbench 坐标已映射到桌宠骨骼空间(x/z 镜像、rotation 取反)。
 // 面顺序=draw_box face 0..5(+x左/-x右/+y顶/-y底/+z前/-z后)。左右臂/腿几何完全对称。
 // 纤细/粗壮仅手臂面 UV 采样宽度不同。
-const CHIBI_HEAD: ChibiBox = ChibiBox { off: [0.0,3.6,0.0], size: [7.2,7.2,7.2], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 4.0, v0: 2.0, u1: 6.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 0.0, v0: 2.0, u1: 2.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 2.0, v0: 2.0, u1: 4.0, v1: 0.0, rotation: 0 }, FaceUv { u0: 4.0, v0: 0.0, u1: 6.0, v1: 2.0, rotation: 180 }, FaceUv { u0: 2.0, v0: 2.0, u1: 4.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 6.0, v0: 2.0, u1: 8.0, v1: 4.0, rotation: 0 }] };
-const CHIBI_HAT: ChibiBox = ChibiBox { off: [0.05,3.7,0.2], size: [7.6,7.6,7.6], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 12.0, v0: 2.0, u1: 14.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 8.0, v0: 2.0, u1: 10.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 10.0, v0: 0.0, u1: 12.0, v1: 2.0, rotation: 0 }, FaceUv { u0: 12.0, v0: 0.0, u1: 14.0, v1: 2.0, rotation: 0 }, FaceUv { u0: 10.0, v0: 2.0, u1: 12.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 14.0, v0: 2.0, u1: 16.0, v1: 4.0, rotation: 0 }] };
+const CHIBI_HEAD: ChibiBox = ChibiBox { off: [0.0,3.6,0.0], size: [7.2,7.2,7.2], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 4.0, v0: 2.0, u1: 6.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 0.0, v0: 2.0, u1: 2.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 2.0, v0: 2.0, u1: 4.0, v1: 0.0, rotation: 180 }, FaceUv { u0: 4.0, v0: 0.0, u1: 6.0, v1: 2.0, rotation: 180 }, FaceUv { u0: 2.0, v0: 2.0, u1: 4.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 6.0, v0: 2.0, u1: 8.0, v1: 4.0, rotation: 0 }] };
+const CHIBI_HAT: ChibiBox = ChibiBox { off: [0.05,3.7,0.2], size: [7.6,7.6,7.6], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 12.0, v0: 2.0, u1: 14.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 8.0, v0: 2.0, u1: 10.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 10.0, v0: 0.0, u1: 12.0, v1: 2.0, rotation: 180 }, FaceUv { u0: 12.0, v0: 0.0, u1: 14.0, v1: 2.0, rotation: 0 }, FaceUv { u0: 10.0, v0: 2.0, u1: 12.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 14.0, v0: 2.0, u1: 16.0, v1: 4.0, rotation: 0 }] };
 const CHIBI_BODY: ChibiBox = ChibiBox { off: [0.0,0.0,0.0], size: [3.5,3.7,2.5], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 7.0, v0: 5.0, u1: 8.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 4.0, v0: 5.0, u1: 5.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 5.0, v0: 5.0, u1: 7.0, v1: 4.0, rotation: 180 }, FaceUv { u0: 7.0, v0: 5.0, u1: 9.0, v1: 4.0, rotation: 0 }, FaceUv { u0: 5.0, v0: 5.0, u1: 7.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 8.0, v0: 5.0, u1: 10.0, v1: 8.0, rotation: 0 }] };
 const CHIBI_BODY_LAYER: ChibiBox = ChibiBox { off: [0.0,0.0,0.0], size: [3.7,3.9,2.7], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 7.0, v0: 9.0, u1: 8.0, v1: 12.0, rotation: 0 }, FaceUv { u0: 4.0, v0: 9.0, u1: 5.0, v1: 12.0, rotation: 0 }, FaceUv { u0: 5.0, v0: 9.0, u1: 7.0, v1: 8.0, rotation: 180 }, FaceUv { u0: 7.0, v0: 9.0, u1: 9.0, v1: 8.0, rotation: 0 }, FaceUv { u0: 5.0, v0: 9.0, u1: 7.0, v1: 12.0, rotation: 0 }, FaceUv { u0: 8.0, v0: 9.0, u1: 10.0, v1: 12.0, rotation: 0 }] };
 const CHIBI_ARM_LEFT_NARROW: ChibiBox = ChibiBox { off: [0.0,-2.0,0.0], size: [1.2,4.0,1.2], rot: [0.0,0.0,0.0], faces: [FaceUv { u0: 9.75, v0: 13.0, u1: 10.5, v1: 16.0, rotation: 0 }, FaceUv { u0: 8.0, v0: 13.0, u1: 8.75, v1: 16.0, rotation: 0 }, FaceUv { u0: 9.0, v0: 12.0, u1: 9.75, v1: 13.0, rotation: 0 }, FaceUv { u0: 9.75, v0: 12.0, u1: 10.5, v1: 13.0, rotation: 0 }, FaceUv { u0: 9.0, v0: 13.0, u1: 9.75, v1: 16.0, rotation: 0 }, FaceUv { u0: 10.5, v0: 13.0, u1: 11.25, v1: 16.0, rotation: 0 }] };
@@ -1105,6 +1217,7 @@ const CHIBI_LEG_RIGHT_LAYER: ChibiBox = ChibiBox { off: [0.0,-2.4,0.0], size: [1
 struct BoxPart {
     size: Vec3,
     uv: Vec2,
+    uv_size: Option<Vec3>,
     transform: Mat4,
     inflate: f32,
     mirror: bool,
@@ -1161,6 +1274,7 @@ fn parts_with_cape(
         v.push(BoxPart {
             size,
             uv: Vec2::new(u, w),
+            uv_size: None,
             transform,
             inflate: 0.,
             mirror,
@@ -1175,6 +1289,7 @@ fn parts_with_cape(
             v.push(BoxPart {
                 size,
                 uv: outer,
+                uv_size: None,
                 transform,
                 inflate: if hat { 1. } else { 0.5 },
                 mirror,
@@ -1283,6 +1398,7 @@ fn parts_with_cape(
         v.push(BoxPart {
             size: Vec3::new(10., 16., 1.),
             uv: Vec2::new(-11., 0.),
+            uv_size: None,
             transform: body
                 * Mat4::from_translation(Vec3::new(0., 3.6, -2.9))
                 * Mat4::from_rotation_x(0.14),
@@ -1305,6 +1421,7 @@ fn parts_with_cape(
         v.push(BoxPart {
             size: Vec3::new(19.6, 0.65, 7.8),
             uv: Vec2::ZERO,
+            uv_size: None,
             transform: Mat4::from_translation(Vec3::new(0., 10.2, 9.4))
                 * Mat4::from_scale(Vec3::splat(pose.sit))
                 * Mat4::from_translation(Vec3::new(0., -0.3, 0.)),
@@ -1389,7 +1506,9 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose, cape: Option<&Cape>) -> V
         * custom_body;
 
     let mut v = Vec::with_capacity(14);
-    let push = |v: &mut Vec<BoxPart>, cb: &ChibiBox, geometry: &ChibiBox, transform: Mat4, layer: bool, eyes: bool, original_size: Vec3| {
+    let push = |v: &mut Vec<BoxPart>, cb: &ChibiBox, geometry: &ChibiBox, transform: Mat4,
+                layer: bool, eyes: bool, source_size: Vec3, atlas_uv: Vec2,
+                mirror: bool, standard_unwrap: bool| {
         let t = transform
             * Mat4::from_quat(degrees(&geometry.rot))
             * Mat4::from_translation(Vec3::from_array(geometry.off));
@@ -1399,17 +1518,18 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose, cape: Option<&Cape>) -> V
         // once in draw_box. Layer cuboids supply UVs, never extra enlargement.
         let inflate = if layer { 0.5 } else { 0. };
         let expansion = if layer {
-            inner_size / original_size * if original_size == Vec3::splat(8.) { 1. } else { 0.5 }
+            inner_size / source_size * if source_size == Vec3::splat(8.) { 1. } else { 0.5 }
         } else { Vec3::ZERO };
         v.push(BoxPart {
             size: inner_size + expansion - Vec3::splat(inflate),
-            uv: Vec2::ZERO,
+            uv: atlas_uv,
+            uv_size: if standard_unwrap { Some(source_size) } else { None },
             transform: t,
             inflate,
-            mirror: false,
+            mirror,
             keyboard: false,
             cape: false,
-            faces: Some(cb.faces),
+            faces: if standard_unwrap { None } else { Some(cb.faces) },
             eyes: if eyes && s.da_blink { skin.eyes } else { None },
             eyelid: pose.eyelid,
             pupil: if eyes { pose.pupil } else { Vec2::ZERO },
@@ -1420,9 +1540,11 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose, cape: Option<&Cape>) -> V
     let head = torso
         * Mat4::from_translation(Vec3::new(0., 3.7, 0.))
         * Mat4::from_quat(pose.head_rotation);
-    push(&mut v, &CHIBI_HEAD, &CHIBI_HEAD, head, false, true, Vec3::splat(8.));
+    push(&mut v, &CHIBI_HEAD, &CHIBI_HEAD, head, false, true,
+        Vec3::splat(8.), Vec2::ZERO, false, true);
     if s.outer_layer {
-        push(&mut v, &CHIBI_HAT, &CHIBI_HEAD, head, true, false, Vec3::splat(8.));
+        push(&mut v, &CHIBI_HAT, &CHIBI_HEAD, head, true, false,
+            Vec3::splat(8.), Vec2::new(32., 0.), false, true);
     }
 
     let anchor = 3. * pose.sit;
@@ -1437,9 +1559,12 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose, cape: Option<&Cape>) -> V
 
     // 身体（中心在 Y=3）
     let body_t = body * Mat4::from_translation(Vec3::new(0., 1.85, 0.));
-    push(&mut v, &CHIBI_BODY, &CHIBI_BODY, body_t, false, false, Vec3::new(8., 12., 4.));
+    let body_uv_size = Vec3::new(8., 12., 4.);
+    push(&mut v, &CHIBI_BODY, &CHIBI_BODY, body_t, false, false,
+        body_uv_size, Vec2::new(16., 16.), false, true);
     if s.outer_layer {
-        push(&mut v, &CHIBI_BODY_LAYER, &CHIBI_BODY, body_t, true, false, Vec3::new(8., 12., 4.));
+        push(&mut v, &CHIBI_BODY_LAYER, &CHIBI_BODY, body_t, true, false,
+            body_uv_size, Vec2::new(16., 32.), false, true);
     }
 
     // 手臂（肩在 Y=5 两侧）
@@ -1465,9 +1590,17 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose, cape: Option<&Cape>) -> V
             (&CHIBI_ARM_RIGHT_WIDE, &CHIBI_ARM_RIGHT_LAYER_WIDE)
         };
         let original_size = Vec3::new(if slim { 3. } else { 4. }, 12., 4.);
-        push(&mut v, inner, inner, arm, false, false, original_size);
+        let (arm_uv, sleeve_uv) = if left && !skin.legacy {
+            (Vec2::new(32., 48.), Vec2::new(48., 48.))
+        } else {
+            (Vec2::new(40., 16.), Vec2::new(40., 32.))
+        };
+        let mirror = left && skin.legacy;
+        push(&mut v, inner, inner, arm, false, false,
+            original_size, arm_uv, mirror, true);
         if s.outer_layer {
-            push(&mut v, outer, inner, arm, true, false, original_size);
+            push(&mut v, outer, inner, arm, true, false,
+                original_size, sleeve_uv, mirror, true);
         }
     }
 
@@ -1500,9 +1633,18 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose, cape: Option<&Cape>) -> V
         } else {
             (&CHIBI_LEG_RIGHT, &CHIBI_LEG_RIGHT_LAYER)
         };
-        push(&mut v, inner, inner, leg, false, false, Vec3::new(4., 12., 4.));
+        let (leg_uv, pants_uv) = if left && !skin.legacy {
+            (Vec2::new(16., 48.), Vec2::new(0., 48.))
+        } else {
+            (Vec2::new(0., 16.), Vec2::new(0., 32.))
+        };
+        let mirror = left && skin.legacy;
+        let leg_uv_size = Vec3::new(4., 12., 4.);
+        push(&mut v, inner, inner, leg, false, false,
+            leg_uv_size, leg_uv, mirror, true);
         if s.outer_layer {
-            push(&mut v, outer, inner, leg, true, false, Vec3::new(4., 12., 4.));
+            push(&mut v, outer, inner, leg, true, false,
+                leg_uv_size, pants_uv, mirror, true);
         }
     }
 
@@ -1513,6 +1655,7 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose, cape: Option<&Cape>) -> V
         v.push(BoxPart {
             size: Vec3::new(10., 16., 1.),
             uv: Vec2::new(-11., 0.),
+            uv_size: None,
             transform: body
                 * Mat4::from_translation(Vec3::new(0., 3.6 * (3.7 / 12.), -2.9 * (2.5 / 4.)))
                 * Mat4::from_scale(Vec3::new(3.5 / 8., 3.7 / 12., 2.5 / 4.))
@@ -1541,6 +1684,7 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose, cape: Option<&Cape>) -> V
         v.push(BoxPart {
             size: Vec3::new(9., 0.4, 2.4),
             uv: Vec2::ZERO,
+            uv_size: None,
             transform: chibi_scale * body_scale_mat * Mat4::from_translation(Vec3::new(0., 3.2, 2.8))
                 * Mat4::from_scale(Vec3::splat(pose.sit))
                 ,
@@ -1579,6 +1723,7 @@ pub struct Frame {
     depth: Vec<f32>,
     pub bounds: [i32; 4],
     keyboard_color: [u8; 3],
+    keyboard_detailed: bool,
 }
 impl Frame {
     pub fn new(w: usize, h: usize) -> Self {
@@ -1589,6 +1734,7 @@ impl Frame {
             depth: vec![f32::INFINITY; w * h],
             bounds: [0; 4],
             keyboard_color: [131, 135, 138],
+            keyboard_detailed: false,
         }
     }
     pub fn draw(&mut self, s: &Settings, skin: &Skin, pose: &Pose) {
@@ -1597,6 +1743,7 @@ impl Frame {
     /// 带披风的绘制；披风只在正版账号取到的时候才传进来。
     pub fn draw_ext(&mut self, s: &Settings, skin: &Skin, cape: Option<&Cape>, pose: &Pose) {
         let rgb = u32::from_str_radix(s.keyboard_color.trim_start_matches('#'), 16).unwrap_or(0x83878A);
+        self.keyboard_detailed = s.keyboard_style == "detailed";
         self.keyboard_color = [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
         self.pixels.fill(0);
         self.depth.fill(f32::INFINITY);
@@ -1612,20 +1759,21 @@ impl Frame {
             }
         }
         self.draw_effects(s,skin,pose);
+        self.draw_tease_hand(s,skin,pose);
     }
     fn draw_box(&mut self, b: &BoxPart, skin: Tex) {
-        let Vec3 { x: w, y: h, z: d } = b.size;
+        let Vec3 { x: uv_w, y: uv_h, z: uv_d } = b.uv_size.unwrap_or(b.size);
         let u = b.uv.x;
         let v = b.uv.y;
         let regions = [
             // +X is the character's left side. The unfolded PNG strip is
             // character-right / front / character-left / back, not BoxGeometry order.
-            (u + d + w, v + d, d, h),
-            (u, v + d, d, h),
-            (u + d, v, w, d),
-            (u + d + w, v, w, d),
-            (u + d, v + d, w, h),
-            (u + 2. * d + w, v + d, w, h),
+            (u + uv_d + uv_w, v + uv_d, uv_d, uv_h),
+            (u, v + uv_d, uv_d, uv_h),
+            (u + uv_d, v, uv_w, uv_d),
+            (u + uv_d + uv_w, v, uv_w, uv_d),
+            (u + uv_d, v + uv_d, uv_w, uv_h),
+            (u + 2. * uv_d + uv_w, v + uv_d, uv_w, uv_h),
         ];
         let sz = b.size + Vec3::splat(b.inflate);
         let planes = [
@@ -1845,6 +1993,9 @@ impl Frame {
             let l = (((c as f32 / 255. + 0.055) / 1.055).powf(2.4) * shades[face]).max(0.);
             ((1.055 * l.powf(1. / 2.4) - 0.055) * 255. + 0.5) as u8
         });
+        // Flat top-face markings, using the same surface/depth as the keyboard.
+        // No extra boxes, textures or height; dimensions follow either body type.
+        let key_gray = gray.map(|channel| (channel as f32 * 0.78).round() as u8);
         let inv_area = area.recip();
         let ax = -(p[2].y - p[1].y) * inv_area;
         let ay = (p[2].x - p[1].x) * inv_area;
@@ -1897,21 +2048,26 @@ impl Frame {
                     continue;
                 }
                 let (color, alpha) = if b.keyboard {
-                    (gray, 255)
+                    let top = uv[1] + (uv[0] - uv[1]) * a + (uv[2] - uv[1]) * c;
+                    let local = top - b.uv - Vec2::new(b.size.z, 0.);
+                    let row = ((local.y / b.size.z - 0.2) / 0.3).round();
+                    let stagger = if row == 1. { 0.025 } else { -0.025 };
+                    let col = (local.x / b.size.x * 6. - stagger * 6.).round();
+                    let center = Vec2::new((col / 6. + stagger) * b.size.x,
+                        (0.2 + row * 0.3) * b.size.z);
+                    let distance = (local - center).abs();
+                    let half_side = b.size.z * 0.11;
+                    let is_key = self.keyboard_detailed && face == 2 && (0. ..=2.).contains(&row)
+                        && (1. ..=5.).contains(&col)
+                        && distance.x <= half_side && distance.y <= half_side;
+                    (if is_key { key_gray } else { gray }, 255)
                 } else {
                     let tx = tex[1].x + ta.x * a + tc.x * c;
                     let ty = tex[1].y + ta.y * a + tc.y * c;
                     let xx = (tx as u32).min(skin.image.width() - 1);
                     let yy = (ty as u32).min(skin.image.height() - 1);
                     let ti = (yy * skin.image.width() + xx) as usize;
-                    {
-                        let p = skin.image.get_pixel(xx, yy);
-                        let color = if skin.colors.is_empty() {
-                            let lut = shade_lut();
-                            [lut[face][0][p[0] as usize], lut[face][1][p[1] as usize], lut[face][2][p[2] as usize]]
-                        } else { skin.colors[ti][face] };
-                        (color, p[3])
-                    }
+                    (skin.colors[ti][face], skin.image.get_pixel(xx, yy)[3])
                 };
                 if alpha < 16 {
                     continue;
@@ -1962,26 +2118,6 @@ fn edge(a: Vec3, b: Vec3, p: Vec3) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn compact_color_sampling_is_pixel_identical() {
-        let mut skin = Skin::load(DEFAULT_SKIN).unwrap();
-        let mut s = Settings::default();
-        s.da_blink=false; s.track_mouse=false;
-        for chibi in [false,true] {
-            s.chibi=chibi;
-            for posture in ["standing","sitting","custom"] {
-                s.posture=posture.into();
-                let pose=Pose::new(&s);
-                let mut frame=Frame::new(240,280);
-                skin.colors=colors_for(&skin.image);
-                frame.draw(&s,&skin,&pose); let expected=frame.pixels.clone();
-                skin.colors.clear();
-                frame.draw(&s,&skin,&pose);
-                assert_eq!(frame.pixels,expected,"{chibi}/{posture}");
-            }
-        }
-    }
-
     #[test]
     fn breathing_runs_immediately_through_actions_and_preserves_custom_pose() {
         let skin=Skin::load(DEFAULT_SKIN).unwrap();
@@ -2491,6 +2627,7 @@ mod tests {
         let b = BoxPart {
             size: Vec3::splat(8.),
             uv: Vec2::new(32., 0.),
+            uv_size: None,
             transform: Mat4::IDENTITY,
             inflate: 1.,
             mirror: false,
@@ -2581,39 +2718,62 @@ mod tests {
         }
     }
     #[test]
-    fn chibi_hat_top_matches_skin_atlas_front_back_and_left_right() {
-        for factor in [1u32, 2] {
-            let mut atlas = RgbaImage::new(64 * factor, 64 * factor);
+    fn chibi_all_parts_match_standard_full_model_uv_mapping() {
+        for legacy in [false, true] {
+            let height = if legacy { 32 } else { 64 };
+            let mut atlas = RgbaImage::new(64, height);
             for (x, y, pixel) in atlas.enumerate_pixels_mut() {
-                *pixel = image::Rgba([(x / factor * 3 + 10) as u8, (y / factor * 3 + 10) as u8, 100, 255]);
+                *pixel = image::Rgba([(x * 3 + 10) as u8, (y * 3 + 10) as u8, 100, 255]);
             }
             let mut png = std::io::Cursor::new(Vec::new());
             atlas.write_to(&mut png, image::ImageFormat::Png).unwrap();
             let skin = Skin::load(png.get_ref()).unwrap();
-            for scale in [50., 100., 180.] {
-                let mut s = Settings::default();
-                s.chibi = true; s.outer_layer = true; s.chibi_body_scale = scale;
-                let p = Pose::new(&s);
-                let mut hat = parts(&s, &skin, &p).into_iter().find(|b| {
-                    b.inflate > 0. && b.faces.is_some_and(|f| f[2].u0 == 10.)
-                }).expect("Q版头部外层");
-                let orientation = Quat::from_rotation_arc(Vec3::Y, Vec3::new(30., 23., 70.).normalize());
-                hat.transform = Mat4::from_translation(Vec3::Y * 15.) * Mat4::from_quat(orientation);
-                let size = hat.size + Vec3::splat(hat.inflate);
-                let mut frame = Frame::new(450, 525);
-                frame.draw_box(&hat, Tex::of(&skin.image, &skin.colors));
-                // Anatomical coordinates: +Z is front, +X is character-left.
-                // The hat top occupies atlas x=40..48, y=0..8, just like the
-                // regular model. Four different corner colors catch both flips.
-                for x in [0.5f32, 7.5] { for z in [0.5f32, 7.5] {
-                    let local = Vec3::new((x / 8. - 0.5) * size.x, size.y / 2., (z / 8. - 0.5) * size.z);
-                    let screen = project(hat.transform.transform_point3(local), 450., 525.);
-                    let offset = (screen.y as usize * 450 + screen.x as usize) * 4;
-                    let texel = (z * factor as f32) as u32 * skin.image.width() + ((40. + x) * factor as f32) as u32;
-                    let expected = skin.colors[texel as usize][2];
-                    assert_eq!([frame.pixels[offset+2], frame.pixels[offset+1], frame.pixels[offset]], expected,
-                        "hat top: factor={factor}, scale={scale}, corner=({x},{z})");
-                }}
+            assert_eq!(skin.legacy, legacy);
+
+            for slim in [false, true] {
+                for outer_layer in [false, true] {
+                    for scale in [50., 180.] {
+                        let mut s = Settings::default();
+                        s.chibi = true;
+                        s.arm_model = if slim { "slim" } else { "classic" }.into();
+                        s.outer_layer = outer_layer;
+                        s.chibi_body_scale = scale;
+                        let p = Pose::new(&s);
+                        let boxes = parts(&s, &skin, &p);
+                        let character: Vec<_> = boxes.iter()
+                            .filter(|b| !b.keyboard && !b.cape).collect();
+                        assert_eq!(character.len(), if outer_layer { 12 } else { 6 });
+                        let orientation = Quat::from_rotation_arc(
+                            Vec3::Z, Vec3::new(30., 23., 70.).normalize());
+                        let test_transform = Mat4::from_translation(Vec3::Y * 15.)
+                            * Mat4::from_quat(orientation)
+                            * Mat4::from_scale(Vec3::splat(6.));
+
+                        for (index, source) in character.iter().enumerate() {
+                            assert!(source.faces.is_none(),
+                                "all Q版 character faces must use the regular cuboid UV path: legacy={legacy}, slim={slim}, layer={outer_layer}, index={index}");
+                            let source_uv_size = source.uv_size.expect("Q版部件必须带普通模型 UV 尺寸");
+                            let mut chibi_part = (*source).clone();
+                            chibi_part.transform = test_transform;
+                            chibi_part.eyes = None;
+                            chibi_part.pupil = Vec2::ZERO;
+
+                            let mut normal_part = chibi_part.clone();
+                            normal_part.size = source_uv_size;
+                            normal_part.uv_size = None;
+                            let q_geometry = source.size + Vec3::splat(source.inflate);
+                            let normal_geometry = source_uv_size + Vec3::splat(source.inflate);
+                            normal_part.transform = test_transform * Mat4::from_scale(q_geometry / normal_geometry);
+
+                            let mut chibi_frame = Frame::new(450, 525);
+                            let mut normal_frame = Frame::new(450, 525);
+                            chibi_frame.draw_box(&chibi_part, Tex::of(&skin.image, &skin.colors));
+                            normal_frame.draw_box(&normal_part, Tex::of(&skin.image, &skin.colors));
+                            assert_eq!(chibi_frame.pixels, normal_frame.pixels,
+                                "Q版与普通 cuboid 的标准 UV 渲染不同：legacy={legacy}, slim={slim}, layer={outer_layer}, scale={scale}, index={index}, uv={:?}", source.uv);
+                        }
+                    }
+                }
             }
         }
     }
@@ -2671,6 +2831,7 @@ mod tests {
                         let part = BoxPart {
                             size: Vec3::new(w, h, d),
                             uv: Vec2::new(u, v),
+                            uv_size: None,
                             transform,
                             inflate: 0.,
                             mirror,
@@ -2816,8 +2977,8 @@ mod tests {
             );
         }
     }
-    /// Q 版模式：生成 12 个 cuboid（头2+身2+臂4+腿4，无图腾），每个都带
-    /// per-face UV，渲染后一帧有可见像素。
+    /// Q 版模式：生成 12 个 cuboid（头2+身2+臂4+腿4，无图腾），所有部位复用
+    /// 普通模型的标准 cuboid UV 展开。
     #[test]
     fn chibi_mode_renders_without_totem() {
         let mut s = Settings::default();
@@ -2826,10 +2987,8 @@ mod tests {
         let pose = Pose::new(&s);
         let parts = parts_with_cape(&s, &skin, &pose, None);
         assert_eq!(parts.len(), 12, "头2+身2+臂4+腿4=12，图腾已被去掉");
-        assert!(
-            parts.iter().all(|p| p.faces.is_some()),
-            "Q 版每个面都走独立 UV"
-        );
+        assert!(parts.iter().all(|p| p.uv_size.is_some() && p.faces.is_none()),
+            "Q版的头、身体、手脚都使用普通模型标准 UV 展开");
         let mut frame = Frame::new(450, 525);
         frame.draw_ext(&s, &skin, None, &pose);
         assert!(
@@ -3525,25 +3684,6 @@ mod tests {
         assert_ne!(p.held[0].side, side);
     }
     #[test]
-    #[cfg(target_os = "macos")]
-    fn alternating_press_is_as_visible_as_precise() {
-        for chibi in [false, true] {
-            let (mut s, skin, mut p) = if chibi { seated_chibi() } else { seated() };
-            s.typing_mode = "alternating".into();
-            for i in 0..120 { tick(&mut p, &s, &skin, 0.5 + i as f32 / 120., false); }
-            let idle = p.arms;
-            p.key(81, true, 2., &s);
-            let side = p.held[0].side;
-            let mut reach = 0f32;
-            for i in 0..60 {
-                tick(&mut p, &s, &skin, 2. + i as f32 / 120., false);
-                reach = reach.max(p.arms[side].angle_between(idle[side]));
-            }
-            assert!(reach.to_degrees() > 15., "chibi={chibi} reach={}", reach.to_degrees());
-            assert!(p.arms[1 - side].angle_between(idle[1 - side]) < 0.02);
-        }
-    }
-    #[test]
     fn swing_overrides_then_returns_to_live_keyboard_pose() {
         let (s, skin, mut p) = seated();
         p.key(81, true, 1., &s);
@@ -3665,5 +3805,111 @@ mod tests {
         f2.draw_ext(&s, &skin, None, &p2);
         let img2 = RgbaImage::from_raw(450, 525, f2.rgba()).unwrap();
         img2.save("D:/Minecraft桌宠/work/chibi_sit.png").unwrap();
+    }
+    /// 点击「可调戏」：Q 弹压缩有界、0.5 秒内回到 1，连点只重置、不累积。
+    /// 长按：手部淡入、循环全部 5 帧、松开后淡出并把压缩还原。
+    #[test]
+    fn hold_loops_hand_frames_and_fades_out() {
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        let mut s = Settings::default();
+        s.tease_enabled = true;
+        s.track_mouse = false;
+        s.typing_squash = 0.;
+        let mut p = Pose::new(&s);
+        p.start_hold(0.);
+        let mut frames = std::collections::BTreeSet::new();
+        let mut min = 1f32;
+        let mut max_alpha = 0f32;
+        for i in 0..=360 {
+            let now = i as f32 / 120.;
+            tick(&mut p, &s, &skin, now, false);
+            assert!((0.0..=1.0).contains(&p.hand_alpha));
+            assert!((0.55..=1.12).contains(&p.squash));
+            if now > 0.2 {
+                frames.insert(p.hand_frame);
+            }
+            min = min.min(p.squash);
+            max_alpha = max_alpha.max(p.hand_alpha);
+        }
+        assert!(
+            frames.len() >= 4,
+            "hand loop should visit the frames: {frames:?}"
+        );
+        assert!(min < 0.95, "the hand loop must compress the model: {min}");
+        assert_eq!(max_alpha, 1.);
+        p.end_hold(3.0);
+        for i in 0..=24 {
+            let now = 3.0 + i as f32 / 120.;
+            tick(&mut p, &s, &skin, now, false);
+        }
+        assert!(!p.hold_active());
+        assert_eq!(p.hand_alpha, 0.);
+        assert_eq!(p.squash, 1.);
+    }
+    /// 关闭「可调戏」时，长按状态立即清空，不留下半透明残影。
+    #[test]
+    fn hold_continues_when_tease_is_disabled() {
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        let mut s = Settings::default();
+        s.tease_enabled = true;
+        s.track_mouse = false;
+        s.typing_squash = 0.;
+        let mut p = Pose::new(&s);
+        p.start_hold(0.);
+        tick(&mut p, &s, &skin, 0.5, false);
+        assert!(p.hand_alpha > 0.9);
+        s.tease_enabled = false;
+        tick(&mut p, &s, &skin, 0.6, false);
+        assert!(p.hold_active());
+        assert_eq!(p.hand_alpha, 1.);
+
+    }
+    /// 点击压缩和长按揉捏都只作用在角色上，键盘的变换必须一模一样。
+    #[test]
+    fn tease_animations_never_squash_the_keyboard() {
+        let (mut s, skin, mut p) = seated();
+        s.tease_enabled = true;
+        let board = |s: &Settings, skin: &Skin, p: &Pose| {
+            parts_with_cape(s, skin, p, None)
+                .into_iter()
+                .find(|part| part.keyboard)
+                .map(|part| part.transform)
+                .expect("seated model must have a keyboard")
+        };
+        let rest = board(&s, &skin, &p);
+        p.tease(1.);
+        p.pat(1.);
+        tick(&mut p, &s, &skin, 1.1, false);
+        assert_eq!(p.squash, 1.);
+        assert!(p.tease_start.is_some());
+        assert!(p.hand_alpha > 0.9);
+        assert_eq!(rest, board(&s, &skin, &p));
+        let mut p = Pose::new(&s);
+        p.start_hold(0.);
+        tick(&mut p, &s, &skin, 0.6, false);
+        assert!(p.squash < 0.95);
+        assert_eq!(rest, board(&s, &skin, &p));
+    }
+    /// PAT喵！：点击时手部只出现一次 0.5 秒，循环 5 帧后消失，不残留半透明。
+    #[test]
+    fn pat_click_shows_a_short_one_shot_hand() {
+        let (mut s, skin, mut p) = seated();
+        s.tease_enabled = false;
+        p.pat(0.);
+        let mut frames = std::collections::BTreeSet::new();
+        let mut max_alpha = 0f32;
+        for i in 0..=120 {
+            let now = i as f32 / 120.;
+            tick(&mut p, &s, &skin, now, false);
+            assert!((0.0..=1.0).contains(&p.hand_alpha));
+            if now < 0.5 {
+                frames.insert(p.hand_frame);
+                max_alpha = max_alpha.max(p.hand_alpha);
+            }
+        }
+        assert!(frames.len() >= 4, "PAT 手部应循环播放: {frames:?}");
+        assert!(max_alpha > 0.9, "PAT 手部应完全淡入: {max_alpha}");
+        assert_eq!(p.hand_alpha, 0., "0.5 秒后 PAT 手部必须消失");
+        assert!(p.pat_start.is_none());
     }
 }

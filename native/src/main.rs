@@ -5,6 +5,7 @@ mod hyp_chat;
 mod keyboard;
 mod online;
 mod render;
+mod sound;
 mod ui;
 mod updates;
 mod music;
@@ -159,12 +160,62 @@ impl Drop for Surface {
         }
     }
 }
+/// 「可调戏」长按判定：左键在桌宠上按住 0.5 秒且没有拖动，才进入手部揉捏循环。
+/// 纯逻辑，和窗口/渲染解耦，便于单元测试。
+const HOLD_DELAY_SECONDS: f32 = 0.5;
+#[derive(Default)]
+struct HoldTracker {
+    press: Option<(f32, POINT)>,
+    active: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HoldEvent {
+    None,
+    Start,
+    End,
+}
+impl HoldTracker {
+    fn press(&mut self, now: f32, point: POINT) {
+        self.press = Some((now, point));
+        self.active = false;
+    }
+    /// 返回之前是否真的有按下/长按状态，调用方据此决定要不要结束 Pose 动画。
+    fn cancel(&mut self) -> bool {
+        let had = self.press.is_some() || self.active;
+        self.press = None;
+        self.active = false;
+        had
+    }
+    fn update(&mut self, now: f32, down: bool, cursor: POINT, tolerance: i32) -> HoldEvent {
+        let Some((pressed_at, origin)) = self.press else {
+            if self.active {
+                self.active = false;
+                return HoldEvent::End;
+            }
+            return HoldEvent::None;
+        };
+        let moved = (cursor.x - origin.x).abs() > tolerance
+            || (cursor.y - origin.y).abs() > tolerance;
+        if moved || !down {
+            let was_active = self.active;
+            self.press = None;
+            self.active = false;
+            return if was_active { HoldEvent::End } else { HoldEvent::None };
+        }
+        if !self.active && now - pressed_at >= HOLD_DELAY_SECONDS {
+            self.active = true;
+            return HoldEvent::Start;
+        }
+        HoldEvent::None
+    }
+}
 pub struct App {
     settings: Settings,
     store: Store,
     skin: Skin,
     cape: Option<Cape>,
     pose: Pose,
+    hold: HoldTracker,
     key_recovery: keyboard::KeyRecovery,
     frame: Frame,
     surface: Option<Surface>,
@@ -211,6 +262,8 @@ pub struct App {
     tick_gap_sum_us: u64,
     tick_gap_count: u64,
     click_count: u64,
+    /// PAT喵！音效用的随机数状态（xorshift64）；每次点击随机二选一，不再按顺序循环。
+    pat_rng: u64,
     mouse_buttons: [bool; 5],
     tray_ok: bool,
     tray_error: u32,
@@ -244,6 +297,7 @@ impl App {
             skin,
             cape,
             pose,
+            hold: HoldTracker::default(),
             key_recovery: keyboard::KeyRecovery::default(),
             frame: Frame::new(450, 525),
             surface: None,
@@ -290,6 +344,11 @@ impl App {
             tick_gap_sum_us: 0,
             tick_gap_count: 0,
             click_count: 0,
+            pat_rng: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0x9E37_79B9_7F4A_7C15)
+                | 1,
             mouse_buttons: [false; 5],
             tray_ok: false,
             tray_error: 0,
@@ -440,9 +499,36 @@ impl App {
     }
     unsafe fn mouse_press(&mut self,index:usize,cursor:POINT,now:f32) {
         self.click_count+=1;
-        if self.settings.tease_enabled && self.pet_hit(cursor) {self.pose.tease(now);}
+        let hit = self.pet_hit(cursor);
+        if index == 0 && hit { self.hold.press(now, cursor); }
+        if self.settings.tease_enabled && hit {
+            // 「可调戏」：任何键按下先做一次 Q 弹压缩；只有左键继续等待长按。
+            self.pose.tease(now);
+        }
         else {self.pose.click(now,self.settings.swing_left(index));}
+        // PAT喵！：点击桌宠时短促地出一只手，并随机播放两段喵喵音效之一。
+        if self.settings.pat_enabled && hit {
+            self.pose.pat(now);
+            let choice = (self.pat_rand() & 1) as usize;
+            sound::play(choice, self.settings.pat_volume as f32 / 100.);
+        }
         self.wake();
+    }
+    /// PAT喵！音效用的轻量随机数（xorshift64），每次点击重新抽一段。
+    fn pat_rand(&mut self) -> u32 {
+        let mut x = self.pat_rng;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.pat_rng = x;
+        (x >> 32) as u32
+    }
+    fn release_hold(&mut self, now: f32) {
+        self.hold.cancel();
+        if self.pose.hold_active() {
+            self.pose.end_hold(now);
+            self.wake();
+        }
     }
     unsafe fn native_mouse_press(&mut self,index:usize) {
         if TEST_INPUT_ONLY || self.mouse_buttons[index] {return;}
@@ -557,18 +643,45 @@ impl App {
         self.mouse_buttons = buttons;
         let moved = cursor.x != self.cursor.x || cursor.y != self.cursor.y;
         self.cursor = cursor;
+        // 「可调戏」长按：0.5 秒内允许小幅移动，进入手部揉捏循环后也允许移动
+        // 一部分（≤30 逻辑像素）；只有明显的大距离拖动、隐藏、菜单打开或关闭开关
+        // 才结束。阈值按 DPI 缩放，避免高 DPI 下误判。
+        let suppress_hold = self.hidden || self.menu_open;
+        if suppress_hold {
+            if self.hold.cancel() {
+                self.pose.end_hold(now);
+            }
+        } else {
+            let tolerance = (30. * self.dpi).round() as i32;
+            match self.hold.update(now, buttons[0], cursor, tolerance) {
+                HoldEvent::Start => {
+                    self.pose.start_hold(now);
+                    self.wake();
+                }
+                HoldEvent::End => {
+                    self.pose.end_hold(now);
+                    self.wake();
+                }
+                HoldEvent::None => {}
+            }
+        }
         if moved && self.settings.track_mouse {
 
             self.awake = self.awake.max(now + 0.05);
         } // Direct head updates need no trailing animation.
         if let Some(offset) = self.drag {
-
-            self.pos = POINT {
-                x: cursor.x - offset.x,
-                y: cursor.y - offset.y,
-            };
-            self.move_to();
-            self.awake = now + 0.85;
+            // 等待/正在进行摸头时，鼠标指针在模型内小幅移动只让头部跟随，
+            // 不移动窗口；超过 tracker 的拖动阈值后摸头结束，才恢复正常的鼠标拖动。
+            if self.hold.press.is_some() || self.hold.active {
+                self.awake = self.awake.max(now + 0.05);
+            } else {
+                self.pos = POINT {
+                    x: cursor.x - offset.x,
+                    y: cursor.y - offset.y,
+                };
+                self.move_to();
+                self.awake = now + 0.85;
+            }
         }
         for vk in self
             .key_recovery
@@ -702,6 +815,7 @@ impl App {
         self.flags();
         self.wake();
         self.refresh_panel();
+
     }
     unsafe fn import(&mut self, path: PathBuf) {
         self.download = None; // A later local choice wins over an older network request.
@@ -927,6 +1041,8 @@ impl App {
             171 => { self.settings.music_notes = !self.settings.music_notes; self.changed(); }
             172 => { self.settings.tease_enabled = !self.settings.tease_enabled; self.changed(); }
             173 => { self.settings.breathing_animation = !self.settings.breathing_animation;  self.changed(); }
+            182 => { self.settings.pat_enabled = !self.settings.pat_enabled;  self.changed(); }
+            183 => { self.settings.lock_double_click = !self.settings.lock_double_click;  self.changed(); }
             175 => { self.settings.occasional_stretch = !self.settings.occasional_stretch; self.changed(); }
             176 => { self.settings.occasional_tilt = !self.settings.occasional_tilt; self.changed(); }
             177 => { self.settings.occasional_sleepy = !self.settings.occasional_sleepy; self.changed(); }
@@ -969,6 +1085,7 @@ impl App {
         }
         self.menu_open = true;
         self.drag = None;
+        self.release_hold(self.start.elapsed().as_secs_f32());
         let menu = CreatePopupMenu();
         // DestroyMenu(menu) also releases all attached submenus.
         let append = |target: HMENU, id: u32, label: &str, checked: bool| {
@@ -1177,6 +1294,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             0
         }
         WM_LBUTTONUP => {
+            a.release_hold(a.start.elapsed().as_secs_f32());
             if a.drag.take().is_some() {
                 ReleaseCapture();
                 a.constrain();
@@ -1187,6 +1305,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             0
         }
         WM_CAPTURECHANGED => {
+            a.release_hold(a.start.elapsed().as_secs_f32());
             if a.drag.take().is_some() {
                 a.constrain();
                 a.move_to();
@@ -1195,9 +1314,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             0
         }
         WM_LBUTTONDBLCLK => {
-            a.drag = None;
-            ReleaseCapture();
-            a.show_panel();
+            if a.settings.lock_double_click {
+                a.native_mouse_press(0);
+                let mut p = POINT { x: 0, y: 0 };
+                GetCursorPos(&mut p);
+                a.drag = Some(POINT { x: p.x - a.pos.x, y: p.y - a.pos.y });
+                SetCapture(hwnd);
+            } else {
+                a.release_hold(a.start.elapsed().as_secs_f32());
+                a.drag = None;
+                ReleaseCapture();
+                a.show_panel();
+            }
             0
         }
         WM_RBUTTONDOWN => {a.native_mouse_press(1);0}
@@ -1774,6 +1902,120 @@ fn render_test(args: &[String]) {
         }
         return;
     }
+    if args.iter().any(|a| a == "--tease-test") {
+        // 「可调戏」两段新动画的逐帧输出：点击 Q 弹压缩 + 长按揉捏循环。
+        // 用法：minecraft-pet.exe --render-test --tease-test --output=<dir>
+        s.tease_enabled = true;
+        s.track_mouse = false;
+        s.typing_squash = 0.;
+        let mut samples = Vec::new();
+        for chibi in [false, true] {
+            for sitting in [false, true] {
+                s.chibi = chibi;
+                s.posture = if sitting { "sitting" } else { "standing" }.into();
+                let tag = format!(
+                    "{}-{}",
+                    if chibi { "chibi" } else { "std" },
+                    if sitting { "sit" } else { "stand" }
+                );
+                let mut p = Pose::new(&s);
+                p.tease(0.);
+                for i in 0..=72 {
+                    let now = i as f32 / 120.;
+                    p.update(&s, &skin, Vec2::ZERO, 450., 525., false, now, 1. / 120.);
+                    if i % 3 == 0 {
+                        let mut f = Frame::new(450, 525);
+                        f.draw(&s, &skin, &p);
+                        image::save_buffer(
+                            dir.join(format!("bump-{tag}-{i:03}.png")),
+                            &f.rgba(),
+                            450,
+                            525,
+                            image::ColorType::Rgba8,
+                        )
+                        .unwrap();
+                        samples.push(serde_json::json!({
+                            "kind":"bump","tag":tag,"i":i,
+                            "squash":p.squash,"handAlpha":p.hand_alpha,"handFrame":p.hand_frame
+                        }));
+                    }
+                }
+                let mut p = Pose::new(&s);
+                p.pat(0.);
+                p.tease(0.);
+                for i in 0..=60 {
+                    let now = i as f32 / 120.;
+                    p.update(&s, &skin, Vec2::ZERO, 450., 525., false, now, 1. / 120.);
+                    if i % 3 == 0 {
+                        let mut f = Frame::new(450, 525);
+                        f.draw(&s, &skin, &p);
+                        image::save_buffer(
+                            dir.join(format!("pat-{tag}-{i:03}.png")),
+                            &f.rgba(),
+                            450,
+                            525,
+                            image::ColorType::Rgba8,
+                        )
+                        .unwrap();
+                        samples.push(serde_json::json!({
+                            "kind":"pat","tag":tag,"i":i,
+                            "squash":p.squash,"handAlpha":p.hand_alpha,"handFrame":p.hand_frame
+                        }));
+                    }
+                }
+                let mut p = Pose::new(&s);
+                p.start_hold(0.1);
+                for i in 0..=150 {
+                    let now = 0.1 + i as f32 / 60.;
+                    p.update(&s, &skin, Vec2::ZERO, 450., 525., false, now, 1. / 60.);
+                    if i % 2 == 0 {
+                        let mut f = Frame::new(450, 525);
+                        f.draw(&s, &skin, &p);
+                        image::save_buffer(
+                            dir.join(format!("hold-{tag}-{i:03}.png")),
+                            &f.rgba(),
+                            450,
+                            525,
+                            image::ColorType::Rgba8,
+                        )
+                        .unwrap();
+                        samples.push(serde_json::json!({
+                            "kind":"hold","tag":tag,"i":i,
+                            "squash":p.squash,"handAlpha":p.hand_alpha,"handFrame":p.hand_frame
+                        }));
+                    }
+                }
+                let release = 0.1 + 150. / 60.;
+                p.end_hold(release);
+                for i in 0..=12 {
+                    let now = release + i as f32 / 60.;
+                    p.update(&s, &skin, Vec2::ZERO, 450., 525., false, now, 1. / 60.);
+                    if i % 2 == 0 {
+                        let mut f = Frame::new(450, 525);
+                        f.draw(&s, &skin, &p);
+                        image::save_buffer(
+                            dir.join(format!("hold-out-{tag}-{i:03}.png")),
+                            &f.rgba(),
+                            450,
+                            525,
+                            image::ColorType::Rgba8,
+                        )
+                        .unwrap();
+                        samples.push(serde_json::json!({
+                            "kind":"hold-out","tag":tag,"i":i,
+                            "squash":p.squash,"handAlpha":p.hand_alpha,"handFrame":p.hand_frame
+                        }));
+                    }
+                }
+            }
+        }
+        std::fs::write(
+            dir.join("tease-samples.json"),
+            serde_json::to_vec_pretty(&samples).unwrap(),
+        )
+        .unwrap();
+        return;
+    }
     s.outer_layer = !args.iter().any(|a| a == "--no-outer");
     for (name, sit, slim, crouch) in [
         ("standing", false, false, false),
@@ -1807,5 +2049,63 @@ fn render_test(args: &[String]) {
             image::ColorType::Rgba8,
         )
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod hold_tracker_tests {
+    use super::*;
+    fn at(x: i32, y: i32) -> POINT {
+        POINT { x, y }
+    }
+    #[test]
+    fn hold_needs_half_a_second_without_movement() {
+        let mut tracker = HoldTracker::default();
+        tracker.press(0., at(10, 10));
+        assert_eq!(tracker.update(0.49, true, at(10, 10), 4), HoldEvent::None);
+        assert_eq!(tracker.update(0.50, true, at(10, 10), 4), HoldEvent::Start);
+        assert_eq!(tracker.update(0.80, true, at(11, 12), 4), HoldEvent::None);
+        assert_eq!(tracker.update(0.90, false, at(11, 12), 4), HoldEvent::End);
+    }
+    #[test]
+    fn moving_before_the_delay_never_starts_a_hold() {
+        let mut tracker = HoldTracker::default();
+        tracker.press(0., at(10, 10));
+        assert_eq!(tracker.update(0.20, true, at(20, 10), 4), HoldEvent::None);
+        assert_eq!(tracker.update(0.70, true, at(20, 10), 4), HoldEvent::None);
+        assert!(!tracker.active);
+        assert_eq!(tracker.update(0.80, false, at(20, 10), 4), HoldEvent::None);
+    }
+    #[test]
+    fn moving_after_the_start_ends_the_hold() {
+        let mut tracker = HoldTracker::default();
+        tracker.press(0., at(10, 10));
+        assert_eq!(tracker.update(0.50, true, at(10, 10), 4), HoldEvent::Start);
+        assert_eq!(tracker.update(0.60, true, at(15, 10), 4), HoldEvent::End);
+        assert!(!tracker.active);
+    }
+    #[test]
+    fn releasing_before_the_delay_does_not_emit_end() {
+        let mut tracker = HoldTracker::default();
+        tracker.press(0., at(10, 10));
+        assert_eq!(tracker.update(0.20, false, at(10, 10), 4), HoldEvent::None);
+        assert_eq!(tracker.update(0.70, true, at(10, 10), 4), HoldEvent::None);
+    }
+    #[test]
+    fn small_moves_are_tolerated_and_large_drags_cancel() {
+        let mut tracker = HoldTracker::default();
+        tracker.press(0., at(10, 10));
+        assert_eq!(tracker.update(0.30, true, at(35, 25), 30), HoldEvent::None);
+        assert_eq!(tracker.update(0.50, true, at(35, 25), 30), HoldEvent::Start);
+        assert_eq!(tracker.update(0.70, true, at(35, 25), 30), HoldEvent::None);
+        assert_eq!(tracker.update(0.90, true, at(70, 30), 30), HoldEvent::End);
+    }
+    #[test]
+    fn cancel_reports_whether_there_was_state() {
+        let mut tracker = HoldTracker::default();
+        assert!(!tracker.cancel());
+        tracker.press(0., at(0, 0));
+        assert!(tracker.cancel());
+        assert!(!tracker.cancel());
     }
 }
