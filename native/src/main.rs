@@ -633,7 +633,8 @@ impl App {
         } else {
             flags &= !WS_EX_TRANSPARENT;
         }
-        SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, flags as isize);
+        // 32 位 Windows 上 SetWindowLongPtrW 即 SetWindowLongW，参数为 i32
+        SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, flags as _);
         GetCursorPos(&mut self.cursor);
         self.update_hover_opacity();
         SetWindowPos(
@@ -1069,8 +1070,11 @@ impl App {
         data.uCallbackMessage = TRAY_MSG;
         data.hIcon = self.icon;
         let tip = wide(&format!("Minecraft桌宠 v{VERSION} · 右键设置 / 双击控制台"));
-        let len = tip.len().min(data.szTip.len());
-        data.szTip[..len].copy_from_slice(&tip[..len]);
+        // x86 上 NOTIFYICONDATAW 是 packed 结构，不能对字段取引用：先填局部数组再整体赋值
+        let mut sz_tip = data.szTip;
+        let len = tip.len().min(sz_tip.len());
+        sz_tip[..len].copy_from_slice(&tip[..len]);
+        data.szTip = sz_tip;
         Shell_NotifyIconW(action, &data) != 0
     }
 }

@@ -6,7 +6,8 @@ build = "build.rs"
 
 [lib]
 name = "pet_core"
-crate-type = ["staticlib"]
+# staticlib: macOS Swift frontend / Windows；rlib: Linux Rust 前端（linux/）
+crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 glam = "0.30"

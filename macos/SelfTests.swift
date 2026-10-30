@@ -75,76 +75,6 @@ enum InputSelfTests {
             check(LoginStartup.delay(arguments: ["pet", "--autostart"], enabled: false, seconds: delay) == 0, "disabled login has no delay")
         }
         check(LoginStartup.delay(arguments: ["--autostart"], enabled: true, seconds: 999) == 0, "invalid delay rejected")
-        for arguments in [["pet", "--autostart"], ["pet", "--autostart", "--show-settings"]] {
-            for keyboardReady in [false,true] {
-                for chatReady in [false,true] {
-                    check(!LaunchMode.shouldShowSettings(arguments: arguments, keyboardEnabled: true,
-                        keyboardRunning: keyboardReady, quickChatEnabled: true, quickChatReady: chatReady),
-                        "login launch never opens settings, including missing permissions")
-                }
-            }
-        }
-        check(LaunchMode.shouldShowSettings(arguments: ["pet", "--show-settings"], keyboardEnabled: false,
-            keyboardRunning: true, quickChatEnabled: false, quickChatReady: true), "explicit console launch")
-        check(!LaunchMode.shouldShowSettings(arguments: ["pet"], keyboardEnabled: true,
-            keyboardRunning: true, quickChatEnabled: false, quickChatReady: true), "healthy manual launch remains quiet")
-        check(LaunchMode.shouldShowSettings(arguments: ["pet"], keyboardEnabled: true,
-            keyboardRunning: false, quickChatEnabled: false, quickChatReady: true), "manual missing permissions remain discoverable")
-        check(LaunchMode.loginArguments(["pet"], launchedAsLoginItem: true) == ["pet", "--autostart"], "login item counts as login launch")
-        check(LaunchMode.loginArguments(["pet", "--autostart"], launchedAsLoginItem: true) == ["pet", "--autostart"], "no duplicate login flag")
-        check(LaunchMode.loginArguments(["pet"], launchedAsLoginItem: false) == ["pet"], "manual launch unchanged")
-        check(LaunchMode.ignoresReopen(arguments: ["pet", "--autostart"], secondsSinceLaunch: 5, delay: 0), "second login launch stays quiet")
-        check(LaunchMode.ignoresReopen(arguments: ["pet", "--autostart"], secondsSinceLaunch: 40, delay: 15), "delayed login reopen stays quiet")
-        check(!LaunchMode.ignoresReopen(arguments: ["pet", "--autostart"], secondsSinceLaunch: 120, delay: 15), "later reopen opens console")
-        check(!LaunchMode.ignoresReopen(arguments: ["pet"], secondsSinceLaunch: 1, delay: 0), "manual launch reopen opens console")
-        check(PermissionLook.level(inputOK: true, access: true) == .green, "both permissions are green")
-        check(PermissionLook.level(inputOK: true, access: false) == .yellow, "only input monitoring is yellow")
-        check(PermissionLook.level(inputOK: false, access: true) == .yellow, "only accessibility is yellow")
-        check(PermissionLook.level(inputOK: false, access: false) == .red, "no permission is red")
-        check(PermissionLook.problem(listen: true, access: true, inputOK: true) == nil, "both permissions have no problem")
-        check(PermissionLook.problem(listen: true, access: false, inputOK: false)?.contains("旧授权") == true, "stale grant is reported")
-        check(PermissionLook.problem(listen: true, access: false, inputOK: true)?.contains("辅助功能") == true, "missing accessibility is reported")
-        check(PermissionLook.problem(listen: false, access: true, inputOK: false)?.contains("输入监控未授权") == true, "missing input monitoring is reported")
-        check(PrivacyPane.inputMonitoring.resetArguments(bundleID: PrivacyPane.appBundleID) == ["reset", "ListenEvent", PrivacyPane.appBundleID], "input reset is scoped to this app")
-        check(PrivacyPane.accessibility.resetArguments(bundleID: PrivacyPane.appBundleID) == ["reset", "Accessibility", PrivacyPane.appBundleID], "accessibility reset is scoped to this app")
-        check(PrivacyPane.accessibility.resetArguments(bundleID: nil) == nil, "no bundle id never resets all apps")
-        check(PrivacyPane.accessibility.resetArguments(bundleID: "com.apple.Terminal") == nil, "other bundle ids are refused")
-        check(!PermissionLook.inputSatisfied(listen: true, keyboardEnabled: true, keyboardRunning: false), "stale grant keeps guide open")
-        check(PermissionLook.inputSatisfied(listen: true, keyboardEnabled: false, keyboardRunning: false), "granted with keyboard off")
-        check(AudioOutputProbe.activity([]) == false, "no audio output clients")
-        check(AudioOutputProbe.activity([0,0]) == false, "paused audio clients")
-        check(AudioOutputProbe.activity([0,1,0]) == true, "active output client")
-        for id in ["com.netease.163music", "com.tencent.QQMusicMac", "com.apple.Music", "com.spotify.client", "com.spotify.client.helper"] {
-            check(MusicPlayers.matches(id), "supported player \(id)")
-        }
-        for id in ["com.apple.Safari", "com.google.Chrome", "com.apple.afplay", "com.apple.Musicx", "", nil] as [String?] {
-            check(!MusicPlayers.matches(id), "ignored app \(id ?? "nil")")
-        }
-        check(AudioOutputProbe.playerActivity([("com.google.Chrome", 1), ("com.apple.Music", 0)]) == false, "browser audio shows no notes")
-        check(AudioOutputProbe.playerActivity([("com.google.Chrome", 1), ("com.netease.163music", 1)]) == true, "playing NetEase shows notes")
-        check(AudioOutputProbe.playerActivity([("com.spotify.client.helper", 1)]) == true, "Spotify helper output counts")
-        for id in ["com.kugou.mac.Music", "com.wenyu.kwplayermac", "com.soda.music", "com.tidal.desktop.helper"] {
-            check(MusicPlayers.matches(id), "2.5.1 player list: \(id)")
-        }
-        for id in ["org.videolan.vlc", "com.google.Chrome", "com.colliderli.iina", "com.soda.musicx"] {
-            check(!MusicPlayers.matches(id), "not a music player: \(id)")
-        }
-        check(AudioOutputProbe.playerActivity([(nil, 1), ("com.apple.Safari", nil)]) == false, "unknown apps never count")
-        check(AudioOutputProbe.playerActivity([("com.apple.Music", nil)]) == nil, "unreadable player state is not playing")
-        check(AudioOutputProbe.playerActivity([("com.apple.Music", 1)], reported: ["com.apple.Music": false]) == false, "paused Apple Music with open stream shows no notes")
-        check(AudioOutputProbe.playerActivity([("com.spotify.client.helper", 1)], reported: ["com.spotify.client": false]) == false, "paused Spotify helper stream shows no notes")
-        check(AudioOutputProbe.playerActivity([], reported: ["com.apple.Music": true]) == true, "playing broadcast shows notes")
-        check(AudioOutputProbe.playerActivity([("com.apple.Music", 1), ("com.netease.163music", 1)], reported: ["com.apple.Music": false]) == true, "NetEase still uses its stream")
-        check(AudioOutputProbe.legacyActivity(open: ["com.apple.Music"], deviceRunning: true, reported: ["com.apple.Music": false]) == false, "old macOS: paused Apple Music ignores device")
-        check(AudioOutputProbe.legacyActivity(open: ["com.netease.163music"], deviceRunning: true, reported: [:]) == true, "old macOS: open NetEase with running device")
-        check(AudioOutputProbe.legacyActivity(open: [], deviceRunning: true, reported: [:]) == false, "old macOS: no player open")
-        check(MusicPlayers.reportedPlaying(["Player State": "Playing"]) == true, "broadcast playing")
-        check(MusicPlayers.reportedPlaying(["Player State": "Paused"]) == false, "broadcast paused")
-        check(MusicPlayers.reportedPlaying(["Player State": "Stopped"]) == false, "broadcast stopped")
-        check(MusicPlayers.reportedPlaying([:]) == nil, "broadcast without state is ignored")
-        check(MusicPlayers.base("com.netease.163music.helper") == "com.netease.163music", "helper maps to its player")
-        check(AudioOutputProbe.activity([nil,1]) == true, "active audio survives another failed read")
-        check(AudioOutputProbe.activity([nil,0]) == nil, "unavailable audio is not reported as playing")
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("pet-platform-test-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         do {
@@ -176,6 +106,14 @@ enum InputSelfTests {
             try LoginStartup.setEnabled(true, app: moved, data: data, directory: agents)
             let updated = try PropertyListSerialization.propertyList(from: Data(contentsOf: target), format: nil) as! [String: Any]
             check((updated["ProgramArguments"] as! [String])[3] == moved.path, "moved application path updates")
+            for value in RenderPriority.values {
+                try RenderPriority.apply(value)
+                var requested = QOS_CLASS_UNSPECIFIED
+                let result = pthread_get_qos_class_np(pthread_self(), &requested, nil)
+                check(result == 0 && requested == RenderPriority.qos(value), "requested QoS reads back")
+            }
+            try RenderPriority.apply("normal")
+            check(RenderPriority.qos("invalid") == RenderPriority.qos("normal"), "unknown QoS defaults to normal")
             let valid = try OfficialTexture.address("http://textures.minecraft.net/texture/abcdef123456")
             check(valid == "https://textures.minecraft.net/texture/abcdef123456", "legacy official URL upgraded to HTTPS")
             for bad in ["https://evil.example/texture/abc", "https://textures.minecraft.net.evil.example/texture/abc",

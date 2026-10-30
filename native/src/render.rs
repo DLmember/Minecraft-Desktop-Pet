@@ -1,4 +1,3 @@
-pub(crate) use effects::install_glyphs;
 #[path = "render_effects.rs"]
 mod effects;
 #[path = "render_gestures.rs"]
@@ -25,9 +24,7 @@ const BLINK_RATE: f32 = 2.5;
 // da_elapsed_ref = (age - last_age) * 3; age = seconds * 20.
 const DANCE_RATE: f32 = 0.175 * 60.;
 /// 六个面的明暗查色表；皮肤和披风共用同一套光照。
-fn shade_lut() -> &'static [[[u8; 256]; 3]; 6] {
-    static LUT: std::sync::OnceLock<[[[u8; 256]; 3]; 6]> = std::sync::OnceLock::new();
-    LUT.get_or_init(|| {
+fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
     let shades = [0.80, 0.80, 1., 0.62, 0.94, 0.86];
     let mut lut = [[[0u8; 256]; 3]; 6];
     for f in 0..6 {
@@ -49,13 +46,6 @@ fn shade_lut() -> &'static [[[u8; 256]; 3]; 6] {
         }
         }
     }
-        lut
-    })
-}
-fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
-    // macOS uses the same LUT at sampling time, saving 18 MiB for a 1024² skin.
-    if cfg!(all(target_os = "macos", not(test))) { return Vec::new(); }
-    let lut = shade_lut();
     image
         .pixels()
         .map(|p| {
@@ -353,11 +343,6 @@ pub fn key_position(vk: u32) -> Option<Vec2> {
         }
     }
     None
-}
-/// macOS：交替模式和未收录的按键没有键位，手原本只下沉一点点（约 7°）。
-/// 让这只手落到自己这半边的主键行，按动和精确模式一样看得清，且不离开键盘。
-fn keyless_press(sign: f32) -> Option<Vec2> {
-    if cfg!(target_os = "macos") { Some(Vec2::new(sign * 1.5, -0.64)) } else { None }
 }
 #[derive(Clone, Copy)]
 struct Hand {
@@ -865,8 +850,7 @@ impl Pose {
                 pressed = active;
                 let k = held
                     .map(|k| k.key)
-                    .unwrap_or(if active { hand.key } else { None })
-                    .or(if active { keyless_press(sign) } else { None });
+                    .unwrap_or(if active { hand.key } else { None });
                 // Q 版键盘更靠下、更近，肩也更低；坐标都是 chibi 缩放前的世界值。
                 let (key_y, idle_y, key_z, idle_z, shoulder_y, shoulder_x) = if s.chibi {
                     (3.33, 3.98, 6.27, 6.0, 6., 3.15)
@@ -1904,14 +1888,7 @@ impl Frame {
                     let xx = (tx as u32).min(skin.image.width() - 1);
                     let yy = (ty as u32).min(skin.image.height() - 1);
                     let ti = (yy * skin.image.width() + xx) as usize;
-                    {
-                        let p = skin.image.get_pixel(xx, yy);
-                        let color = if skin.colors.is_empty() {
-                            let lut = shade_lut();
-                            [lut[face][0][p[0] as usize], lut[face][1][p[1] as usize], lut[face][2][p[2] as usize]]
-                        } else { skin.colors[ti][face] };
-                        (color, p[3])
-                    }
+                    (skin.colors[ti][face], skin.image.get_pixel(xx, yy)[3])
                 };
                 if alpha < 16 {
                     continue;
@@ -1962,26 +1939,6 @@ fn edge(a: Vec3, b: Vec3, p: Vec3) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn compact_color_sampling_is_pixel_identical() {
-        let mut skin = Skin::load(DEFAULT_SKIN).unwrap();
-        let mut s = Settings::default();
-        s.da_blink=false; s.track_mouse=false;
-        for chibi in [false,true] {
-            s.chibi=chibi;
-            for posture in ["standing","sitting","custom"] {
-                s.posture=posture.into();
-                let pose=Pose::new(&s);
-                let mut frame=Frame::new(240,280);
-                skin.colors=colors_for(&skin.image);
-                frame.draw(&s,&skin,&pose); let expected=frame.pixels.clone();
-                skin.colors.clear();
-                frame.draw(&s,&skin,&pose);
-                assert_eq!(frame.pixels,expected,"{chibi}/{posture}");
-            }
-        }
-    }
-
     #[test]
     fn breathing_runs_immediately_through_actions_and_preserves_custom_pose() {
         let skin=Skin::load(DEFAULT_SKIN).unwrap();
@@ -3523,25 +3480,6 @@ mod tests {
         p.key(81, false, 4., &s);
         p.key(81, true, 4.01, &s);
         assert_ne!(p.held[0].side, side);
-    }
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn alternating_press_is_as_visible_as_precise() {
-        for chibi in [false, true] {
-            let (mut s, skin, mut p) = if chibi { seated_chibi() } else { seated() };
-            s.typing_mode = "alternating".into();
-            for i in 0..120 { tick(&mut p, &s, &skin, 0.5 + i as f32 / 120., false); }
-            let idle = p.arms;
-            p.key(81, true, 2., &s);
-            let side = p.held[0].side;
-            let mut reach = 0f32;
-            for i in 0..60 {
-                tick(&mut p, &s, &skin, 2. + i as f32 / 120., false);
-                reach = reach.max(p.arms[side].angle_between(idle[side]));
-            }
-            assert!(reach.to_degrees() > 15., "chibi={chibi} reach={}", reach.to_degrees());
-            assert!(p.arms[1 - side].angle_between(idle[1 - side]) < 0.02);
-        }
     }
     #[test]
     fn swing_overrides_then_returns_to_live_keyboard_pose() {

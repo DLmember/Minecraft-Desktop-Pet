@@ -1,18 +1,30 @@
 # Minecraft桌宠
 
+![Windows](https://img.shields.io/badge/Windows-10%2F11%20x64-0078D6?logo=windows&logoColor=white)
+![macOS](https://img.shields.io/badge/macOS-12%2B-000000?logo=apple&logoColor=white)
+![Linux](https://img.shields.io/badge/Linux-x86__64%20%7C%20arm64%20%7C%20i686-FCC624?logo=linux&logoColor=black)
+
 让一个 Minecraft 风格的小人待在桌面上，跟着鼠标转头，陪你敲键盘。
 
 **由GPT 6 Astra制作**
+
+**Linux 分支由 Bilibili「灰白happygray」开发移植**（`linux/` 前端、X11 / Wayland 适配、deb 与 Arch 打包）。
 
 > 本项目是独立粉丝作品，与 Mojang Studios 或 Microsoft 无关联，未获其授权、赞助或官方认可。Minecraft 名称及相关商标归其各自权利人所有。
 
 ## 下载
 
-前往 [最新版本](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest) 下载。
+前往 [最新版本](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest)，下载 **Minecraft-Desktop-Pet-2.5.1-Windows.zip**，解压后双击 **Minecraft桌宠.exe**。
 
-支持 **Windows 10/11 x64 、 macOS 12+**。便携运行，不需要安装 Electron、Java 或额外运行环境。v2.5.2 提供 Windows 及 macOS 版。
+| 平台 | 架构 | 状态 |
+| --- | --- | --- |
+| Windows 10/11 | x64 / x86 / arm64 | 主分支 |
+| macOS 12+ | Apple Silicon / Intel 通用 | 主分支（2.4.12） |
+| Linux | x86_64 / aarch64 / i686 | **Linux 分支**，由灰白happygray 维护 |
 
-**首次启动默认开启完全鼠标穿透。** 请双击任务栏托盘图标打开控制台；想拖动桌宠时先取消“完全鼠标穿透”。图标可能收在任务栏的隐藏图标区域。
+支持 **Windows 10/11 x64 、 macOS 12+**；Linux（X11 / XWayland）提供源码构建版，见下文。便携运行，不需要安装 Electron、Java 或额外运行环境。v2.5.1 提供 Windows 版；macOS 尚未更新，请暂时使用 v2.4.12。
+
+**首次启动默认开启完全鼠标穿透。** 请双击任务栏托盘图标打开控制台；想拖动桌宠时先取消“完全鼠标穿透”。图标可能收在任务栏的隐藏图标区域。Linux 版同样有托盘图标（StatusNotifierItem），穿透时也可以按 `Ctrl+Alt+P` 唤出控制台。
 
 ## 可以做什么
 
@@ -34,6 +46,8 @@ Q 版小人、可选 DA 眨眼与扭腰、四种主手映射、喂食苹果、�
 
 特别感谢 [zsyghxf](https://github.com/zsyghxf) 的 [PR #5](https://github.com/DLmember/Minecraft-Desktop-Pet/pull/5)，提供眨眼、Shift 动画与 Q 版模式的基础实现；DLmember 完成行为调整、冲突修复、界面整理及新增互动。逐项归属与完整变化见 [v2.5 发布说明](发布说明-v2.5.md)。
 
+Linux 分支（`linux/` 前端、X11 / Wayland 适配、deb 与 Arch 打包、全屏鼠标跟随桥接）由 Bilibili「灰白happygray」开发。
+
 完整操作见 [使用说明](使用说明.md)，版本变化见 [更新记录](CHANGELOG.md)。
 
 ## 隐私与网络
@@ -44,6 +58,7 @@ Q 版小人、可选 DA 眨眼与扭腰、四种主手映射、喂食苹果、�
 
 本地移植复用原始 Rust 渲染、皮肤与动画，通过 Swift / AppKit 提供透明窗口、菜单栏、控制台及全局键盘互动，以及可选的井号聊天前缀替换。
 支持 macOS 12+，包含 Apple Silicon / Intel 通用架构；支持需辅助功能授权的 hyp 快速队伍聊天。
+2.4.12 的 macOS 功能补齐包括正版披风下载与显示、登录自启、0–120 秒延迟和五档渲染线程 QoS（macOS 调度机制，与 Windows 进程优先级并非完全等价）。
 完整操作说明参见 [macOS 说明](macos/使用说明-macOS.md)。
 
 构建需要 Xcode Command Line Tools、Swift 和 Rust stable：
@@ -71,6 +86,31 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Action te
 产物：`native/target/release/minecraft-pet.exe`。脚本使用 Cargo.lock 锁定的依赖；首次构建需要网络下载依赖。可通过 `-RustToolchain` 选择已安装的 GNU 工具链版本。
 
 源码位于 `native/src`；首次启动预设位于 `native/default-settings.json`；内置皮肤及图标位于 `assets`。
+
+## 从源码构建（Linux）
+
+> **Linux 分支**由 Bilibili「灰白happygray」开发维护，前端源码在 `linux/`。上游主分支只含 Windows / macOS 实现。
+
+Linux 版复用同一套 Rust 渲染器与设置格式，新增 `linux/` 前端：X11 32 位 ARGB 透明置顶窗口、Shape 鼠标穿透、全屏鼠标跟随（Wayland 下经 KWin 脚本桥接光标）、XRecord / evdev 全局键鼠监听、StatusNotifier 托盘、GTK3 控制台、XDG 登录自启与正版皮肤获取。
+
+依赖（Debian / Ubuntu）：
+
+```bash
+sudo apt install build-essential pkg-config libgtk-3-dev
+```
+
+构建与运行：
+
+```bash
+cargo build --release --manifest-path linux/Cargo.toml
+./linux/target/release/minecraft-desktop-pet
+# 或打包
+scripts/build-linux.sh /absolute/path/to/output
+```
+
+要求 X11 或 Wayland 下的 XWayland、带 32 位 ARGB visual 的合成器，以及 Shape / RECORD 扩展。左键单击托盘图标打开控制台，右键打开快捷菜单；穿透时也可以按 `Ctrl+Alt+P`，或者再运行一次程序，唤出已在运行的实例的控制台。Wayland 会话下鼠标跟随由 KWin 脚本补齐（整个屏幕都能跟随），全局键盘需要额外配置（见 `linux/README.md`）。`hypQuickChat` 和音乐音符在 Linux 上不可用。
+
+完整操作、命令行参数与限制见 [Linux 说明](linux/README.md)。
 
 ## 许可
 
