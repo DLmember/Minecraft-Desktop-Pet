@@ -8,7 +8,7 @@
 
 **由GPT 6 Astra制作**
 
-**Linux 分支由 Bilibili「灰白happygray」开发移植**（`linux/` 前端、X11 / Wayland 适配、deb 与 Arch 打包）。
+**Linux 分支由 Bilibili [灰白happygray](https://space.bilibili.com/3690971449526321) 开发移植**（`linux/` 前端、X11 / Wayland 适配、deb 与 Arch 打包）。
 
 > 本项目是独立粉丝作品，与 Mojang Studios 或 Microsoft 无关联，未获其授权、赞助或官方认可。Minecraft 名称及相关商标归其各自权利人所有。
 
@@ -20,7 +20,7 @@
 | --- | --- | --- |
 | Windows 10/11 | x64 / x86 / arm64 | 主分支 |
 | macOS 12+ | Apple Silicon / Intel 通用 | 主分支（2.4.12） |
-| Linux | x86_64 / aarch64 / i686 | **Linux 分支**，由灰白happygray 维护 |
+| Linux | x86_64 / aarch64 / i686 | **Linux 分支**，由 [灰白happygray](https://space.bilibili.com/3690971449526321) 维护 |
 
 支持 **Windows 10/11 x64 、 macOS 12+**；Linux（X11 / XWayland）提供源码构建版，见下文。便携运行，不需要安装 Electron、Java 或额外运行环境。v2.5.1 提供 Windows 版；macOS 尚未更新，请暂时使用 v2.4.12。
 
@@ -46,7 +46,7 @@ Q 版小人、可选 DA 眨眼与扭腰、四种主手映射、喂食苹果、�
 
 特别感谢 [zsyghxf](https://github.com/zsyghxf) 的 [PR #5](https://github.com/DLmember/Minecraft-Desktop-Pet/pull/5)，提供眨眼、Shift 动画与 Q 版模式的基础实现；DLmember 完成行为调整、冲突修复、界面整理及新增互动。逐项归属与完整变化见 [v2.5 发布说明](发布说明-v2.5.md)。
 
-Linux 分支（`linux/` 前端、X11 / Wayland 适配、deb 与 Arch 打包、全屏鼠标跟随桥接）由 Bilibili「灰白happygray」开发。
+Linux 分支（`linux/` 前端、X11 / Wayland 适配、deb 与 Arch 打包、全屏鼠标跟随桥接）由 Bilibili [灰白happygray](https://space.bilibili.com/3690971449526321) 开发。
 
 完整操作见 [使用说明](使用说明.md)，版本变化见 [更新记录](CHANGELOG.md)。
 
@@ -89,7 +89,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Action te
 
 ## 从源码构建（Linux）
 
-> **Linux 分支**由 Bilibili「灰白happygray」开发维护，前端源码在 `linux/`。上游主分支只含 Windows / macOS 实现。
+> **Linux 分支**由 Bilibili [灰白happygray](https://space.bilibili.com/3690971449526321) 开发维护，前端源码在 `linux/`。上游主分支只含 Windows / macOS 实现。
 
 Linux 版复用同一套 Rust 渲染器与设置格式，新增 `linux/` 前端：X11 32 位 ARGB 透明置顶窗口、Shape 鼠标穿透、全屏鼠标跟随（Wayland 下经 KWin 脚本桥接光标）、XRecord / evdev 全局键鼠监听、StatusNotifier 托盘、GTK3 控制台、XDG 登录自启与正版皮肤获取。
 

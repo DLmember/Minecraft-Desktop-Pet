@@ -1,0 +1,30 @@
+[package]
+name = "minecraft-pet-linux"
+version = "2.5.2"
+edition = "2021"
+description = "Minecraft 桌宠 · Linux 前端（X11 + GTK3）"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "minecraft-desktop-pet"
+path = "src/main.rs"
+
+[dependencies]
+# 复用原始 Rust 渲染器（同一套皮肤、动画与设置格式）
+pet_core = { package = "minecraft-pet", path = "../native" }
+x11rb = { version = "0.14", features = ["shape", "record"] }
+gtk = "0.18"
+serde_json = "1"
+libc = "0.2"
+image = { version = "0.25", default-features = false, features = ["png"] }
+# StatusNotifierItem 托盘（KDE/GNOME AppIndicator），纯 Rust D-Bus，无需 tokio
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
+# 复用 ksni 已依赖的 zbus：Wayland 下用 D-Bus 接收 KWin 上报的光标位置
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

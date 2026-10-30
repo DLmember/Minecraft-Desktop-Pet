@@ -23,7 +23,10 @@ for entry in "${ENTRIES[@]}"; do
     stage="$DEST/stage-$label"
     rm -rf "$stage"; mkdir -p "$stage"
     install -m644 "$bin" "$stage/$EXE_NAME"
-    install -m644 "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/使用说明.md" "$stage/"
+    docs=("$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md")
+    # 使用说明可能不在源码树里（例如被移出仓库），有才带上
+    [ -f "$ROOT/使用说明.md" ] && docs+=("$ROOT/使用说明.md")
+    install -m644 "${docs[@]}" "$stage/"
     cp -R "$ROOT/native/licenses" "$stage/licenses"
     ( cd "$stage" && sha256sum "$EXE_NAME" > SHA256SUMS.txt )
     pkg="$DEST/Minecraft-Desktop-Pet-${VERSION}-windows-$label"
