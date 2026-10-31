@@ -33,7 +33,7 @@
 @DLmember（owner）   @vanillaQAQ（macOS版维护者）    @H0mble（Linux版贡献者）  
 **其他贡献者：**   
 对桌宠本体进行优化以及提交新功能：  B站@汐颜摸大鱼   B站@星蓝想睡觉   @zsyghxf   @RuiShu1024   @Kevae12138  
-送了很多token  @羽之乐0685  
+送了很多token  @Sullove0685  
 以及众多对桌宠提出bug和帮忙测试与排查的用户
  
 ## 隐私与网络
