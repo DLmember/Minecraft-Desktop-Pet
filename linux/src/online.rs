@@ -122,7 +122,7 @@ pub fn fetch(input: &str, user_agent: &str) -> Result<Fetched, String> {
     let skin = textures
         .get("SKIN")
         .ok_or_else(|| "该账号没有可用的官方皮肤。".to_string())?;
-    let skin_url = texture_url(skin).ok_or_else(|| "官方皮肤地址无效。".to_string())?;
+    let skin_url = texture_url(skin).ok_or_else(|| "the skins in 404 error".to_string())?;
     let skin_bytes = get(&skin_url, user_agent, 8 * 1024 * 1024)?;
     let model = match skin
         .get("metadata")
