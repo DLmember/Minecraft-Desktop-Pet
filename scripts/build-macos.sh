@@ -3,7 +3,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$ROOT/release/macos}"
 APP="$DEST/Minecraft桌宠.app"
-VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/native/Cargo.toml" | head -1)"
+# Stop at the closing quote: Cargo.toml may use CRLF line endings.
+VERSION="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' "$ROOT/native/Cargo.toml" | head -1)"
+[[ "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "Unexpected version in native/Cargo.toml: $VERSION" >&2; exit 1; }
 mkdir -p "$DEST" "$ROOT/macos/build"
 export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=/build-user"
 # Intel needs macOS 13: Command Line Tools 27 no longer ship an x86_64 Swift 5.6
