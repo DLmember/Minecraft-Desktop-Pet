@@ -10,7 +10,7 @@
 
 前往 [最新版本](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest) 下载。
 
-支持 **Windows 10/11 x64 、 macOS（Apple Silicon 12+，Intel 13+）**。便携运行，不需要安装 Electron、Java 或额外运行环境。v2.5.2 提供 Windows 及 macOS 版。
+支持 **Windows 10/11 x64 、 macOS（Apple Silicon 12+，Intel 13+）**。便携运行，不需要安装 Electron、Java 或额外运行环境。v2.5.3 提供 Windows 及 macOS 版。
 
 **首次启动默认开启完全鼠标穿透。** 请双击任务栏托盘图标打开控制台；想拖动桌宠时先取消“完全鼠标穿透”。图标可能收在任务栏的隐藏图标区域。
 
@@ -55,7 +55,7 @@ A：macOS 的授权记在旧版本的应用上，换成新版本后会失效，�
 ## 从源码构建（macOS）
 
 本地移植复用原始 Rust 渲染、皮肤与动画，通过 Swift / AppKit 提供透明窗口、菜单栏、控制台及全局键盘互动，以及可选的井号聊天前缀替换。
-支持 macOS 12+，包含 Apple Silicon / Intel 通用架构；支持需辅助功能授权的 hyp 快速队伍聊天。
+支持 Apple Silicon（macOS 12+）与 Intel（macOS 13+），构建为通用架构；支持需辅助功能授权的 hyp 快速队伍聊天。
 完整操作说明参见 [macOS 说明](macos/使用说明-macOS.md)。
 
 构建需要 Xcode Command Line Tools、Swift 和 Rust stable：
