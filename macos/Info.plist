@@ -10,6 +10,7 @@
 <key>CFBundleVersion</key><string>2.5.0</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>12.0</string>
+<key>LSMinimumSystemVersionByArchitecture</key><dict><key>arm64</key><string>12.0</string><key>x86_64</key><string>13.0</string></dict>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>

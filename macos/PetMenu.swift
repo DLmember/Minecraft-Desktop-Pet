@@ -66,10 +66,13 @@ extension AppDelegate {
         menu.addItem(.separator())
         add(menu, "退出 Minecraft桌宠", #selector(quit), key: "q")
     }
-    func menuWillOpen(_ menu: NSMenu) { buildMenu(menu) }
+    func menuWillOpen(_ menu: NSMenu) { buildMenu(menu); menuOpen = true; updateHold() }
+    func menuDidClose(_ menu: NSMenu) { menuOpen = false }
     func showPetMenu(_ event: NSEvent, in view: NSView) {
         let menu = NSMenu(); buildMenu(menu)
+        menuOpen = true; updateHold()
         NSMenu.popUpContextMenu(menu, with: event, for: view)
+        menuOpen = false
     }
     @discardableResult
     private func add(_ menu: NSMenu, _ title: String, _ action: Selector, state: Bool? = nil, key: String = "") -> NSMenuItem {

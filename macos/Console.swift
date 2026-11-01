@@ -2,8 +2,10 @@ import AppKit
 import UniformTypeIdentifiers
 
 enum ConsoleSize {
-    static let design = NSSize(width: 760, height: 780)
-    static let compact = NSSize(width: 646, height: 663)
+    // 2.5.3 adds one row (PAT喵！ on 常规, keyboard style on 自定义姿态), +36 like Windows.
+    static let design = NSSize(width: 760, height: 816)
+    static let compact = NSSize(width: 646, height: 694)
+    static let page = NSSize(width: 712, height: 632)
 }
 
 extension AppDelegate {
@@ -25,10 +27,10 @@ extension AppDelegate {
             let button = NSButton(title: title, target: self, action: #selector(selectConsolePage(_:)))
             button.setButtonType(.pushOnPushOff); button.bezelStyle = .regularSquare
             button.font = .systemFont(ofSize: 15, weight: .medium); button.tag = index
-            button.frame = NSRect(x: 24 + index * 246, y: 728, width: 220, height: 34)
+            button.frame = NSRect(x: 24 + index * 246, y: 764, width: 220, height: 34)
             button.setAccessibilityLabel(title); root.addSubview(button); pageButtons.append(button)
         }
-        let tabs = NSTabView(frame: NSRect(x: 24, y: 114, width: 712, height: 596))
+        let tabs = NSTabView(frame: NSRect(origin: NSPoint(x: 24, y: 114), size: ConsoleSize.page))
         tabs.tabViewType = .noTabsNoBorder
         for title in ["常规", "视线与角度", "自定义姿态"] {
             let item = NSTabViewItem(identifier: title); item.label = title; tabs.addTabViewItem(item)
@@ -45,6 +47,11 @@ extension AppDelegate {
             github.image = icon; github.imagePosition = .imageLeading
         }
         github.setAccessibilityLabel("GitHub 项目主页")
+        // Footer control: page bindings are cleared on every page switch, so it has its own action.
+        let lock = NSButton(checkboxWithTitle: "锁定双击（双击桌宠不打开设置面板）", target: self, action: #selector(toggleLockDoubleClick(_:)))
+        lock.font = .systemFont(ofSize: 11); lock.state = flag("lockDoubleClick") ? .on : .off
+        lock.frame = NSRect(x: 392, y: 72, width: 218, height: 24)
+        root.addSubview(lock); lockDoubleClickBox = lock
         saveStatus = label(root, "已保存", 24, 43, 80)
         permissionSummary = label(root, "", 112, 43, 420)
         permissionSummary?.font = .systemFont(ofSize: 11); permissionSummary?.textColor = .secondaryLabelColor
@@ -53,7 +60,11 @@ extension AppDelegate {
     }
     func refreshConsoleControls() {
         guard panel != nil, controlTabs != nil else { return }
+        lockDoubleClickBox?.state = flag("lockDoubleClick") ? .on : .off
         populatePage(selectedConsolePage)
+    }
+    @objc func toggleLockDoubleClick(_ sender: NSButton) {
+        settings["lockDoubleClick"] = sender.state == .on; changed()
     }
     @objc func selectConsolePage(_ sender: NSButton) {
         // Selecting the current tab does not call NSTabViewDelegate again.
@@ -64,7 +75,7 @@ extension AppDelegate {
     func releaseConsole() {
         uiReady = false; bindings.removeAll(); pageButtons.removeAll(); saveStatus = nil
         controlTabs = nil; panel = nil
-        permissionSummary = nil; skinSummary = nil; onlineField = nil; onlineStatus = nil; keyboardColorField = nil
+        permissionSummary = nil; lockDoubleClickBox = nil; skinSummary = nil; onlineField = nil; onlineStatus = nil; keyboardColorField = nil
         permissionLabel = nil; startupStatus = nil; musicToggle = nil
         consoleWindow?.contentView = NSView(frame: NSRect(origin: .zero, size: ConsoleSize.compact))
     }
@@ -86,13 +97,40 @@ extension AppDelegate {
         for (i, item) in tabs.tabViewItems.enumerated() where i != index { item.view = NSView() }
         selectedConsolePage = index
         for button in pageButtons { button.state = button.tag == index ? .on : .off }
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: 712, height: 596))
+        let content = NSView(frame: NSRect(origin: .zero, size: ConsoleSize.page))
         tabs.tabViewItems[index].view = content
         switch index {
-        case 1: addHead(content)
-        case 2: addPose(content)
-        default: addGeneral(content)
+        case 1: addHead(content); raise(content, above: 0)
+        case 2: addPose(content); raise(content, above: 0); addKeyboardLook(content)
+        default: addGeneral(content); raise(content, above: 60); addPat(content)
         }
+    }
+    /// The pages were laid out for the 2.5.2 height; lift rows to free the new 36-point row.
+    func raise(_ view: NSView, above y: CGFloat) {
+        for sub in view.subviews where sub.frame.minY >= y { sub.frame.origin.y += 36 }
+    }
+    /// 常规 row added in 2.5.3, between Q 版身体大小 and 其他 (as on Windows).
+    func addPat(_ view: NSView) {
+        label(view, "音效大小", 0, 71, 110)
+        check(view, "PAT喵！", "patEnabled", 126, 68, 110)
+        let current = value("patVolume")
+        let output = label(view, displayValue("patVolume", current), 626, 71, 86)
+        output.alignment = .right; output.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        let slider = NSSlider(value: current, minValue: 0, maxValue: 100, target: self, action: #selector(controlChanged(_:)))
+        slider.frame = NSRect(x: 256, y: 68, width: 354, height: 24); slider.isContinuous = true
+        slider.setAccessibilityLabel("音效大小")
+        bindings[ObjectIdentifier(slider)] = Binding("patVolume", [], output); view.addSubview(slider)
+    }
+    /// 自定义姿态 row added in 2.5.3: keyboard style, and the colour moved here from 常规.
+    func addKeyboardLook(_ view: NSView) {
+        label(view, "键盘样式", 0, 5, 110)
+        radios(view, "keyboardStyle", ["简洁", "细节"], ["simple", "detailed"], 126, 2, 130)
+        label(view, "键盘色号", 386, 5, 90)
+        let color = NSTextField(frame: NSRect(x: 486, y: 1, width: 116, height: 25))
+        color.stringValue = settings["keyboardColor"] as? String ?? "#83878A"; color.placeholderString = "#83878A"
+        color.target = self; color.action = #selector(applyKeyboardColor); color.setAccessibilityLabel("键盘色号")
+        view.addSubview(color); keyboardColorField = color
+        action(view, "✓", #selector(applyKeyboardColor), 610, -1, 42).setAccessibilityLabel("应用键盘色号")
     }
     @discardableResult
     func label(_ view: NSView, _ text: String, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat = 20) -> NSTextField {
@@ -159,7 +197,7 @@ extension AppDelegate {
     func displayValue(_ key: String, _ value: Double) -> String {
         switch key {
         case "scale": return String(format: "%.0f%%", value * 100)
-        case "typingSquash", "chibiBodyScale": return String(format: "%.0f%%", value)
+        case "typingSquash", "chibiBodyScale", "patVolume": return String(format: "%.0f%%", value)
         case "fps": return "\(Int(value)) FPS"
         default: return String(format: "%.1f", value)
         }
@@ -195,7 +233,9 @@ extension AppDelegate {
     }
     func setValue(_ key: String, _ value: Double) {
         let p = key.split(separator: ".").map(String.init)
-        if p.count == 1 { settings[key] = value }
+        // Integer settings (u32 in the core) must not be written as fractions.
+        if key == "patVolume" { settings[key] = Int(value.rounded()) }
+        else if p.count == 1 { settings[key] = value }
         else if p.count == 2, let i = Int(p[1]), var list = settings[p[0]] as? [Double], list.indices.contains(i) { list[i] = value; settings[p[0]] = list }
         else if p.count == 3, let i = Int(p[2]), var dict = settings[p[0]] as? [String: Any], var list = dict[p[1]] as? [Double], list.indices.contains(i) {
             list[i] = value; dict[p[1]] = list; settings[p[0]] = dict
@@ -269,12 +309,6 @@ extension AppDelegate {
         radios(view, "posture", ["站立","坐下","自定义"], ["standing","sitting","custom"], 126, 388, 112)
         label(view, "站立时按住 Shift 潜行", 478, 391, 234)
         radios(view, "typingMode", ["精准按键","双手交替"], ["precise","alternating"], 126, 356, 230)
-        label(view, "键盘色号", 478, 359, 74)
-        let color = NSTextField(frame: NSRect(x: 556, y: 355, width: 112, height: 25))
-        color.stringValue = settings["keyboardColor"] as? String ?? "#83878A"; color.placeholderString = "#83878A"
-        color.target = self; color.action = #selector(applyKeyboardColor); color.setAccessibilityLabel("键盘色号")
-        view.addSubview(color); keyboardColorField = color
-        action(view, "✓", #selector(applyKeyboardColor), 674, 353, 42).setAccessibilityLabel("应用键盘色号")
         radios(view, "mainHand", ["右手挥动","左手挥动","实际映射","反向映射"],
                ["right","left","mapped","reverse"], 126, 324, 146)
         check(view, "保持置顶", "alwaysOnTop", 126, 292, 210)

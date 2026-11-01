@@ -60,17 +60,20 @@ final class PetView: NSView {
     }
     override func mouseDown(with event: NSEvent) {
         guard let owner, let window else { return }
-        if event.clickCount == 2 { owner.showSettings(); return }
+        if event.clickCount == 2 && owner.openConsoleOnDoubleClick() { return }
         // Local event monitor already dispatched exactly one swing.
         let cursor = NSEvent.mouseLocation
         dragOffset = NSPoint(x: cursor.x-window.frame.minX, y: cursor.y-window.frame.minY)
         didDrag = false
     }
     override func mouseDragged(with event: NSEvent) {
-        guard let offset = dragOffset, let window else { return }
+        guard let offset = dragOffset, let window, let owner else { return }
+        // While a press may still become a long-press pat, keep the window still.
+        // Moving past the hold tolerance ends it, then the drag continues from here.
+        if owner.updateHold() { owner.wake(); return }
         let cursor = NSEvent.mouseLocation
         window.setFrameOrigin(NSPoint(x: cursor.x-offset.x, y: cursor.y-offset.y))
-        didDrag = true; owner?.wake()
+        didDrag = true; owner.wake()
     }
     override func mouseUp(with event: NSEvent) {
         if didDrag { owner?.savePosition() }
@@ -143,6 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     var permissionLabel: NSTextField?
     var onlineField: NSTextField?
     var keyboardColorField: NSTextField?
+    var lockDoubleClickBox: NSButton?
     var onlineStatus: NSTextField?
     var skinSummary: NSTextField?
     var lastCursor = NSPoint(x: -9999, y: -9999)
@@ -150,6 +154,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     var lastDraw: Float = 0
     var awakeUntil: Float = 1
     var hidden = false
+    var menuOpen = false
+    let patSound = PatSound()
     var lastTick = ProcessInfo.processInfo.systemUptime
     let start = ProcessInfo.processInfo.systemUptime
     let smoke = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--self-test-ui") || CommandLine.arguments.contains("--memory-test") || CommandLine.arguments.contains("--self-test-startup") || CommandLine.arguments.contains("--self-test-restart")
@@ -321,8 +327,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let cursor = NSEvent.mouseLocation, r = pet.frame
         let over = pet_hit(core, Float((cursor.x-r.minX)/r.width), Float((r.maxY-cursor.y)/r.height))
         mousePresses += 1
-        pet_mouse(core, UInt32(clamping: event?.buttonNumber ?? 0), over, now)
+        let meow = pet_mouse(core, UInt32(clamping: event?.buttonNumber ?? 0), over, Float(cursor.x), Float(cursor.y), now)
+        if meow >= 0 && !smoke { patSound.play(Int(meow), volume: number("patVolume") / 100) }
         wake()
+    }
+    /// 锁定双击: the second click stays an ordinary press (pat, hold, drag). Returns whether the console opened.
+    func openConsoleOnDoubleClick() -> Bool {
+        guard !flag("lockDoubleClick") else { return false }
+        pet_hold_cancel(core, now); showSettings(); return true
+    }
+    /// Same thresholds as Windows: 0.5 s, 30 points; hidden pet or open menu cancels.
+    @discardableResult
+    func updateHold() -> Bool {
+        guard core != nil else { return false }
+        if hidden || menuOpen { pet_hold_cancel(core, now); return false }
+        let cursor = NSEvent.mouseLocation
+        return pet_hold_update(core, NSEvent.pressedMouseButtons & 1 != 0, Float(cursor.x), Float(cursor.y), 30, now) != 0
     }
     @objc func feedApple() { guard core != nil else { return }; pet_feed(core, now); wake() }
     func wake() {
@@ -375,6 +395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if cursor != lastCursor && flag("trackMouse") { awakeUntil = max(awakeUntil, now+0.05) }
         if shift != lastShift && flag("keyboardEnabled") { wake() }
         lastCursor = cursor; lastShift = shift
+        if updateHold() { awakeUntil = max(awakeUntil, now + 0.05) }
         let active = !hidden && (now <= awakeUntil || pet_needs_frames(core, now))
         if active != timerActive { timerActive = active; restartTimer() }
         if active {
@@ -450,8 +471,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let listen = input.listeningAllowed, access = input.accessibilityAllowed
         let keyboard = !flag("keyboardEnabled") ? "键盘互动已关闭" : (input.running ? "键盘互动已连接" : ((listen || access) ? "键盘权限已获准，连接待恢复" : "键盘互动等待授权"))
         let chat = !flag("hypQuickChat") ? "快速聊天已关闭" : (input.quickChatReady ? "快速聊天已连接" : (access ? "聊天权限已获准，连接待恢复" : "快速聊天等待辅助功能权限"))
-        permissionSummary?.stringValue = "\(keyboard) · \(chat)"
         let inputOK = paneSatisfied(.inputMonitoring)
+        permissionSummary?.attributedStringValue = PermissionLook.summary(keyboardAuthorized: inputOK, chatAuthorized: access)
         inputRequestButton?.title = inputOK ? "输入监控已授权" : (listen ? "重新授权输入监控" : "申请输入监控")
         accessRequestButton?.title = access ? "辅助功能已授权" : "申请辅助功能"
         permissionLabel?.stringValue = "\(keyboard)。只用于角色动作，不保存或上传输入内容。"

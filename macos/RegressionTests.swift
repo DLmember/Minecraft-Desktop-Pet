@@ -62,12 +62,49 @@ extension AppDelegate {
         let chibi = button("chibi"); chibi.state = .on; controlChanged(chibi); save(); loadSettings()
         precondition(flag("chibi") && flag("daBlink"), "Turning on Q mode keeps DA blink (2.5.1)")
         precondition(button("daBlink").isEnabled && button("daBlink").state == .on, "DA blink stays available in Q mode")
+        // 2.5.3: PAT喵！ row on 常规; keyboard style and colour moved to 自定义姿态.
+        precondition(keyboardColorField == nil, "Keyboard colour left the 常规 page")
+        let pat = button("patEnabled"), patOn = !flag("patEnabled")
+        pat.state = patOn ? .on : .off; controlChanged(pat); save(); loadSettings()
+        precondition(flag("patEnabled") == patOn, "PAT喵！ persists")
+        let volume = all().compactMap { $0 as? NSSlider }.first { bindings[ObjectIdentifier($0)]?.key == "patVolume" }!
+        volume.doubleValue = 72.4; controlChanged(volume); save(); loadSettings()
+        precondition(settings["patVolume"] as? Int == 72, "Sound volume is stored as a whole percent")
+        precondition(bindings[ObjectIdentifier(volume)]?.label?.stringValue == "72%")
+        precondition(patSound.loaded, "Both PAT meows are bundled")
+        let patRow = volume.frame.minY, otherRow = button("showCape").frame.minY, squashRow = all().compactMap { $0 as? NSSlider }
+            .first { bindings[ObjectIdentifier($0)]?.key == "chibiBodyScale" }!.frame.minY
+        precondition(otherRow < patRow && patRow < squashRow, "PAT row sits between Q 版身体大小 and 其他")
+        let lock = lockDoubleClickBox!
+        lock.state = .on; toggleLockDoubleClick(lock); save(); loadSettings()
+        precondition(flag("lockDoubleClick") && !openConsoleOnDoubleClick(), "Locked double-click keeps the console closed")
+        lock.state = .off; toggleLockDoubleClick(lock); save(); loadSettings()
+        precondition(!flag("lockDoubleClick"))
+        for (keyboard, chat) in [(false, false), (true, false), (false, true), (true, true)] {
+            let text = PermissionLook.summaryText(keyboardAuthorized: keyboard, chatAuthorized: chat)
+            precondition(text.keyboard == (keyboard ? "键盘互动已授权" : "键盘互动未授权") && text.chat == (chat ? "快速聊天已授权" : "快速聊天未授权"))
+            let line = PermissionLook.summary(keyboardAuthorized: keyboard, chatAuthorized: chat)
+            let first = line.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+            let last = line.attribute(.foregroundColor, at: line.length - 1, effectiveRange: nil) as? NSColor
+            precondition(first == (keyboard ? NSColor.systemGreen : .systemRed) && last == (chat ? NSColor.systemGreen : .systemRed),
+                         "Status line: green when authorized, red when not")
+        }
+        let shown = permissionSummary!.attributedStringValue.string
+        precondition(shown.hasPrefix("键盘互动") && shown.contains("快速聊天") && !shown.contains("连接"), "Console shows authorization, not connection")
+        pageButtons[2].performClick(nil)
+        for style in ["simple", "detailed"] {
+            let radio = all().compactMap { $0 as? NSButton }.first {
+                bindings[ObjectIdentifier($0)]?.key == "keyboardStyle" && bindings[ObjectIdentifier($0)]?.choices.first as? String == style }!
+            radio.performClick(nil); save(); loadSettings()
+            precondition(settings["keyboardStyle"] as? String == style, "Keyboard style persists: \(style)")
+        }
         let colorField = keyboardColorField!
         colorField.stringValue = " ffaacc "; applyKeyboardColor(); save(); loadSettings()
         precondition(settings["keyboardColor"] as? String == "#FFAACC" && colorField.stringValue == "#FFAACC", "Keyboard color normalizes and persists")
         colorField.stringValue = "#GG0000"; applyKeyboardColor(); loadSettings()
         precondition(settings["keyboardColor"] as? String == "#FFAACC" && colorField.stringValue == "#FFAACC", "Invalid color is rejected")
         for bad in ["#FFF", "##FFFFFF", "", "#00000000"] { precondition(Self.normalizedKeyboardColor(bad) == nil, bad) }
+        pageButtons[0].performClick(nil)
         let menu = NSMenu(); buildMenu(menu)
         let tops = menu.items.map(\.title)
         for prefix in ["打开控制台", "触发动作", "姿态：", "外观", "大小：", "鼠标挥动：", "键盘互动：", "保持置顶", "完全鼠标穿透", "视线跟随鼠标", "桌面与启动", "退出"] {

@@ -19,7 +19,11 @@ void pet_clear_keys(PetCore *core);
 void pet_click(PetCore *core, float now);
 const uint8_t *pet_render(PetCore *core, float x, float y, float width, float height, bool shift, float now, float dt);
 bool pet_hit(PetCore *core, float x, float y);
-void pet_mouse(PetCore *core, uint32_t button, bool over, float now);
+/// x/y: screen points. Returns the PAT meow to play (0 or 1), or -1 for none.
+int32_t pet_mouse(PetCore *core, uint32_t button, bool over, float x, float y, float now);
+/// Long-press pat; returns 1 while the window must not be dragged yet.
+uint32_t pet_hold_update(PetCore *core, bool down, float x, float y, float tolerance, float now);
+void pet_hold_cancel(PetCore *core, float now);
 void pet_feed(PetCore *core, float now);
 void pet_music(PetCore *core, bool playing);
 /// kind: 0 wave, 1 bounce, 2 shy, 3 clap. Returns false for an unknown kind.

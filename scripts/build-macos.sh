@@ -5,12 +5,14 @@ DEST="${1:-$ROOT/release/macos}"
 APP="$DEST/Minecraft桌宠.app"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/native/Cargo.toml" | head -1)"
 mkdir -p "$DEST" "$ROOT/macos/build"
-export MACOSX_DEPLOYMENT_TARGET=12.0
 export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=/build-user"
-for PAIR in 'aarch64-apple-darwin arm64' 'x86_64-apple-darwin x86_64'; do
-    read -r RUST_TARGET SWIFT_ARCH <<< "$PAIR"
+# Intel needs macOS 13: Command Line Tools 27 no longer ship an x86_64 Swift 5.6
+# compatibility library, which macOS 12 builds link. Info.plist states both minimums.
+for PAIR in 'aarch64-apple-darwin arm64 12.0' 'x86_64-apple-darwin x86_64 13.0'; do
+    read -r RUST_TARGET SWIFT_ARCH MIN_MACOS <<< "$PAIR"
+    export MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS"
     cargo build --manifest-path "$ROOT/native/Cargo.toml" --locked --release --lib --target "$RUST_TARGET"
-    swiftc -O -file-prefix-map "$HOME=/build-user" -swift-version 5 -target "$SWIFT_ARCH-apple-macosx12.0" \
+    swiftc -O -file-prefix-map "$HOME=/build-user" -swift-version 5 -target "$SWIFT_ARCH-apple-macosx$MIN_MACOS" \
         -import-objc-header "$ROOT/macos/PetCore.h" "$ROOT/macos/main.swift" "$ROOT/macos/InputController.swift" "$ROOT/macos/PlatformSupport.swift" "$ROOT/macos/SelfTests.swift" "$ROOT/macos/Console.swift" "$ROOT/macos/MacFeatures.swift" "$ROOT/macos/RegressionTests.swift" "$ROOT/macos/PermissionGuide.swift" "$ROOT/macos/PetMenu.swift" \
         "$ROOT/native/target/$RUST_TARGET/release/libpet_core.a" \
         -framework CoreAudio -framework Carbon -framework AppKit -framework ApplicationServices -framework Security -framework SystemConfiguration \
@@ -27,6 +29,7 @@ cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/macos/使用说明-macO
 cp -R "$ROOT/native/licenses" "$APP/Contents/Resources/"
 mkdir -p "$APP/Contents/Resources/assets"
 cp "$ROOT/native/assets/apple-provenance.json" "$APP/Contents/Resources/assets/"
+cp "$ROOT/native/assets/pat-meow.wav" "$ROOT/native/assets/pat-meow-high.wav" "$APP/Contents/Resources/"
 cp "$ROOT/assets/github.svg" "$APP/Contents/Resources/"
 cp "$ROOT/assets/default-skin.png" "$APP/Contents/Resources/"
 ICONSET="$ROOT/macos/build/AppIcon.iconset"

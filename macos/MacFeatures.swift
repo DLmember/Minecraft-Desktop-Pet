@@ -168,6 +168,24 @@ enum AudioOutputProbe {
     }
 }
 
+/// PAT喵！ meows: the same two bundled WAVs as Windows. A new click cuts the
+/// previous sound and starts at once; clicks within 15 ms are dropped, like
+/// the Windows audio thread.
+final class PatSound {
+    private let sounds: [NSSound?] = ["pat-meow", "pat-meow-high"].map { name in
+        Bundle.main.url(forResource: name, withExtension: "wav").flatMap { NSSound(contentsOf: $0, byReference: false) }
+    }
+    private var last = -Double.infinity
+    var loaded: Bool { sounds.allSatisfy { $0 != nil } }
+    func play(_ index: Int, volume: Double) {
+        let clock = ProcessInfo.processInfo.systemUptime
+        guard volume > 0.001, clock - last >= 0.015, sounds.indices.contains(index), let sound = sounds[index] else { return }
+        last = clock
+        for other in sounds { other?.stop() }
+        sound.volume = Float(min(1, volume)); sound.currentTime = 0; sound.play()
+    }
+}
+
 final class MusicMonitor {
     var onChange: ((Bool, String) -> Void)?
     private var timer: Timer?

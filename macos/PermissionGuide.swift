@@ -85,6 +85,21 @@ enum SystemSettingsWindow {
 }
 
 extension PermissionLook {
+    /// Console status line: authorization only, red when missing, green when granted.
+    static func summaryText(keyboardAuthorized: Bool, chatAuthorized: Bool) -> (keyboard: String, chat: String) {
+        ("键盘互动" + (keyboardAuthorized ? "已授权" : "未授权"), "快速聊天" + (chatAuthorized ? "已授权" : "未授权"))
+    }
+    static func summary(keyboardAuthorized: Bool, chatAuthorized: Bool) -> NSAttributedString {
+        let text = summaryText(keyboardAuthorized: keyboardAuthorized, chatAuthorized: chatAuthorized)
+        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        func part(_ s: String, _ ok: Bool) -> NSAttributedString {
+            NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: ok ? NSColor.systemGreen : NSColor.systemRed])
+        }
+        let line = NSMutableAttributedString(attributedString: part(text.keyboard, keyboardAuthorized))
+        line.append(NSAttributedString(string: " · ", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+        line.append(part(text.chat, chatAuthorized))
+        return line
+    }
     static func color(_ level: Level) -> NSColor {
         switch level {
         case .green: return NSColor(srgbRed: 0.13, green: 0.55, blue: 0.27, alpha: 1)
