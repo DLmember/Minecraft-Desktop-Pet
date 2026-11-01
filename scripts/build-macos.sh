@@ -52,4 +52,19 @@ if [ -f "$ROOT/macos/更新与验证-2.5.md" ]; then
     cp "$ROOT/macos/更新与验证-2.5.md" "$DEST/更新与验证.md"
 fi
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$DEST/Minecraft桌宠-${VERSION}-mac-universal.zip"
+# Single-chip packages keep the installed app under the 5 MB budget (CONTRIBUTING.md).
+# Same signed program as the universal app, thinned to one architecture and re-signed.
+for PAIR in 'arm64 AppleSilicon 12.0' 'x86_64 Intel 13.0'; do
+    read -r SWIFT_ARCH LABEL MIN_MACOS <<< "$PAIR"
+    THIN="$DEST/$LABEL/Minecraft桌宠.app"
+    rm -rf "$DEST/$LABEL"; mkdir -p "$DEST/$LABEL"
+    ditto "$APP" "$THIN"
+    lipo "$APP/Contents/MacOS/MinecraftPet" -thin "$SWIFT_ARCH" -output "$THIN/Contents/MacOS/MinecraftPet"
+    /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion $MIN_MACOS" \
+        -c "Delete :LSMinimumSystemVersionByArchitecture" "$THIN/Contents/Info.plist"
+    codesign --force --sign - "$THIN"
+    codesign --verify --deep --strict "$THIN"
+    ditto -c -k --sequesterRsrc --keepParent "$THIN" "$DEST/Minecraft桌宠-${VERSION}-mac-$LABEL.zip"
+done
 echo "Built: $APP"
+echo "Built: $DEST/AppleSilicon/Minecraft桌宠.app, $DEST/Intel/Minecraft桌宠.app"

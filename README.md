@@ -64,7 +64,7 @@ A：macOS 的授权记在旧版本的应用上，换成新版本后会失效，�
     cargo test --manifest-path native/Cargo.toml --lib --locked
     scripts/build-macos.sh /absolute/path/to/output
 
-默认产物为 release/macos/Minecraft桌宠.app 及 ZIP。构建脚本使用本地临时签名，未进行 Apple 公证。
+默认产物在 release/macos/：通用版 Minecraft桌宠.app，以及 AppleSilicon/、Intel/ 下的单芯片版，各附 ZIP。构建脚本使用本地临时签名，未进行 Apple 公证。
 
 ## 从源码构建（Windows）
 
