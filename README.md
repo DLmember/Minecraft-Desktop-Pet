@@ -1,8 +1,10 @@
-# Minecraft桌宠
+# Minecraft 桌宠
+
+[![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D6)](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest) [![macOS Apple Silicon 12+ | Intel 13+](https://img.shields.io/badge/macOS-Apple%20Silicon%2012%2B%20%7C%20Intel%2013%2B-000000?logo=apple)](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest) [![Release](https://img.shields.io/github/v/release/DLmember/Minecraft-Desktop-Pet)](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest) [![License: MIT](https://img.shields.io/github/license/DLmember/Minecraft-Desktop-Pet)](LICENSE)
 
 让一个 Minecraft 风格的小人待在桌面上，跟着鼠标转头，陪你敲键盘。
 
-**由GPT 6 Astra制作**
+**由 GPT 6 Astra 制作**
 
 > 本项目是独立粉丝作品，与 Mojang Studios 或 Microsoft 无关联，未获其授权、赞助或官方认可。Minecraft 名称及相关商标归其各自权利人所有。
 
@@ -10,21 +12,9 @@
 
 前往 [最新版本](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest) 下载。
 
-支持 **Windows 10/11 x64 、 macOS（Apple Silicon 12+，Intel 13+）**。便携运行，不需要安装 Electron、Java 或额外运行环境。v2.5.3 提供 Windows 及 macOS 版。
+支持 **Windows 10/11 x64、macOS（Apple Silicon 12+，Intel 13+）**。便携运行，不需要安装 Electron、Java 或额外运行环境。v2.5.3 提供 Windows 及 macOS 版。
 
 **首次启动默认开启完全鼠标穿透。** 请双击任务栏托盘图标打开控制台；想拖动桌宠时先取消“完全鼠标穿透”。图标可能收在任务栏的隐藏图标区域。
-
-## 常见问题Q&A：
-Q：怎么移动桌宠？  
-A：刚下载下来的桌宠是默认开启完全鼠标穿透的，在任务栏右边的托盘里找到苦力怕图标，右击，关闭完全鼠标穿透即可  
-Q：我没有正版账号怎么办？  
-A：你可以输入任何人的mc名字，也可以导入皮肤文件  
-Q：为什么会报毒？  
-A：可能是由于桌宠没有数字签名导致，但是桌宠本身无毒，这纯属误报。不过还请你确认一下你是从视频的链接里下载的！  
-Q：为什么 macOS 版人物不跟着敲字？  
-A：macOS 需要给桌宠授予“输入监控”权限，人物才能响应全局键盘。打开控制台看底部状态：红色“键盘互动未授权”就是还没授权。点“输入权限…”→“申请输入监控”，把弹出卡片里的桌宠图标拖进系统设置的“输入监控”列表并打开开关，然后重启桌宠。未授权时，人物只在桌宠自己的窗口（例如控制台）里敲字。  
-Q：为什么 macOS 版更新桌宠后人物又不敲字了？  
-A：macOS 的授权记在旧版本的应用上，换成新版本后会失效，但系统设置里可能仍显示已开启。请在“系统设置 → 隐私与安全性 → 输入监控”里选中旧的“Minecraft桌宠”，点“−”删除，再按上一条重新授权并重启桌宠；用了快速聊天的话，“辅助功能”里也照样处理一次。
 
 ## 可以做什么
 
@@ -37,36 +27,47 @@ A：macOS 的授权记在旧版本的应用上，换成新版本后会失效，�
 - 置顶、缩放、自由摆放和完全鼠标穿透。
 - 可选随 Windows 登录自动启动，通过控制台或右键菜单开启、关闭。
 - 用正版 ID 获取皮肤时，会一并取下账号当前佩戴的披风并显示在背后。穿透时鼠标移到桌宠上，会在约 0.15 秒内淡至 25% 不透明度。
-- 可选 **hyp快速队伍聊天**：键盘输入半角 `#` 自动替换成 `/p chat `，不自动发送。
+- 可选 **hyp 快速队伍聊天**：键盘输入半角 `#` 自动替换成 `/p chat `，不自动发送。
 - 30 / 60 / 90 / 120 / 144 / 165 / 240 FPS 七档，没有持续动画时静止停止绘制。设置和导入的皮肤自动保存。
 
+## 常见问题 Q&A
 
-## 人员
-@DLmember（owner）   @vanillaQAQ（macOS版维护者）    @H0mble（Linux版贡献者）  
-**其他贡献者：**   
-对桌宠本体进行优化以及提交新功能：  B站@汐颜摸大鱼   B站@星蓝想睡觉   @zsyghxf   @RuiShu1024   @Kevae12138  
-送了很多token  @Sullove0685  
-以及众多对桌宠提出bug和帮忙测试与排查的用户
- 
+**Q：怎么移动桌宠？**  
+A：刚下载下来的桌宠是默认开启完全鼠标穿透的，在任务栏右边的托盘里找到苦力怕图标，右击，关闭完全鼠标穿透即可。
+
+**Q：我没有正版账号怎么办？**  
+A：你可以输入任何人的 mc 名字，也可以导入皮肤文件。
+
+**Q：为什么会报毒？**  
+A：可能是由于桌宠没有数字签名导致，但是桌宠本身无毒，这纯属误报。不过还请你确认一下你是从视频的链接里下载的！
+
+**Q：为什么 macOS 版人物不跟着敲字？**  
+A：macOS 需要给桌宠授予“输入监控”权限，人物才能响应全局键盘。打开控制台看底部状态：红色“键盘互动未授权”就是还没授权。点“输入权限…”→“申请输入监控”，把弹出卡片里的桌宠图标拖进系统设置的“输入监控”列表并打开开关，然后重启桌宠。未授权时，人物只在桌宠自己的窗口（例如控制台）里敲字。
+
+**Q：为什么 macOS 版更新桌宠后人物又不敲字了？**  
+A：macOS 的授权记在旧版本的应用上，换成新版本后会失效，但系统设置里可能仍显示已开启。请在“系统设置 → 隐私与安全性 → 输入监控”里选中旧的“Minecraft桌宠”，点“−”删除，再按上一条重新授权并重启桌宠；用了快速聊天的话，“辅助功能”里也照样处理一次。
+
 ## 隐私与网络
 
 日常互动在本机处理，正式运行不记录输入文本、不上传按键。主动获取正版皮肤时连接 Mojang 的账号资料及纹理服务；点击“检查更新”时连接 GitHub。无需账号密码。开启音乐音符时仅在本机查询音频会话，不录音、不上传音频。
 
-## 从源码构建（macOS）
+## 人员
 
-本地移植复用原始 Rust 渲染、皮肤与动画，通过 Swift / AppKit 提供透明窗口、菜单栏、控制台及全局键盘互动，以及可选的井号聊天前缀替换。
-支持 Apple Silicon（macOS 12+）与 Intel（macOS 13+），构建为通用架构；支持需辅助功能授权的 hyp 快速队伍聊天。
-完整操作说明参见 [macOS 说明](macos/使用说明-macOS.md)。
+- @DLmember（owner）
+- @vanillaQAQ（macOS 版维护者）
+- @H0mble（Linux 版贡献者）
 
-构建需要 Xcode Command Line Tools、Swift 和 Rust stable：
+**其他贡献者：**
 
-    rustup target add aarch64-apple-darwin x86_64-apple-darwin
-    cargo test --manifest-path native/Cargo.toml --lib --locked
-    scripts/build-macos.sh /absolute/path/to/output
+- 对桌宠本体进行优化以及提交新功能：B站 @汐颜摸大鱼、B站 @星蓝想睡觉、@zsyghxf、@RuiShu1024、@Kevae12138
+- 送了很多 token：@Sullove0685
+- 以及众多对桌宠提出 bug 和帮忙测试与排查的用户
 
-默认产物在 release/macos/：通用版 Minecraft桌宠.app，以及 AppleSilicon/、Intel/ 下的单芯片版，各附 ZIP。构建脚本使用本地临时签名，未进行 Apple 公证。
+## 从源码构建
 
-## 从源码构建（Windows）
+源码位于 `native/src`；首次启动预设位于 `native/default-settings.json`；内置皮肤及图标位于 `assets`。
+
+### Windows
 
 Windows 原生 Rust + Win32 实现，使用 CPU 绘制透明方块模型，不包含浏览器运行时。
 
@@ -82,7 +83,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Action te
 
 产物：`native/target/release/minecraft-pet.exe`。脚本使用 Cargo.lock 锁定的依赖；首次构建需要网络下载依赖。可通过 `-RustToolchain` 选择已安装的 GNU 工具链版本。
 
-源码位于 `native/src`；首次启动预设位于 `native/default-settings.json`；内置皮肤及图标位于 `assets`。
+### macOS
+
+本地移植复用原始 Rust 渲染、皮肤与动画，通过 Swift / AppKit 提供透明窗口、菜单栏、控制台及全局键盘互动，以及可选的井号聊天前缀替换。
+支持 Apple Silicon（macOS 12+）与 Intel（macOS 13+），构建为通用架构；支持需辅助功能授权的 hyp 快速队伍聊天。
+完整操作说明参见 [macOS 说明](macos/使用说明-macOS.md)。
+
+构建需要 Xcode Command Line Tools、Swift 和 Rust stable：
+
+```bash
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+cargo test --manifest-path native/Cargo.toml --lib --locked
+scripts/build-macos.sh /absolute/path/to/output
+```
+
+默认产物在 `release/macos/`：通用版 `Minecraft桌宠.app`，以及 `AppleSilicon/`、`Intel/` 下的单芯片版，各附 ZIP。构建脚本使用本地临时签名，未进行 Apple 公证。
 
 ## 许可
 
