@@ -1,0 +1,522 @@
+[
+  {
+    "id": "Pan_Cape",
+    "name": "Pan Cape",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/The_Pan_Cape_%28texture%29.png?9ffa3",
+    "page": "https://minecraft.wiki/w/Pan_Cape",
+    "sha256": "e00a3cc1fc23c3ea5cc80f519dae03e52eadd03b57abb714425e81775541670c"
+  },
+  {
+    "id": "Migrator_Cape",
+    "name": "Migrator Cape",
+    "description": "The Migrator Cape texture",
+    "source": "https://minecraft.wiki/images/Migrator_Cape_%28texture%29.png?a037d",
+    "page": "https://minecraft.wiki/w/Migrator_Cape",
+    "sha256": "79de21a3b21673eafa75039fe0ed74e85382edc1f808843cbfe276744c7588b9"
+  },
+  {
+    "id": "Vanilla_Cape",
+    "name": "Vanilla Cape",
+    "description": "The One Vanilla Cape texture",
+    "source": "https://minecraft.wiki/images/One_Vanilla_Cape_%28texture%29.png?1f130",
+    "page": "https://minecraft.wiki/w/Vanilla_Cape",
+    "sha256": "8c9ddae3982bd2fd0e3ecc21e354bb058da396d5bac6a6827683ad811badee7c"
+  },
+  {
+    "id": "Common_Cape",
+    "name": "Common Cape",
+    "description": "The Common Cape texture",
+    "source": "https://minecraft.wiki/images/Common_Cape_%28texture%29.png?2a189",
+    "page": "https://minecraft.wiki/w/Common_Cape",
+    "sha256": "b95f5a35e24a7576993331a46198d972b596ecdc89782e7756892434fab3bea8"
+  },
+  {
+    "id": "Hero_Cape",
+    "name": "Hero Cape",
+    "description": "The Hero Cape texture",
+    "source": "https://minecraft.wiki/images/Hero_Cape_%28texture%29.png?c36b8",
+    "page": "https://minecraft.wiki/w/Hero_Cape",
+    "sha256": "569eb1dcb790add9be3fd140cb527100f1df278647a602bdb7c26b3f02509d84"
+  },
+  {
+    "id": "Hero_Cape-1",
+    "name": "Hero Cape-1",
+    "description": "The original Hero Cape texture[6]",
+    "source": "https://minecraft.wiki/images/Hero_Cape_%28texture%29_rv1.png?3817b",
+    "page": "https://minecraft.wiki/w/Hero_Cape",
+    "sha256": "c7573d9480fa256fffc6f29360cb428b4c46580a3df0c76548bbf961ce0403dd"
+  },
+  {
+    "id": "Twisted_Cape",
+    "name": "Twisted Cape",
+    "description": "The Twisted Cape texture",
+    "source": "https://minecraft.wiki/images/Twisted_Cape_%28texture%29.png?d8f8d",
+    "page": "https://minecraft.wiki/w/Twisted_Cape",
+    "sha256": "a8d2284d62042f050d9de9376557a1a5d3861fd11a6e90357b1570df3967814a"
+  },
+  {
+    "id": "Mojang_Cape-1",
+    "name": "Mojang Cape-1",
+    "description": "The Mojang cape texture",
+    "source": "https://minecraft.wiki/images/Mojang_Cape_%28texture%29.png?ae283",
+    "page": "https://minecraft.wiki/w/Mojang_Cape",
+    "sha256": "83021c763b014ad0de8e123c0ee8ef6f8cb2c84c77f5305a75a060a32e1c6fcc"
+  },
+  {
+    "id": "Mojang_Cape-2",
+    "name": "Mojang Cape-2",
+    "description": "The Mojang Classic cape texture",
+    "source": "https://minecraft.wiki/images/Mojang_Classic_Cape_%28texture%29.png?06e95",
+    "page": "https://minecraft.wiki/w/Mojang_Cape",
+    "sha256": "b3eb2bb3d715384d5c5b8a9e19a945622d59f70603d31357771690f7573e6026"
+  },
+  {
+    "id": "Microsoft_Xbox_Cape",
+    "name": "Microsoft Xbox Cape",
+    "description": "The cape texture",
+    "source": "https://minecraft.wiki/images/MicrosoftXbox360_CapeT.png?c5a49",
+    "page": "https://minecraft.wiki/w/Microsoft_Xbox_Cape",
+    "sha256": "fff85b2095852e9507c0c8e89d8e99cbc2bbbea301256ddac783ab3b0b6da2ff"
+  },
+  {
+    "id": "4J_Studios_Cape-1",
+    "name": "4J Studios Cape-1",
+    "description": "The cape texture",
+    "source": "https://minecraft.wiki/images/4J_Studios_Cape_%28texture%29.png?ed09f",
+    "page": "https://minecraft.wiki/w/4J_Studios_Cape",
+    "sha256": "78654f3fc11b207e71a1bcc3cfb5bf250daf8866941dcd0d27172a91077a4a35"
+  },
+  {
+    "id": "Mojang_Studios_Cape",
+    "name": "Mojang Studios Cape",
+    "description": "The Mojang Studios Cape texture",
+    "source": "https://minecraft.wiki/images/Mojang_Studios_Cape_%28Texture%29.png?7450c",
+    "page": "https://minecraft.wiki/w/Mojang_Studios_Cape",
+    "sha256": "cab40303ba72717596509c593afeafb07ce8e03f2a00bbeb1dbf9571d80119cd"
+  },
+  {
+    "id": "MINECON_2011_Cape",
+    "name": "MINECON 2011 Cape",
+    "description": "The MINECON 2011 cape texture",
+    "source": "https://minecraft.wiki/images/MINECON_2011_Cape_%28texture%29.png?92f39",
+    "page": "https://minecraft.wiki/w/MINECON_2011_Cape",
+    "sha256": "c622cbb446483abb2acf5b9f1ebd40f81034dd50071c9b59969b6f8b4a850f81"
+  },
+  {
+    "id": "MINECON_2012_Cape",
+    "name": "MINECON 2012 Cape",
+    "description": "The MINECON 2012 cape texture",
+    "source": "https://minecraft.wiki/images/MINECON_2012_Cape_%28texture%29.png?e8ca7",
+    "page": "https://minecraft.wiki/w/MINECON_2012_Cape",
+    "sha256": "4974d1e85c9d5264eeed04f6a5b8c2ef7387b2e9c8a49efd3c28c62100c915dd"
+  },
+  {
+    "id": "MINECON_2013_Cape",
+    "name": "MINECON 2013 Cape",
+    "description": "The MINECON 2013 cape texture",
+    "source": "https://minecraft.wiki/images/MINECON_2013_Cape_%28texture%29.png?0975f",
+    "page": "https://minecraft.wiki/w/MINECON_2013_Cape",
+    "sha256": "85b5a56062ce97c1e92bf85b2ebd82b34ac2624f9adab7eb011fe589251651ab"
+  },
+  {
+    "id": "MINECON_2015_Cape",
+    "name": "MINECON 2015 Cape",
+    "description": "The MINECON 2015 cape texture",
+    "source": "https://minecraft.wiki/images/MINECON_2015_Cape_%28texture%29.png?ca062",
+    "page": "https://minecraft.wiki/w/MINECON_2015_Cape",
+    "sha256": "ff73347f64a8c1bfe9e6a5e6f0a5298573e7a18c0a548bce7a28836199db6e27"
+  },
+  {
+    "id": "MINECON_2016_Cape",
+    "name": "MINECON 2016 Cape",
+    "description": "The MINECON 2016 cape texture",
+    "source": "https://minecraft.wiki/images/MINECON_2016_Cape_%28texture%29.png?e7f5e",
+    "page": "https://minecraft.wiki/w/MINECON_2016_Cape",
+    "sha256": "9f00ac566b2ca28666692440e728d44e065c8313218436dcfcc47181b345c1e5"
+  },
+  {
+    "id": "Minecraft_Experience_Cape",
+    "name": "Minecraft Experience Cape",
+    "description": "The Minecraft Experience Cape texture",
+    "source": "https://minecraft.wiki/images/Minecraft_Experience_Cape_%28texture%29.png?151c7",
+    "page": "https://minecraft.wiki/w/Minecraft_Experience_Cape",
+    "sha256": "a4d83d4be857b6706a91c58f6ad00ba0a68d6a7cc5ddb3817cebe9c796bd0382"
+  },
+  {
+    "id": "Minecraft_Experience_Cape-1",
+    "name": "Minecraft Experience Cape-1",
+    "description": "The first iteration of the Minecraft Experience Cape texture",
+    "source": "https://minecraft.wiki/images/Minecraft_Experience_Cape_%28texture%29_%28old%29.png?323f0",
+    "page": "https://minecraft.wiki/w/Minecraft_Experience_Cape",
+    "sha256": "38ea03803709b3dfb01067d8292dfd695e43ff94e910898a7e909df6519b70f5"
+  },
+  {
+    "id": "Moonlight_Trail_Cape",
+    "name": "Moonlight Trail Cape",
+    "description": "The Moonlight Trail Cape texture",
+    "source": "https://minecraft.wiki/images/Moonlight_Trail_Cape_%28texture%29.png?104f2",
+    "page": "https://minecraft.wiki/w/Moonlight_Trail_Cape",
+    "sha256": "6c5ee3da41966849c749b08153d8fbf642e6fd9b2c60e2cb99032fb96c4ff07f"
+  },
+  {
+    "id": "Crafter_Cape",
+    "name": "Crafter Cape",
+    "description": "The Crafter Cape texture",
+    "source": "https://minecraft.wiki/images/Crafter_Cape_%28texture%29.png?596e8",
+    "page": "https://minecraft.wiki/w/Crafter_Cape",
+    "sha256": "5454041ec4abdd0e0d61ca0d3c2d767f4421ce05c46eff7bf22d994aca39ebd1"
+  },
+  {
+    "id": "Founder%27s_Cape",
+    "name": "Founder's Cape",
+    "description": "The Founder's Cape texture",
+    "source": "https://minecraft.wiki/images/Founder%27s_Cape_%28texture%29.png?a0f1a",
+    "page": "https://minecraft.wiki/w/Founder%27s_Cape",
+    "sha256": "0c154707ca02514af6516b9f7040a77d7b9c334c86d0bb0a30f68f7b44c83f8b"
+  },
+  {
+    "id": "Progress_Pride_Cape",
+    "name": "Progress Pride Cape",
+    "description": "/w/Progress_Pride_Cape",
+    "source": "https://minecraft.wiki/images/Progress_Pride_Cape_%28texture%29_rv1.png?48ec4",
+    "page": "https://minecraft.wiki/w/Progress_Pride_Cape",
+    "sha256": "fa3afcb18a7daf4e78ec7316e23ca24d945eccc2daf23d6020a16c495e6508ba"
+  },
+  {
+    "id": "Progress_Pride_Cape-1",
+    "name": "Progress Pride Cape-1",
+    "description": "/w/Progress_Pride_Cape",
+    "source": "https://minecraft.wiki/images/Progress_Pride_Cape_%28texture%29_rv2.png?e33a8",
+    "page": "https://minecraft.wiki/w/Progress_Pride_Cape",
+    "sha256": "ee94e48abf2ec06fa2174c406867acb07f5d680f9102d9f0d2211ec3285dc1a5"
+  },
+  {
+    "id": "Progress_Pride_Cape-2",
+    "name": "Progress Pride Cape-2",
+    "description": "/w/Progress_Pride_Cape",
+    "source": "https://minecraft.wiki/images/Progress_Pride_Cape_%28texture%29_rv3.png?92ef9",
+    "page": "https://minecraft.wiki/w/Progress_Pride_Cape",
+    "sha256": "1334b00a82b0029b723d04c00c0bdbcfb6aba57561c05760d875ab62c343d494"
+  },
+  {
+    "id": "Progress_Pride_Cape-3",
+    "name": "Progress Pride Cape-3",
+    "description": "/w/Progress_Pride_Cape",
+    "source": "https://minecraft.wiki/images/Progress_Pride_Cape_%28texture%29_rv4.png?325fa",
+    "page": "https://minecraft.wiki/w/Progress_Pride_Cape",
+    "sha256": "f186d1a8b2311b130afe04c1599fb04d1895c0e62106e3dc03fceefe2707e43f"
+  },
+  {
+    "id": "Cherry_Blossom_Cape",
+    "name": "Cherry Blossom Cape",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/Cherry_Blossom_Cape_%28texture%29.png?5a666",
+    "page": "https://minecraft.wiki/w/Cherry_Blossom_Cape",
+    "sha256": "b14e7e0cadfa82941549bf32eb84af335e6ad812bfc034ba58458db822f2061e"
+  },
+  {
+    "id": "Follower%27s_Cape",
+    "name": "Follower's Cape",
+    "description": "The Follower's cape texture",
+    "source": "https://minecraft.wiki/images/Follower%27s_Cape_%28texture%29.png?27649",
+    "page": "https://minecraft.wiki/w/Follower%27s_Cape",
+    "sha256": "dd0163afef62fe15d6320e2480ab15c28ea637ac6e72487bd260e9dfc8ecae23"
+  },
+  {
+    "id": "Purple_Heart_Cape",
+    "name": "Purple Heart Cape",
+    "description": "The Purple Heart cape texture",
+    "source": "https://minecraft.wiki/images/Purple_Heart_Cape_%28texture%29.png?195aa",
+    "page": "https://minecraft.wiki/w/Purple_Heart_Cape",
+    "sha256": "0c000e8d1345a9216e02e200045ee26746c22c2b963dc93e24744a40afb471d3"
+  },
+  {
+    "id": "15th_Anniversary_Cape",
+    "name": "15th Anniversary Cape",
+    "description": "The 15th Anniversary Cape texture",
+    "source": "https://minecraft.wiki/images/15th_Anniversary_Cape_%28texture%29_JE.png?bacec",
+    "page": "https://minecraft.wiki/w/15th_Anniversary_Cape",
+    "sha256": "80f93eca22fac0710ba0867cfded64f530c79c82630ea90bb0a8d248b8d15d55"
+  },
+  {
+    "id": "MCC_15th_Year_Cape",
+    "name": "MCC 15th Year Cape",
+    "description": "The MCC 15th Year Cape texture",
+    "source": "https://minecraft.wiki/images/MCC_15th_Year_Cape_%28texture%29_JE.png?608fa",
+    "page": "https://minecraft.wiki/w/MCC_15th_Year_Cape",
+    "sha256": "10392c83bb4ba5891161a803b36b569fe186b974f9e7f208be90f6184f1b241e"
+  },
+  {
+    "id": "Mojang_Office_Cape",
+    "name": "Mojang Office Cape",
+    "description": "The Mojang Office Cape texture",
+    "source": "https://minecraft.wiki/images/Mojang_Office_Cape_%28texture%29_JE.png?aa0b2",
+    "page": "https://minecraft.wiki/w/Mojang_Office_Cape",
+    "sha256": "193c6044c7a977a43abc50731fd24e6046dfca0567ba47b1eb486df91061b434"
+  },
+  {
+    "id": "Home_Cape",
+    "name": "Home Cape",
+    "description": "The first Home cape texture",
+    "source": "https://minecraft.wiki/images/Home_Cape_%28texture%29.png?0c7de",
+    "page": "https://minecraft.wiki/w/Home_Cape",
+    "sha256": "bb3d6edee74cc09a85ab156a3f8e720896c05d1c0757ea3ed22063ba579a15c8"
+  },
+  {
+    "id": "Home_Cape-1",
+    "name": "Home Cape-1",
+    "description": "The second Home cape texture",
+    "source": "https://minecraft.wiki/images/Home_Cape_%28texture%29_rv1.png?dff3e",
+    "page": "https://minecraft.wiki/w/Home_Cape",
+    "sha256": "59e194eb544a82752cc18b935ef26a2d5e0a5e279efa16ce84b97b777688b0dd"
+  },
+  {
+    "id": "Home_Cape-2",
+    "name": "Home Cape-2",
+    "description": "The Home cape texture",
+    "source": "https://minecraft.wiki/images/HomeCape_%28texture%29_rv2.png?c60b0",
+    "page": "https://minecraft.wiki/w/Home_Cape",
+    "sha256": "6fbd146b6d87afc738fdae2d4ee2f0466b1e647aa80b075069e4411cfde78ffa"
+  },
+  {
+    "id": "Menace_Cape",
+    "name": "Menace Cape",
+    "description": "The first Menace cape texture.",
+    "source": "https://minecraft.wiki/images/Menace_Cape_%28texture%29.png?e5902",
+    "page": "https://minecraft.wiki/w/Menace_Cape",
+    "sha256": "274e90e5c2fa67293525d7de73dfa0ed726321ace3ee05299a672f9726f813f8"
+  },
+  {
+    "id": "Menace_Cape-1",
+    "name": "Menace Cape-1",
+    "description": "The second Menace cape texture.",
+    "source": "https://minecraft.wiki/images/Menace_Cape_%28texture%29_rv1.png?303b7",
+    "page": "https://minecraft.wiki/w/Menace_Cape",
+    "sha256": "812a76711da496818b5a3ab1345c192da69b6b56d7fc7c5ac0db4468c7cdebd5"
+  },
+  {
+    "id": "Menace_Cape-2",
+    "name": "Menace Cape-2",
+    "description": "The Menace cape texture",
+    "source": "https://minecraft.wiki/images/Menace_Cape_%28texture%29_rv2.png?30c7c",
+    "page": "https://minecraft.wiki/w/Menace_Cape",
+    "sha256": "3745f718587aada75db9a449e359cf85b9d773a7726a95c753c514799acb3dfd"
+  },
+  {
+    "id": "Yearn_Cape",
+    "name": "Yearn Cape",
+    "description": "The Yearn Cape texture",
+    "source": "https://minecraft.wiki/images/Yearn_Cape_%28texture%29_BE.png?be9a4",
+    "page": "https://minecraft.wiki/w/Yearn_Cape",
+    "sha256": "05ea30094d9aac8c31cb280c57d827bdc7f8bfaf5f0674f8f4af8ce2ac2fe669"
+  },
+  {
+    "id": "Yearn_Cape-1",
+    "name": "Yearn Cape-1",
+    "description": "The placeholder texture for the cape",
+    "source": "https://minecraft.wiki/images/Idaho_cape.png?c9034",
+    "page": "https://minecraft.wiki/w/Yearn_Cape",
+    "sha256": "290c743481c3b8acae0942d9e2ccf9a32198e4a2cf45c23f73bb449ffbcf1e0f"
+  },
+  {
+    "id": "Copper_Cape",
+    "name": "Copper Cape",
+    "description": "The Copper Cape texture",
+    "source": "https://minecraft.wiki/images/Copper_Cape_%28texture%29_BE.png?d4151",
+    "page": "https://minecraft.wiki/w/Copper_Cape",
+    "sha256": "b1eea4032cf790fc512ab99dc8f68a070df59f393856dd4eb98be50031102f4a"
+  },
+  {
+    "id": "Zombie_Horse_Cape",
+    "name": "Zombie Horse Cape",
+    "description": "The Zombie Horse Cape texture",
+    "source": "https://minecraft.wiki/images/Zombie_Horse_Cape_%28texture%29_BE.png?5fd3e",
+    "page": "https://minecraft.wiki/w/Zombie_Horse_Cape",
+    "sha256": "041f610123843ba3c8d7ae9e38df9db9c54079ff74e18d87a9bdc4fc1da5de4c"
+  },
+  {
+    "id": "Builder_Cape",
+    "name": "Builder Cape",
+    "description": "The Builder Cape texture",
+    "source": "https://minecraft.wiki/images/Builder_Cape_%28texture%29.png?997b1",
+    "page": "https://minecraft.wiki/w/Builder_Cape",
+    "sha256": "38c1b27e8b07af8e635319ef24f26f8ab6f9403eca2dd17a07c2c9d530d42ec4"
+  },
+  {
+    "id": "Aurora_Cape",
+    "name": "Aurora Cape",
+    "description": "Aurora Cape texture",
+    "source": "https://minecraft.wiki/images/Aurora_Cape_%28texture%29.png?a82b4",
+    "page": "https://minecraft.wiki/w/Aurora_Cape",
+    "sha256": "a7ab59fa180f9f255a065ee1a888a985c3c01211e5bb04b1b7ea302f080da791"
+  },
+  {
+    "id": "Bacon_Cape",
+    "name": "Bacon Cape",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/Bacon_Cape_%28texture%29.png?201c4",
+    "page": "https://minecraft.wiki/w/Bacon_Cape",
+    "sha256": "78f96b54c932d9b9fb98ec69c435822c734392db0402784da215d671b74dc148"
+  },
+  {
+    "id": "Millionth_Customer_Cape",
+    "name": "Millionth Customer Cape",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/Millionth_Customer_Cape_%28texture%29.png?e6664",
+    "page": "https://minecraft.wiki/w/Millionth_Customer_Cape",
+    "sha256": "700d4f13e75e9930f808024ede1784b55df3dd29fa843033d51e531f63243f60"
+  },
+  {
+    "id": "DB_Cape",
+    "name": "DB Cape",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/DannyBstyle%27s_Cape_%28texture%29.png?af0e8",
+    "page": "https://minecraft.wiki/w/DB_Cape",
+    "sha256": "efd9e2d8d6cab5d2f825d851682342cdb4add4dd2d53cd21087ec97cf1030380"
+  },
+  {
+    "id": "Snowman_Cape",
+    "name": "Snowman Cape",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/JulianClark%27s_Cape_%28texture%29.png?b464c",
+    "page": "https://minecraft.wiki/w/Snowman_Cape",
+    "sha256": "72edc572be0385f87dda7c458dfa55494e81e43a423aaf2064fabef70653f7eb"
+  },
+  {
+    "id": "Cheapsh0t%27s_Cape",
+    "name": "Cheapsh0t's Cape",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/Cheapsh0t%27s_Cape_%28texture%29.png?7ce71",
+    "page": "https://minecraft.wiki/w/Cheapsh0t%27s_Cape",
+    "sha256": "98d27434908ce7e27ad72b12048b278f116afbe29f1ff29007d510d7ed42f77f"
+  },
+  {
+    "id": "Spade_Cape",
+    "name": "Spade Cape",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/MrMessiah%27s_Cape_%28texture%29.png?c50c2",
+    "page": "https://minecraft.wiki/w/Spade_Cape",
+    "sha256": "76a22198d29aa553354bc7162b657dac6b4f33399a78ae95c355779d8436c4a3"
+  },
+  {
+    "id": "Prismarine_Cape",
+    "name": "Prismarine Cape",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/Prismarine_Cape_%28texture%29.png?bb0c4",
+    "page": "https://minecraft.wiki/w/Prismarine_Cape",
+    "sha256": "cd0c698395694b69ddd83720d293323f16f576a235a8909236babbeabeb93a5b"
+  },
+  {
+    "id": "Turtle_Cape",
+    "name": "Turtle Cape",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/Turtle_Cape_%28texture%29.png?db87e",
+    "page": "https://minecraft.wiki/w/Turtle_Cape",
+    "sha256": "6723afcb1b4236316d63b97e026dd5b05ba581d88ae46cda8cc8fbc3639a7bd7"
+  },
+  {
+    "id": "Birthday_Cape",
+    "name": "Birthday Cape",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/Birthday_Cape_%28texture%29.png?971d7",
+    "page": "https://minecraft.wiki/w/Birthday_Cape",
+    "sha256": "645e7528296f8064297116b4d77157c79a95a566e785d87d0c61d2c3e2fc81c2"
+  },
+  {
+    "id": "Valentine_Cape",
+    "name": "Valentine Cape",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/Valentine_Cape_%28texture%29.png?95ee3",
+    "page": "https://minecraft.wiki/w/Valentine_Cape",
+    "sha256": "6c295c0384fed555e19c7fdd3a273e4f831d7373fb3f42450d37bf4f18b816ed"
+  },
+  {
+    "id": "Oxeye_Cape",
+    "name": "Oxeye Cape",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/Oxeye_cape_%28texture%29.png?2c2d9",
+    "page": "https://minecraft.wiki/w/Oxeye_Cape",
+    "sha256": "b5ad52f76541caed813b7af6ab4798ceddaa0775623b3a05796077589958669a"
+  },
+  {
+    "id": "Blueprint_Cape-2",
+    "name": "Blueprint Cape-2",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/Unidentified_Cape_1_%28texture%29.png?4e35b",
+    "page": "https://minecraft.wiki/w/Blueprint_Cape",
+    "sha256": "86b3c94597f58115ba40a9c92e3d5e2f197fa5e0da209a51bb338cd65228d9d1"
+  },
+  {
+    "id": "Scrolls_Champion_Cape",
+    "name": "Scrolls Champion Cape",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/Scrolls_Champion_Cape_%28texture%29.png?0c82a",
+    "page": "https://minecraft.wiki/w/Scrolls_Champion_Cape",
+    "sha256": "0681305b95aa22f25d363887fb0ea28642a212ca8d3866ef9b85366ea9949eb9"
+  },
+  {
+    "id": "Cobalt_Cape",
+    "name": "Cobalt Cape",
+    "description": "The cape's texture",
+    "source": "https://minecraft.wiki/images/Cobalt_Cape_%28texture%29.png?60b57",
+    "page": "https://minecraft.wiki/w/Cobalt_Cape",
+    "sha256": "4c2a333765f3dd54a9c3b295519543eb52f6a1921e93d5c2916a2b64d1413efd"
+  },
+  {
+    "id": "Translator_Cape",
+    "name": "Translator Cape",
+    "description": "The Translator Cape's texture",
+    "source": "https://minecraft.wiki/images/Translator_Cape_%28texture%29.png?11948",
+    "page": "https://minecraft.wiki/w/Translator_Cape",
+    "sha256": "1679e502811ee8c7d8c988522a01b7c7a6098748273f8ba0ad073ed92d96876c"
+  },
+  {
+    "id": "Translator_Cape-1",
+    "name": "Translator Cape-1",
+    "description": "The Chinese Translator Cape's texture",
+    "source": "https://minecraft.wiki/images/Chinese_Translator_Cape_%28texture%29.png?dbfc8",
+    "page": "https://minecraft.wiki/w/Translator_Cape",
+    "sha256": "09213eb36cadb5003d29ead98d63da192ff50466f94183e22dff9c3e56a9f7e5"
+  },
+  {
+    "id": "Moderator_Cape",
+    "name": "Moderator Cape",
+    "description": "The Moderator cape texture",
+    "source": "https://minecraft.wiki/images/Moderator_Cape_%28texture%29.png?0adb0",
+    "page": "https://minecraft.wiki/w/Moderator_Cape",
+    "sha256": "662808009b94b8c33a127d4ec35e27e1d7ed06e7ea82d35a53c5f73a03dae801"
+  },
+  {
+    "id": "Realms_MapMaker_Cape",
+    "name": "Realms MapMaker Cape",
+    "description": "The Realms MapMaker cape texture",
+    "source": "https://minecraft.wiki/images/MapmakerCapeTexture.png?2045c",
+    "page": "https://minecraft.wiki/w/Realms_MapMaker_Cape",
+    "sha256": "e9e936fda9aa7c000c60a145c54bb1cd807d4b2d650ff32a8602e5a97b0006b8"
+  },
+  {
+    "id": "2010_holiday_capes",
+    "name": "2010 holiday capes",
+    "description": "The Christmas 2010 Cape texture",
+    "source": "https://minecraft.wiki/images/Christmas_2010_Cape_%28texture%29.png?78498",
+    "page": "https://minecraft.wiki/w/2010_holiday_capes",
+    "sha256": "5a6cf05f3398a4c850dcfbb5f7897aa9cf9c20a825d58344ca8d1749292e4d47"
+  },
+  {
+    "id": "2010_holiday_capes-1",
+    "name": "2010 holiday capes-1",
+    "description": "The New Year 2011 Cape texture",
+    "source": "https://minecraft.wiki/images/New_Years_2011_Cape_%28texture%29.png?0e12b",
+    "page": "https://minecraft.wiki/w/2010_holiday_capes",
+    "sha256": "cfd5aeb1bcf274d336e5abb99ffdcf7786f5dfad33d46f1296bbc4640d75e927"
+  },
+  {
+    "id": "Xbox_1st_Birthday_Cape-1",
+    "name": "Xbox 1st Birthday Cape-1",
+    "description": "The cape texture",
+    "source": "https://minecraft.wiki/images/Xbox_1st_Birthday_Cape_%28texture%29.png?75a6c",
+    "page": "https://minecraft.wiki/w/Xbox_1st_Birthday_Cape",
+    "sha256": "44a48327d5b480d3825a55b6014e758a329a87c7fd4c76942b4021fd7faa412a"
+  }
+]

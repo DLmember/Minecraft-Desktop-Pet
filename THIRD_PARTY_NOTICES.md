@@ -59,3 +59,8 @@ Minecraft 资源属于各自权利人。本项目与 Mojang / Microsoft 无隶�
 
 
 The Q-style model and original eye/Shift animation support are based on zsyghxf's PR #5 (commit 7ba3b87862272b13f7f10cdb4b225ced1b9350d6), with behavior and interaction changes by DLmember. DA animation adjustments reference the user-provided DetailedAnimationsXJustExpressions resource pack; the pack itself and user skins/capes are not bundled. Microsoft YaHei UI is accessed through the installed Windows font; no font file is redistributed.
+
+
+## Cape and decoration artwork
+
+Cape and axolotl artwork belongs to Mojang/Microsoft. Cape texture sources and hashes are recorded in native/assets/capes/catalog.json; decoration sources are recorded in native/assets/decorations/SOURCES.md. This independent fan application is not affiliated with Mojang or Microsoft.

@@ -1,0 +1,2 @@
+Cape catalog and textures: https://minecraft.wiki/w/Cape (individual sources in capes/catalog.json). Minecraft artwork belongs to Mojang/Microsoft.
+Heart particle: https://raw.githubusercontent.com/InventivetalentDev/minecraft-assets/1.21.4/assets/minecraft/textures/particle/heart.png

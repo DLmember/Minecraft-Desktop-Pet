@@ -1,6 +1,10 @@
 pub(crate) use effects::install_glyphs;
 #[path = "render_effects.rs"]
 mod effects;
+#[path = "render_decorations.rs"]
+mod decorations;
+#[path = "decoration_models.rs"]
+mod decoration_models;
 #[path = "render_gestures.rs"]
 mod gestures;
 pub use gestures::Gesture;
@@ -277,6 +281,7 @@ impl Skin {
             .into_rgba8();
         let legacy = h * 2 == w;
         let k = w / 64;
+
         if legacy {
             let transparent =
                 (0..16 * k).any(|y| (32 * k..64 * k).any(|x| image.get_pixel(x, y)[3] < 128));
@@ -354,8 +359,6 @@ pub fn key_position(vk: u32) -> Option<Vec2> {
     }
     None
 }
-/// macOS：交替模式和未收录的按键没有键位，手原本只下沉一点点（约 7°）。
-/// 让这只手落到自己这半边的主键行，按动和精确模式一样看得清，且不离开键盘。
 fn keyless_press(sign: f32) -> Option<Vec2> {
     if cfg!(target_os = "macos") { Some(Vec2::new(sign * 1.5, -0.64)) } else { None }
 }
@@ -519,6 +522,17 @@ fn degrees(values: &[f32]) -> Quat {
         values[1].to_radians(),
         values[2].to_radians(),
     )
+}
+fn wine_transform(s: &Settings, p: &Pose) -> Mat4 {
+    if !s.wine { return Mat4::IDENTITY; }
+    let phase=(p.clock*130./60.).fract();
+    let t=if phase<0.5 {phase*2.} else {(1.-phase)*2.};
+    let ease=if t<0.5 {2.*t*t} else {1.-(-2.*t+2.).powi(2)/2.};
+    let anchor=if s.is_sitting() {if s.chibi {4.5} else {6.}} else {0.};
+    Mat4::from_translation(Vec3::Y*anchor)
+        * Mat4::from_scale(Vec3::new(1.,1.-0.5*ease,1.))
+        * Mat4::from_rotation_y(p.clock*32.5/60.*std::f32::consts::TAU)
+        * Mat4::from_translation(-Vec3::Y*anchor)
 }
 fn model_transform(s: &Settings) -> Mat4 {
     Mat4::from_translation(Vec3::Y * 15.)
@@ -905,14 +919,14 @@ impl Pose {
         let p = project(neck + view * (Vec3::Y * 3.), width, height);
         let dx = (cursor.x - p.x) / (width * 0.8).max(200.);
         let dy = (cursor.y - p.y) / (height * 0.65).max(180.);
-        let x = if s.track_mouse {
+        let x = if s.track_mouse && !s.wine {
             (dx * 0.3 * s.head_sensitivity_x / 100.)
                 .atan()
                 .clamp(-s.head_range_x.to_radians(), s.head_range_x.to_radians())
         } else {
             0.
         };
-        let y = if s.track_mouse {
+        let y = if s.track_mouse && !s.wine {
             (dy * 0.95 * s.head_sensitivity_y / 100.)
                 .atan()
                 .clamp(-s.head_range_y.to_radians(), s.head_range_y.to_radians())
@@ -947,7 +961,9 @@ impl Pose {
         self.arm_bob = -3. * t.sin() * i;
         self.leg_roll = t.sin() * i;
         self.leg_slide = -12. * t.sin() * i;
-        if s.track_mouse {
+        if s.wine {
+            self.head_rotation = Quat::IDENTITY;
+        } else if s.track_mouse {
             let desired = view
                 * Quat::from_rotation_y(horizontal)
                 * Quat::from_rotation_x(vertical)
@@ -965,12 +981,12 @@ impl Pose {
             };
             self.head_rotation = authored
                 * rotation(
-                    vertical - 0.25 * self.crouch,
+                    (if s.wine {0.} else {vertical}) - 0.25 * self.crouch,
                     (if s.posture == "custom" {
                         0.
                     } else {
                         front_yaw()
-                    }) + horizontal,
+                    }) + if s.wine {0.} else {horizontal},
                     0.,
                 )
                 * Quat::from_rotation_z(self.head_roll)
@@ -1133,7 +1149,9 @@ impl Pose {
     fn resolve_letter_origins(&mut self, s: &Settings, skin: &Skin) {
         if !self.letters.iter().any(|l|l.pos.is_none() && l.hand_origin.is_none()) { return; }
         let boxes=parts(s,skin,self);
-        let inverse=model_transform(s).inverse();
+        // Store an untransformed origin: the letter renderer applies the same
+        // complete parent transform as the keyboard exactly once.
+        let inverse=(wine_transform(s,self)*model_transform(s)).inverse();
         let hands=[0,1].map(|side| {
             let arm=&boxes[2+side];
             inverse.transform_point3(arm.transform.transform_point3(Vec3::new(0.,if s.chibi {-2.} else {-6.},0.)))
@@ -1455,7 +1473,7 @@ fn parts_with_cape(
     let head_layers = if s.outer_layer { 2 } else { 1 };
     cover_cheeks(&mut v, limb_layers + head_layers - 1,
         limb_layers + head_layers, limb_layers, pose.cheek_cover);
-    let global = model_transform(s);
+    let global = wine_transform(s,pose) * model_transform(s);
     for part in &mut v {
         part.transform = global * part.transform;
     }
@@ -1715,7 +1733,7 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose, cape: Option<&Cape>) -> V
         });
     }
     cover_cheeks(&mut v, head_count - 1, head_count * 2, head_count, pose.cheek_cover);
-    let global = model_transform(s);
+    let global = wine_transform(s,pose) * model_transform(s);
     for part in &mut v {
         part.transform = global * part.transform;
     }
@@ -1774,6 +1792,7 @@ impl Frame {
                 self.draw_box(&part, Tex::of(&skin.image, &skin.colors));
             }
         }
+        self.draw_decorations(s,skin,pose);
         self.draw_effects(s,skin,pose);
         self.draw_tease_hand(s,skin,pose);
     }
@@ -1803,7 +1822,15 @@ impl Frame {
         for (f, &(uax, vax, wax, ud, vd, ww, hh, dd)) in planes.iter().enumerate() {
             let mut pos = [Vec3::ZERO; 4];
             let mut uv = [Vec2::ZERO; 4];
-            let (x, y, tw, th) = regions[f];
+            let (mut x, y, mut tw, th) = if b.size.x == 0. && f < 2 {
+                // A zero-thickness fin has one texture, visible from both sides.
+                // The ordinary cuboid's opposite face points to unrelated atlas pixels.
+                regions[1]
+            } else { regions[f] };
+            if b.size.x == 0. && f == 0 {
+                x += tw;
+                tw = -tw;
+            }
             // Q 版每面独立 UV：把 [u0,v0,u1,v1]（0..16 单位）按 rotation 排到
             // 四个顶点上，再乘 4 转成 64 基准贴图坐标。
             // 坐标映射是绕 Y 轴 180° 的镜像，会翻转南北东西面的 u 轴（左右），
@@ -2160,7 +2187,25 @@ mod tests {
             }
         }
     }
-
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn alternating_press_is_as_visible_as_precise() {
+        for chibi in [false, true] {
+            let (mut s, skin, mut p) = if chibi { seated_chibi() } else { seated() };
+            s.typing_mode = "alternating".into();
+            for i in 0..120 { tick(&mut p, &s, &skin, 0.5 + i as f32 / 120., false); }
+            let idle = p.arms;
+            p.key(81, true, 2., &s);
+            let side = p.held[0].side;
+            let mut reach = 0f32;
+            for i in 0..60 {
+                tick(&mut p, &s, &skin, 2. + i as f32 / 120., false);
+                reach = reach.max(p.arms[side].angle_between(idle[side]));
+            }
+            assert!(reach.to_degrees() > 15., "chibi={chibi} reach={}", reach.to_degrees());
+            assert!(p.arms[1 - side].angle_between(idle[1 - side]) < 0.02);
+        }
+    }
     #[test]
     fn breathing_runs_immediately_through_actions_and_preserves_custom_pose() {
         let skin=Skin::load(DEFAULT_SKIN).unwrap();
@@ -3725,25 +3770,6 @@ mod tests {
         p.key(81, false, 4., &s);
         p.key(81, true, 4.01, &s);
         assert_ne!(p.held[0].side, side);
-    }
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn alternating_press_is_as_visible_as_precise() {
-        for chibi in [false, true] {
-            let (mut s, skin, mut p) = if chibi { seated_chibi() } else { seated() };
-            s.typing_mode = "alternating".into();
-            for i in 0..120 { tick(&mut p, &s, &skin, 0.5 + i as f32 / 120., false); }
-            let idle = p.arms;
-            p.key(81, true, 2., &s);
-            let side = p.held[0].side;
-            let mut reach = 0f32;
-            for i in 0..60 {
-                tick(&mut p, &s, &skin, 2. + i as f32 / 120., false);
-                reach = reach.max(p.arms[side].angle_between(idle[side]));
-            }
-            assert!(reach.to_degrees() > 15., "chibi={chibi} reach={}", reach.to_degrees());
-            assert!(p.arms[1 - side].angle_between(idle[1 - side]) < 0.02);
-        }
     }
     #[test]
     fn swing_overrides_then_returns_to_live_keyboard_pose() {

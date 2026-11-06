@@ -12,6 +12,8 @@ mod music;
 mod theme;
 mod window_order;
 mod menu_clock;
+mod capture;
+mod capes;
 use config::{Position, Settings, Store};
 use glam::Vec2;
 use render::{Cape, Frame, Pose, Skin};
@@ -36,7 +38,7 @@ static mut PET_HWND: HWND = null_mut();
 static mut TEST_INPUT_ONLY: bool = false;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn product_title() -> String {
-    format!("Minecraft桌宠 · v{}", VERSION.strip_suffix(".0").unwrap_or(VERSION))
+    format!("Minecraft桌宠 · v{}", VERSION.strip_suffix(".0").unwrap_or(VERSION).replace(".0-preview", "-preview"))
 }
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -270,6 +272,11 @@ pub struct App {
     tray_retry: u8,
     tray_retry_at: f64,
     last_draw: f64,
+    capture: Option<Box<capture::Capture>>,
+    cape_panel: HWND,
+    cape_page: usize,
+    display_fps: u32,
+    next_display_check: f64,
     next_draw: f64,
     next_topmost_check: f64,
     topmost_foreground: HWND,
@@ -284,10 +291,12 @@ pub struct App {
 impl App {
     fn new(dir: PathBuf, diagnostic: bool) -> Self {
         let mut store = Store::new(dir);
-        let settings = store.load();
+        let mut settings = store.load();
         let bytes =
             std::fs::read(&settings.skin_path).unwrap_or_else(|_| render::DEFAULT_SKIN.to_vec());
         let skin = Skin::load(&bytes).unwrap_or_else(|_| Skin::load(render::DEFAULT_SKIN).unwrap());
+        settings.outer_layer = true;
+        settings.show_cape = true;
         let cape = load_cape(&settings);
         let pose = Pose::new(&settings);
         let notice = store.notice.clone();
@@ -354,7 +363,12 @@ impl App {
             tray_error: 0,
             tray_retry: 0,
             tray_retry_at: 0.,
+            display_fps: 60,
+            next_display_check: 0.,
             last_draw: 0.,
+            capture: None,
+            cape_panel: null_mut(),
+            cape_page: 0,
             next_draw: 0.,
             next_topmost_check: 0.,
             topmost_foreground: null_mut(),
@@ -590,6 +604,18 @@ impl App {
     }
     unsafe fn tick(&mut self) {
         let clock = self.start.elapsed().as_secs_f64();
+        if clock >= self.next_display_check {
+            self.next_display_check = clock + 1.;
+            let mut info: MONITORINFOEXW = std::mem::zeroed();
+            info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+            let mut mode: DEVMODEW = std::mem::zeroed();
+            mode.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
+            let fps = if GetMonitorInfoW(MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST),
+                &mut info as *mut _ as *mut MONITORINFO) != 0
+                && EnumDisplaySettingsW(info.szDevice.as_ptr(), ENUM_CURRENT_SETTINGS, &mut mode) != 0
+                && mode.dmDisplayFrequency > 1 { mode.dmDisplayFrequency } else {60};
+            if self.display_fps != fps { self.display_fps = fps; self.next_draw = 0.; }
+        }
         let now = clock as f32;
         if self.tick_last > 0. {
             let gap = ((clock - self.tick_last) * 1e6).max(0.) as u64;
@@ -709,11 +735,12 @@ impl App {
         // 期间也要保持出帧，眨眼和扭动之外仍然不绘制，空闲开销不变。
         let blinking = self.settings.da_blink && self.skin.eyes.is_some()
             && (self.pose.blink_at(now) > 0.0001 || self.pose.eyelid < 0.9999);
-        let dancing = (self.settings.da_dance && self.settings.posture == "standing") || self.pose.music_playing || self.pose.needs_frames() || self.settings.breathing_animation;
+        let dancing = self.settings.wine || (self.settings.da_dance && self.settings.posture == "standing") || self.pose.music_playing || self.pose.needs_frames() || self.settings.breathing_animation;
         if !self.hidden && (now <= self.awake || blinking || dancing || self.pose.gesture_due(&self.settings,now)) && clock >= self.next_draw {
             self.draw(now, dt);
+            if let Some(capture) = &mut self.capture { capture.update(&self.frame); }
             self.last_draw = clock;
-            let period = 1. / self.settings.fps as f64;
+            let period = 1. / self.display_fps as f64;
             self.next_draw += period;
             if self.next_draw <= clock {
                 self.next_draw = clock + period;
@@ -811,6 +838,8 @@ impl App {
     }
     unsafe fn changed(&mut self) {
         self.settings.clean();
+        self.settings.outer_layer = true;
+        self.settings.show_cape = true;
         self.save();
         self.flags();
         self.wake();
@@ -837,9 +866,8 @@ impl App {
                     .unwrap_or_default()
                     .to_string_lossy()
                     .into_owned();
-                if self.skin.legacy {
-                    self.settings.arm_model = "classic".into();
-                }
+                self.settings.detected_arm_model = None;
+                if self.skin.legacy { self.settings.arm_model = "classic".into(); }
                 self.changed();
             }
             Err(e) => report_error(&e),
@@ -864,6 +892,32 @@ impl App {
     }
     unsafe fn command(&mut self, id: u32) {
         match id {
+            188 => self.show_capes(),
+            189 => { self.settings.wine = !self.settings.wine; self.changed(); }
+            190..=195 => { self.settings.decoration = ["none","rabbit","cat","heart","axolotl","lollipop"][(id-190) as usize].into(); self.changed(); }
+            187 => {
+                if self.capture.is_none() { self.command(186); }
+                if let Some(capture) = &mut self.capture {
+                    ShowWindow(capture.hwnd, SW_SHOWNOACTIVATE);
+                    capture.toggle_placement();
+                    capture.update(&self.frame);
+                }
+            }
+            186 => {
+                if self.capture.is_none() {
+                    match capture::Capture::open() {
+                        Ok(window) => self.capture = Some(window),
+                        Err(e) => { report_error(&e); return; }
+                    }
+                }
+                if let Some(capture) = &mut self.capture {
+                    ShowWindow(capture.hwnd, SW_RESTORE);
+                    capture.bring_forward();
+                    capture.update(&self.frame);
+                    SetForegroundWindow(capture.hwnd);
+                }
+                self.wake();
+            }
             100 => self.show_panel(),
             101 => self.choose_skin(),
             104 => self.fetch_skin(),
@@ -872,6 +926,7 @@ impl App {
                 self.online_notice.clear();
                 self.skin = Skin::load(render::DEFAULT_SKIN).unwrap();
                 self.settings.skin_path.clear();
+                self.settings.detected_arm_model = None;
                 self.settings.skin_name = "内置 · 林间旅人".into();
                 self.changed();
             }
@@ -944,14 +999,6 @@ impl App {
                 self.hook();
                 self.changed();
             }
-            124 => {
-                self.settings.outer_layer = !self.settings.outer_layer;
-                self.changed();
-            }
-            138 => {
-                self.settings.show_cape = !self.settings.show_cape;
-                self.changed();
-            }
             139 => {
                 self.settings.chibi = !self.settings.chibi;
 
@@ -963,14 +1010,6 @@ impl App {
             }
             164 => {
                 self.settings.da_dance = !self.settings.da_dance;
-                self.changed();
-            }
-            125 => {
-                self.settings.fps = 30;
-                self.changed();
-            }
-            126 => {
-                self.settings.fps = 60;
                 self.changed();
             }
             160 => {
@@ -1115,10 +1154,7 @@ impl App {
         submenu("外观", &[
             (101, "导入皮肤…", false),
             (0, "", false),
-            (114, "经典手臂", self.settings.arm_model == "classic"),
-            (115, "纤细手臂", self.settings.arm_model == "slim"),
             (0, "", false),
-            (138, "显示正版披风", self.settings.show_cape),
             (139, "Q版小人", self.settings.chibi),
         ]);
         submenu(&format!("大小：{:.0}%", self.settings.scale * 100.), &[
@@ -1159,7 +1195,7 @@ impl App {
         let mut p = POINT { x: 0, y: 0 };
         GetCursorPos(&mut p);
         SetForegroundWindow(self.hwnd);
-        let menu_clock = menu_clock::MenuClock::start(self.hwnd,self.settings.fps);
+        let menu_clock = menu_clock::MenuClock::start(self.hwnd,self.display_fps);
         let id = TrackPopupMenu(
             menu,
             TPM_RETURNCMD | TPM_RIGHTBUTTON,
@@ -1231,6 +1267,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
         return DefWindowProcW(hwnd, msg, w, l);
     }
     let a = &mut *APP;
+    if hwnd == a.cape_panel { return capes::panel_proc(a,hwnd,msg,w,l); }
     if hwnd == a.panel {
         return ui::panel_proc(a, hwnd, msg, w, l);
     }
@@ -1423,6 +1460,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
 }
 /// 读取上次保存的披风文件；没有或损坏时返回 None。
 fn load_cape(settings: &Settings) -> Option<Cape> {
+    if settings.cape_choice == "none" { return None; }
+    if settings.cape_choice != "account" { return capes::load(&settings.cape_choice); }
     if settings.cape_path.is_empty() {
         return None;
     }
@@ -1646,7 +1685,7 @@ fn main() {
             let poll = if app.hidden {
                 0.05
             } else {
-                (1. / app.settings.fps as f64).min(0.008)
+                (1. / app.display_fps as f64).min(0.008)
             };
             // 低级鼠标钩子（WH_MOUSE_LL）挂在消息循环所在线程上，系统要等它
             // 返回才能把鼠标事件派发给其他程序。这里的等待时间必须保持原来的
