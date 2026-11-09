@@ -15,7 +15,7 @@ for PAIR in 'aarch64-apple-darwin arm64 12.0' 'x86_64-apple-darwin x86_64 13.0';
     export MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS"
     cargo build --manifest-path "$ROOT/native/Cargo.toml" --locked --release --lib --target "$RUST_TARGET"
     swiftc -O -file-prefix-map "$HOME=/build-user" -swift-version 5 -target "$SWIFT_ARCH-apple-macosx$MIN_MACOS" \
-        -import-objc-header "$ROOT/macos/PetCore.h" "$ROOT/macos/main.swift" "$ROOT/macos/InputController.swift" "$ROOT/macos/PlatformSupport.swift" "$ROOT/macos/SelfTests.swift" "$ROOT/macos/Console.swift" "$ROOT/macos/MacFeatures.swift" "$ROOT/macos/RegressionTests.swift" "$ROOT/macos/PermissionGuide.swift" "$ROOT/macos/PetMenu.swift" \
+        -import-objc-header "$ROOT/macos/PetCore.h" "$ROOT/macos/main.swift" "$ROOT/macos/InputController.swift" "$ROOT/macos/PlatformSupport.swift" "$ROOT/macos/SelfTests.swift" "$ROOT/macos/Console.swift" "$ROOT/macos/MacFeatures.swift" "$ROOT/macos/RegressionTests.swift" "$ROOT/macos/PermissionGuide.swift" "$ROOT/macos/PetMenu.swift" "$ROOT/macos/CapePicker.swift" "$ROOT/macos/CaptureWindow.swift" \
         "$ROOT/native/target/$RUST_TARGET/release/libpet_core.a" \
         -framework CoreAudio -framework Carbon -framework AppKit -framework ApplicationServices -framework Security -framework SystemConfiguration \
         -o "$ROOT/macos/build/MinecraftPet-$SWIFT_ARCH"
@@ -31,6 +31,9 @@ cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/macos/使用说明-macO
 cp -R "$ROOT/native/licenses" "$APP/Contents/Resources/"
 mkdir -p "$APP/Contents/Resources/assets"
 cp "$ROOT/native/assets/apple-provenance.json" "$APP/Contents/Resources/assets/"
+cp "$ROOT/native/assets/capes/catalog.json" "$APP/Contents/Resources/assets/cape-catalog.json"
+cp "$ROOT/native/assets/decorations/SOURCES.md" "$APP/Contents/Resources/assets/decoration-sources.md"
+cp "$ROOT/native/assets/p4-sources.txt" "$APP/Contents/Resources/assets/"
 cp "$ROOT/native/assets/pat-meow.wav" "$ROOT/native/assets/pat-meow-high.wav" "$APP/Contents/Resources/"
 cp "$ROOT/assets/github.svg" "$APP/Contents/Resources/"
 cp "$ROOT/assets/default-skin.png" "$APP/Contents/Resources/"
@@ -48,8 +51,8 @@ codesign --verify --deep --strict "$APP"
 plutil -lint "$APP/Contents/Info.plist"
 lipo -info "$APP/Contents/MacOS/MinecraftPet"
 cp "$ROOT/macos/使用说明-macOS.md" "$DEST/使用说明-macOS.md"
-if [ -f "$ROOT/macos/更新与验证-2.5.md" ]; then
-    cp "$ROOT/macos/更新与验证-2.5.md" "$DEST/更新与验证.md"
+if [ -f "$ROOT/macos/更新与验证-2.6.md" ]; then
+    cp "$ROOT/macos/更新与验证-2.6.md" "$DEST/更新与验证.md"
 fi
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$DEST/Minecraft桌宠-${VERSION}-mac-universal.zip"
 # Single-chip packages keep the installed app under the 5 MB budget (CONTRIBUTING.md).

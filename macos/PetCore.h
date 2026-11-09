@@ -14,6 +14,9 @@ bool pet_import(PetCore *core, const char *path);
 bool pet_import_profile(PetCore *core, const char *skin_path, const char *cape_path, const char *name, const char *model);
 bool pet_reset(PetCore *core);
 bool pet_restore_skin(PetCore *core);
+const char *pet_cape_catalog(PetCore *core);
+const uint8_t *pet_cape_png(uint32_t index, size_t *length);
+bool pet_select_cape(PetCore *core, const char *id);
 void pet_key(PetCore *core, uint32_t key, bool down, float now);
 void pet_clear_keys(PetCore *core);
 void pet_click(PetCore *core, float now);
@@ -29,6 +32,10 @@ void pet_music(PetCore *core, bool playing);
 /// kind: 0 wave, 1 bounce, 2 shy, 3 clap. Returns false for an unknown kind.
 bool pet_gesture(PetCore *core, uint32_t kind, float now);
 bool pet_needs_frames(PetCore *core, float now);
+/// 0 idle, 1 breathing only, 2 interactive animation. Read-only; time is seconds since start.
+uint32_t pet_frame_demand(PetCore *core, float now);
+/// Bounds-checked resize; invalidates pet_pixels pointer only when dimensions change.
+bool pet_resize(PetCore *core, uint32_t width, uint32_t height);
 const uint8_t *pet_pixels(PetCore *core);
 bool pet_set_glyphs(const uint8_t *bytes, size_t length);
 #endif

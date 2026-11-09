@@ -25,28 +25,35 @@ final class PetPanel: NSPanel {
 /// A provider retains its immutable frame until CoreGraphics finishes with it.
 /// Reuse only unreferenced slots; a slow compositor never grows the buffer pool.
 final class PixelBuffer {
-    let pointer = UnsafeMutableRawPointer.allocate(byteCount: 450 * 525 * 4, alignment: 64)
+    let pointer: UnsafeMutableRawPointer
+    init(bytes: Int) { pointer = .allocate(byteCount: bytes, alignment: 64) }
     deinit { pointer.deallocate() }
 }
 final class PetView: NSView {
     weak var owner: AppDelegate?
-    private var buffers = [PixelBuffer(), PixelBuffer()]
+    private var buffers: [PixelBuffer] = []
+    private var pixelSize = NSSize.zero
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
     var bitmap: CGImage?
     private var dragOffset: NSPoint?
     private var didDrag = false
     override var isFlipped: Bool { true }
-    func updatePixels(_ pixels: UnsafePointer<UInt8>) {
+    func updatePixels(_ pixels: UnsafePointer<UInt8>, width: Int, height: Int) {
+        let size = NSSize(width: width, height: height), bytes = width * height * 4
+        if size != pixelSize {
+            // Old providers retain their own slots until the compositor releases them.
+            buffers = [PixelBuffer(bytes: bytes), PixelBuffer(bytes: bytes)]; pixelSize = size
+        }
         for i in buffers.indices where isKnownUniquelyReferenced(&buffers[i]) {
             let buffer = buffers[i]
-            memcpy(buffer.pointer, pixels, 450 * 525 * 4)
+            memcpy(buffer.pointer, pixels, bytes)
             let retained = Unmanaged.passRetained(buffer).toOpaque()
-            guard let provider = CGDataProvider(dataInfo: retained, data: buffer.pointer, size: 450 * 525 * 4,
+            guard let provider = CGDataProvider(dataInfo: retained, data: buffer.pointer, size: bytes,
                 releaseData: { info, _, _ in if let info { Unmanaged<PixelBuffer>.fromOpaque(info).release() } }) else {
                 Unmanaged<PixelBuffer>.fromOpaque(retained).release(); return
             }
-            bitmap = CGImage(width: 450, height: 525, bitsPerComponent: 8, bitsPerPixel: 32,
-                bytesPerRow: 450 * 4, space: colorSpace,
+            bitmap = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                bytesPerRow: width * 4, space: colorSpace,
                 bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue),
                 provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
             needsDisplay = true; return
@@ -98,6 +105,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     var startupDelay = 0
     var restartPending = false
     let music = MusicMonitor()
+    var capePanel: NSPanel?
+    var capeEntries: [CapeEntry] = []
+    var capePage = 0
+    var captureWindow: NSWindow?
+    var captureView: CaptureView?
+    var captureParked = false
     var permissionPanel: NSWindow?
     var permissionTint: NSView?
     var guidePanel: NSPanel?
@@ -108,6 +121,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     var glyphsReady = false
     var renderedFrames = 0
     var timerActive = true
+    var timerRate: Double = 0
+    var nextDraw: Float = 0
+    var benchmarkCursor: NSPoint?
+    var renderSize = NSSize(width: 450, height: 525)
     var selectedConsolePage = 0
     var uiReady = false
     weak var musicToggle: NSButton?
@@ -158,7 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     let patSound = PatSound()
     var lastTick = ProcessInfo.processInfo.systemUptime
     let start = ProcessInfo.processInfo.systemUptime
-    let smoke = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--self-test-ui") || CommandLine.arguments.contains("--memory-test") || CommandLine.arguments.contains("--self-test-startup") || CommandLine.arguments.contains("--self-test-restart")
+    let smoke = CommandLine.arguments.contains("--cpu-test") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--self-test-ui") || CommandLine.arguments.contains("--memory-test") || CommandLine.arguments.contains("--self-test-startup") || CommandLine.arguments.contains("--self-test-restart")
     let dataDir: URL = {
         if let i = CommandLine.arguments.firstIndex(of: "--data-dir"), CommandLine.arguments.count > i + 1 {
             return URL(fileURLWithPath: CommandLine.arguments[i + 1], isDirectory: true)
@@ -278,6 +295,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
         if CommandLine.arguments.contains("--self-test-restart") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.runRestartRegression() }
+        } else if CommandLine.arguments.contains("--cpu-test") {
+            startCPUExercise()
         } else if CommandLine.arguments.contains("--memory-test") {
             startMemoryExercise()
         } else if CommandLine.arguments.contains("--self-test-startup") {
@@ -321,6 +340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     @objc func quit() { NSApp.terminate(nil) }
     func handleMousePress(_ event: NSEvent? = nil) {
+        guard !CommandLine.arguments.contains("--cpu-test") else { return }
         guard core != nil, pet != nil, !hidden else { return }
         // Local console controls must not trigger pet interactions.
         if let window = event?.window, window !== pet { return }
@@ -347,17 +367,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     @objc func feedApple() { guard core != nil else { return }; pet_feed(core, now); wake() }
     func wake() {
         awakeUntil = now + 0.85
-        if !timerActive { timerActive = true; restartTimer() }
+        nextDraw = 0
+        timerActive = true; restartTimer()
     }
     func applyWindow() {
         pet.ignoresMouseEvents = flag("clickThrough")
         pet.level = flag("alwaysOnTop") ? .floating : .normal
         let size = NSSize(width: 360 * number("scale"), height: 420 * number("scale"))
         pet.setContentSize(size)
+        let pixels = RenderBudget.size(points: size)
+        if pixels != renderSize && pet_resize(core, UInt32(pixels.width), UInt32(pixels.height)) {
+            renderSize = pixels; nextDraw = 0
+        }
     }
     func restartTimer() {
-        timer?.invalidate()
-        let rate = timerActive ? max(30, number("fps")) : (hidden ? 2.0 : 30.0)
+        let rate = hidden ? 2.0 : (timerActive ? max(30, number("fps")) : 30.0)
+        guard timer == nil || rate != timerRate else { return }
+        timer?.invalidate(); timerRate = rate
         let t = Timer(timeInterval: 1.0 / rate, repeats: true) { [weak self] _ in autoreleasepool { self?.tick() } }
         t.tolerance = 0.001; RunLoop.main.add(t, forMode: .common); timer = t
     }
@@ -388,23 +414,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard core != nil else { return }
         let clock = ProcessInfo.processInfo.systemUptime
         let elapsed = min(0.1, max(0, clock-lastTick))
-        if clock - lastTick > 1 { input.resetState(); wake() }; lastTick = clock
+        if clock - lastTick > 1 { input.resetState(); nextDraw = 0 }; lastTick = clock
         if !smoke { input.recoverReleasedKeys() }
-        let cursor = NSEvent.mouseLocation
-        let shift = CGEventSource.flagsState(.combinedSessionState).contains(.maskShift)
+        let cursor = benchmarkCursor ?? NSEvent.mouseLocation
+        let shift = !CommandLine.arguments.contains("--cpu-test") && CGEventSource.flagsState(.combinedSessionState).contains(.maskShift)
         if cursor != lastCursor && flag("trackMouse") { awakeUntil = max(awakeUntil, now+0.05) }
         if shift != lastShift && flag("keyboardEnabled") { wake() }
         lastCursor = cursor; lastShift = shift
         if updateHold() { awakeUntil = max(awakeUntil, now + 0.05) }
-        let active = !hidden && (now <= awakeUntil || pet_needs_frames(core, now))
-        if active != timerActive { timerActive = active; restartTimer() }
-        if active {
+        let demand = pet_frame_demand(core, now)
+        let interacting = now <= awakeUntil
+        let active = !hidden && (interacting || demand != 0)
+        let highRate = active && (interacting || demand == 2)
+        if highRate != timerActive {
+            timerActive = highRate; nextDraw = now; restartTimer()
+        }
+        restartTimer() // Also handles hidden/unhidden while already idle; no-op at the same rate.
+        let fps = RenderBudget.fps(demand: demand, interacting: interacting, requested: number("fps"))
+        if active && now >= nextDraw {
             let r = pet.frame
             let x = Float(cursor.x - r.minX), y = Float(r.maxY - cursor.y)
-            if let bytes = pet_render(core, x, y, Float(r.width), Float(r.height), shift, now, min(0.05, max(0.001, now-lastDraw))) {
-                view.updatePixels(bytes); renderedFrames += 1
+            if let bytes = pet_render(core, x, y, Float(r.width), Float(r.height), shift, now, min(0.1, max(0.001, now-lastDraw))) {
+                view.updatePixels(bytes, width: Int(renderSize.width), height: Int(renderSize.height)); renderedFrames += 1
+                if captureWindow?.isVisible == true { captureView?.bitmap = view.bitmap }
             }
             lastDraw = now
+            // Advance a deadline, not now+period: timer jitter must not halve the FPS.
+            let period = Float(1 / fps)
+            nextDraw += period
+            if nextDraw <= now { nextDraw = now + period }
         }
         let r = pet.frame
         let over = pet_hit(core, Float((cursor.x-r.minX)/r.width), Float((r.maxY-cursor.y)/r.height))
@@ -498,6 +536,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     func applicationWillTerminate(_ notification: Notification) {
         guard core != nil else { return }
+        closeCapture(); capePanel?.orderOut(nil); capePanel = nil
         if pet != nil && !startupPending { savePosition() }; input.stop(); music.stop(); timer?.invalidate(); permissionTimer?.invalidate()
         if let monitor = mouseMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = localMouseMonitor { NSEvent.removeMonitor(monitor) }
@@ -631,7 +670,7 @@ if CommandLine.arguments.contains("--probe-audio") {
     exit(0)
 }
 if CommandLine.arguments.contains("--self-test-input") { InputSelfTests.run(); exit(0) }
-if CommandLine.arguments.contains(where: { ["--self-test-ui", "--smoke-test", "--memory-test", "--self-test-startup", "--self-test-restart"].contains($0) })
+if CommandLine.arguments.contains(where: { ["--cpu-test", "--self-test-ui", "--smoke-test", "--memory-test", "--self-test-startup", "--self-test-restart"].contains($0) })
     && !CommandLine.arguments.contains("--data-dir") { fputs("UI tests require --data-dir\n", stderr); exit(2) }
 let app = NSApplication.shared
 let delegate = AppDelegate()

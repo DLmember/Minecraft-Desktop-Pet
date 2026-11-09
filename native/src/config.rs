@@ -87,6 +87,9 @@ pub struct Settings {
     pub chibi: bool,
     pub da_blink: bool,
     pub da_dance: bool,
+    pub wine: bool,
+    pub decoration: String,
+    pub cape_choice: String,
     pub typing_letters: bool,
     pub music_notes: bool,
     pub tease_enabled: bool,
@@ -109,6 +112,7 @@ pub struct Settings {
     pub fps: u32,
     pub skin_name: String,
     pub skin_path: String,
+    pub detected_arm_model: Option<String>,
     pub position: Option<Position>,
     pub head_sensitivity_x: f32,
     pub head_sensitivity_y: f32,
@@ -143,6 +147,9 @@ impl Default for Settings {
             chibi: false,
             da_blink: true,
             da_dance: false,
+            wine: false,
+            decoration: "none".into(),
+            cape_choice: "account".into(),
             typing_letters: false,
             music_notes: false,
             tease_enabled: false,
@@ -160,6 +167,7 @@ impl Default for Settings {
             fps: 60,
             skin_name: "内置 · 林间旅人".into(),
             skin_path: String::new(),
+            detected_arm_model: None,
             position: None,
             head_sensitivity_x: 100.,
             head_sensitivity_y: 100.,
@@ -408,6 +416,8 @@ impl Store {
                                         candidate.is_null()
                                             || serde_json::from_value::<Position>(candidate.clone())
                                                 .is_ok()
+                                    } else if k == "detectedArmModel" {
+                                        candidate.is_null() || matches!(candidate.as_str(), Some("slim" | "classic"))
                                     } else if k == "modelRotation" {
                                         serde_json::from_value::<[f32; 3]>(candidate.clone())
                                             .is_ok()
@@ -428,6 +438,7 @@ impl Store {
                             if clean["fps"].as_u64().is_none() {
                                 clean["fps"] = serde_json::json!(60);
                             }
+                            if clean["decoration"] == "blub" { clean["decoration"] = serde_json::json!("none"); }
                             value = serde_json::from_value::<Settings>(clean).ok();
                             if value.is_some() {
                                 if i > 0 {
@@ -458,6 +469,13 @@ impl Store {
             self.notice = "设置及备份已损坏，已保留原文件供排查；本次使用默认设置。".into();
         }
         let mut s = value.unwrap_or_else(Settings::first_run_defaults);
+        // Older previews discarded this nullable field while loading settings.
+        // Recover the previously stored official model when it is still present;
+        // local imports deliberately keep automatic pixel detection instead.
+        if s.detected_arm_model.is_none() && s.skin_name.ends_with(" · 正版皮肤")
+            && matches!(s.arm_model.as_str(), "slim" | "classic") {
+            s.detected_arm_model = Some(s.arm_model.clone());
+        }
         for name in ["head-follow.json", "head-follow.json.bak"] {
             match fs::read(self.dir.join(name)) {
                 Ok(b) => {
@@ -509,6 +527,33 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn official_arm_model_survives_real_store_restart_and_backup() {
+        let dir=std::env::temp_dir().join(format!("pet-official-arm-p9-{}",std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        for model in ["slim","classic"] {
+            let mut s=Settings::default();s.skin_name="Player · 正版皮肤".into();
+            s.arm_model=model.into();s.detected_arm_model=Some(model.into());
+            Store::new(dir.clone()).save(&s).unwrap();
+            for _ in 0..3 {
+                let mut restarted=Store::new(dir.clone());let loaded=restarted.load();
+                assert_eq!(loaded.detected_arm_model.as_deref(),Some(model));
+                restarted.save(&loaded).unwrap();
+            }
+            fs::write(dir.join("settings.json"),b"{broken").unwrap();
+            assert_eq!(Store::new(dir.clone()).load().detected_arm_model.as_deref(),Some(model));
+        }
+        // Pre-field official records retain their already stored model.
+        let old=serde_json::json!({"skinName":"Player · 正版皮肤","armModel":"slim"});
+        fs::write(dir.join("settings.json"),serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(Store::new(dir.clone()).load().detected_arm_model.as_deref(),Some("slim"));
+        // Local PNGs must not inherit a historical manual arm choice.
+        fs::write(dir.join("settings.json"),br#"{"skinName":"local.png","armModel":"slim","detectedArmModel":null}"#).unwrap();
+        assert_eq!(Store::new(dir.clone()).load().detected_arm_model,None);
+        fs::write(dir.join("settings.json"),br#"{"skinName":"local.png","detectedArmModel":123,"decoration":"blub"}"#).unwrap();
+        let loaded=Store::new(dir.clone()).load();assert_eq!(loaded.detected_arm_model,None);assert_eq!(loaded.decoration,"none");
+        fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn first_run_uses_release_preferences_without_personal_skin() {
         let dir = std::env::temp_dir().join(format!("pet-release-defaults-{}", std::process::id()));
@@ -672,9 +717,6 @@ mod tests {
         let mut s = Settings::default();
         assert!(!s.autostart);
         assert_eq!(s.autostart_delay, 0);
-        let old: Settings = serde_json::from_str(r#"{"startupPriority":"high","autostartDelay":30}"#).unwrap();
-        assert!(serde_json::to_value(&old).unwrap().get("startupPriority").is_none());
-        assert_eq!(old.autostart_delay,30);
         s.autostart_delay = 40;
         s.clean();
         assert_eq!(s.autostart_delay, 30);

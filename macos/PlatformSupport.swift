@@ -105,3 +105,18 @@ final class OfficialSessionDelegate: NSObject, URLSessionTaskDelegate {
         completionHandler(allowed ? request : nil)
     }
 }
+
+/// User FPS remains the interaction ceiling; a small breathing motion needs fewer frames.
+enum RenderBudget {
+    static func fps(demand: UInt32, interacting: Bool, requested: Double) -> Double {
+        interacting || demand == 2 ? max(30, requested) : min(15, max(1, requested))
+    }
+    static func size(points: NSSize) -> NSSize {
+        // Preserve former quality at 100% and above; only shrink the canvas for
+        // smaller pets. Enlarging the window must not silently multiply CPU work.
+        func dimension(_ value: CGFloat, cap: CGFloat) -> CGFloat {
+            value.isFinite ? min(cap, max(1, (value * 1.25).rounded())) : 1
+        }
+        return NSSize(width: dimension(points.width, cap: 450), height: dimension(points.height, cap: 525))
+    }
+}

@@ -1,6 +1,10 @@
 pub(crate) use effects::install_glyphs;
 #[path = "render_effects.rs"]
 mod effects;
+#[path = "render_decorations.rs"]
+mod decorations;
+#[path = "decoration_models.rs"]
+mod decoration_models;
 #[path = "render_gestures.rs"]
 mod gestures;
 pub use gestures::Gesture;
@@ -53,8 +57,9 @@ fn shade_lut() -> &'static [[[u8; 256]; 3]; 6] {
     })
 }
 fn colors_for(image: &RgbaImage) -> Vec<[[u8; 3]; 6]> {
-    // macOS uses the same LUT at sampling time, saving 18 MiB for a 1024² skin.
-    if cfg!(all(target_os = "macos", not(test))) { return Vec::new(); }
+    // Small atlases cost at most 288 KiB and benefit from precomputed colours.
+    // Keep the memory-saving LUT path for HD skins (18 MiB avoided at 1024²).
+    if cfg!(all(target_os = "macos", not(test))) && image.width() > 128 { return Vec::new(); }
     let lut = shade_lut();
     image
         .pixels()
@@ -277,6 +282,7 @@ impl Skin {
             .into_rgba8();
         let legacy = h * 2 == w;
         let k = w / 64;
+
         if legacy {
             let transparent =
                 (0..16 * k).any(|y| (32 * k..64 * k).any(|x| image.get_pixel(x, y)[3] < 128));
@@ -354,8 +360,6 @@ pub fn key_position(vk: u32) -> Option<Vec2> {
     }
     None
 }
-/// macOS：交替模式和未收录的按键没有键位，手原本只下沉一点点（约 7°）。
-/// 让这只手落到自己这半边的主键行，按动和精确模式一样看得清，且不离开键盘。
 fn keyless_press(sign: f32) -> Option<Vec2> {
     if cfg!(target_os = "macos") { Some(Vec2::new(sign * 1.5, -0.64)) } else { None }
 }
@@ -520,6 +524,17 @@ fn degrees(values: &[f32]) -> Quat {
         values[2].to_radians(),
     )
 }
+fn wine_transform(s: &Settings, p: &Pose) -> Mat4 {
+    if !s.wine { return Mat4::IDENTITY; }
+    let phase=(p.clock*130./60.).fract();
+    let t=if phase<0.5 {phase*2.} else {(1.-phase)*2.};
+    let ease=if t<0.5 {2.*t*t} else {1.-(-2.*t+2.).powi(2)/2.};
+    let anchor=if s.is_sitting() {if s.chibi {4.5} else {6.}} else {0.};
+    Mat4::from_translation(Vec3::Y*anchor)
+        * Mat4::from_scale(Vec3::new(1.,1.-0.5*ease,1.))
+        * Mat4::from_rotation_y(p.clock*32.5/60.*std::f32::consts::TAU)
+        * Mat4::from_translation(-Vec3::Y*anchor)
+}
 fn model_transform(s: &Settings) -> Mat4 {
     Mat4::from_translation(Vec3::Y * 15.)
         * Mat4::from_quat(degrees(&s.model_rotation))
@@ -602,6 +617,16 @@ impl Pose {
         self.gesture.is_some() || self.gesture_return.is_some() || self.dance > 0.001 || self.feed_start.is_some() || self.tease_start.is_some() || self.breathing_weight>0.001 || !self.letters.is_empty() || !self.notes.is_empty()
             || self.hold_active() || self.pat_start.is_some()
     }
+    /// AppKit separates slow breathing from gestures and short-lived effects.
+    /// Windows keeps its existing needs_frames policy.
+    pub fn interactive_frames(&self, now: f32) -> bool {
+        self.gesture.is_some() || self.gesture_return.is_some() || self.dance > 0.001
+            || self.feed_start.is_some() || self.tease_start.is_some()
+            || !self.letters.is_empty() || !self.notes.is_empty()
+            || self.hold_active() || self.pat_start.is_some() || self.swing_start.is_some()
+            || self.squash_start.is_some_and(|t| now - t < 0.35)
+    }
+    pub fn breathing_frames(&self) -> bool { self.breathing_weight > 0.001 }
     pub fn key(&mut self, vk: u32, down: bool, now: f32, s: &Settings) {
         if down { self.gesture_input(now); }
         if !down {
@@ -905,14 +930,14 @@ impl Pose {
         let p = project(neck + view * (Vec3::Y * 3.), width, height);
         let dx = (cursor.x - p.x) / (width * 0.8).max(200.);
         let dy = (cursor.y - p.y) / (height * 0.65).max(180.);
-        let x = if s.track_mouse {
+        let x = if s.track_mouse && !s.wine {
             (dx * 0.3 * s.head_sensitivity_x / 100.)
                 .atan()
                 .clamp(-s.head_range_x.to_radians(), s.head_range_x.to_radians())
         } else {
             0.
         };
-        let y = if s.track_mouse {
+        let y = if s.track_mouse && !s.wine {
             (dy * 0.95 * s.head_sensitivity_y / 100.)
                 .atan()
                 .clamp(-s.head_range_y.to_radians(), s.head_range_y.to_radians())
@@ -947,7 +972,9 @@ impl Pose {
         self.arm_bob = -3. * t.sin() * i;
         self.leg_roll = t.sin() * i;
         self.leg_slide = -12. * t.sin() * i;
-        if s.track_mouse {
+        if s.wine {
+            self.head_rotation = Quat::IDENTITY;
+        } else if s.track_mouse {
             let desired = view
                 * Quat::from_rotation_y(horizontal)
                 * Quat::from_rotation_x(vertical)
@@ -965,12 +992,12 @@ impl Pose {
             };
             self.head_rotation = authored
                 * rotation(
-                    vertical - 0.25 * self.crouch,
+                    (if s.wine {0.} else {vertical}) - 0.25 * self.crouch,
                     (if s.posture == "custom" {
                         0.
                     } else {
                         front_yaw()
-                    }) + horizontal,
+                    }) + if s.wine {0.} else {horizontal},
                     0.,
                 )
                 * Quat::from_rotation_z(self.head_roll)
@@ -1133,7 +1160,9 @@ impl Pose {
     fn resolve_letter_origins(&mut self, s: &Settings, skin: &Skin) {
         if !self.letters.iter().any(|l|l.pos.is_none() && l.hand_origin.is_none()) { return; }
         let boxes=parts(s,skin,self);
-        let inverse=model_transform(s).inverse();
+        // Store an untransformed origin: the letter renderer applies the same
+        // complete parent transform as the keyboard exactly once.
+        let inverse=(wine_transform(s,self)*model_transform(s)).inverse();
         let hands=[0,1].map(|side| {
             let arm=&boxes[2+side];
             inverse.transform_point3(arm.transform.transform_point3(Vec3::new(0.,if s.chibi {-2.} else {-6.},0.)))
@@ -1455,7 +1484,7 @@ fn parts_with_cape(
     let head_layers = if s.outer_layer { 2 } else { 1 };
     cover_cheeks(&mut v, limb_layers + head_layers - 1,
         limb_layers + head_layers, limb_layers, pose.cheek_cover);
-    let global = model_transform(s);
+    let global = wine_transform(s,pose) * model_transform(s);
     for part in &mut v {
         part.transform = global * part.transform;
     }
@@ -1715,7 +1744,7 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose, cape: Option<&Cape>) -> V
         });
     }
     cover_cheeks(&mut v, head_count - 1, head_count * 2, head_count, pose.cheek_cover);
-    let global = model_transform(s);
+    let global = wine_transform(s,pose) * model_transform(s);
     for part in &mut v {
         part.transform = global * part.transform;
     }
@@ -1732,6 +1761,32 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose, cape: Option<&Cape>) -> V
     });
     v
 }
+#[cfg(target_os = "macos")]
+fn keyboard_shades(color: [u8; 3]) -> [[u8; 3]; 6] {
+    [0.80f32, 0.80, 1., 0.62, 0.94, 0.86].map(|shade| color.map(|c| {
+        let l = (((c as f32 / 255. + 0.055) / 1.055).powf(2.4) * shade).max(0.);
+        ((1.055 * l.powf(1. / 2.4) - 0.055) * 255. + 0.5) as u8
+    }))
+}
+/// Intersect the three integer half-planes with a scanline. All edge rules are
+/// unchanged; only skip pixels outside the triangle before entering the hot loop.
+#[cfg(target_os = "macos")]
+fn covered_span(coverage: [i64; 3], steps: [i64; 3], width: usize) -> std::ops::Range<usize> {
+    let mut first = 0i64;
+    let mut end = width as i64;
+    for (value, step) in coverage.into_iter().zip(steps) {
+        if step > 0 {
+            first = first.max(-value.div_euclid(step));
+        } else if step < 0 {
+            end = end.min(value.div_euclid(-step) + 1);
+        } else if value < 0 {
+            return 0..0;
+        }
+    }
+    let first = first.clamp(0, width as i64) as usize;
+    let end = end.clamp(0, width as i64) as usize;
+    first..end.max(first)
+}
 pub struct Frame {
     pub width: usize,
     pub height: usize,
@@ -1739,7 +1794,11 @@ pub struct Frame {
     depth: Vec<f32>,
     pub bounds: [i32; 4],
     keyboard_color: [u8; 3],
+    #[cfg(target_os = "macos")]
+    keyboard_shades: [[u8; 3]; 6],
     keyboard_detailed: bool,
+    #[cfg(all(test, target_os = "macos"))]
+    reference_coverage: bool,
 }
 impl Frame {
     pub fn new(w: usize, h: usize) -> Self {
@@ -1750,7 +1809,11 @@ impl Frame {
             depth: vec![f32::INFINITY; w * h],
             bounds: [0; 4],
             keyboard_color: [131, 135, 138],
+            #[cfg(target_os = "macos")]
+            keyboard_shades: keyboard_shades([131, 135, 138]),
             keyboard_detailed: false,
+            #[cfg(all(test, target_os = "macos"))]
+            reference_coverage: false,
         }
     }
     pub fn draw(&mut self, s: &Settings, skin: &Skin, pose: &Pose) {
@@ -1760,7 +1823,10 @@ impl Frame {
     pub fn draw_ext(&mut self, s: &Settings, skin: &Skin, cape: Option<&Cape>, pose: &Pose) {
         let rgb = u32::from_str_radix(s.keyboard_color.trim_start_matches('#'), 16).unwrap_or(0x83878A);
         self.keyboard_detailed = s.keyboard_style == "detailed";
-        self.keyboard_color = [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
+        let color = [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
+        #[cfg(target_os = "macos")]
+        if color != self.keyboard_color { self.keyboard_shades = keyboard_shades(color); }
+        self.keyboard_color = color;
         self.pixels.fill(0);
         self.depth.fill(f32::INFINITY);
         self.bounds = [self.width as i32, self.height as i32, 0, 0];
@@ -1774,6 +1840,7 @@ impl Frame {
                 self.draw_box(&part, Tex::of(&skin.image, &skin.colors));
             }
         }
+        self.draw_decorations(s,skin,pose);
         self.draw_effects(s,skin,pose);
         self.draw_tease_hand(s,skin,pose);
     }
@@ -1803,7 +1870,15 @@ impl Frame {
         for (f, &(uax, vax, wax, ud, vd, ww, hh, dd)) in planes.iter().enumerate() {
             let mut pos = [Vec3::ZERO; 4];
             let mut uv = [Vec2::ZERO; 4];
-            let (x, y, tw, th) = regions[f];
+            let (mut x, y, mut tw, th) = if b.size.x == 0. && f < 2 {
+                // A zero-thickness fin has one texture, visible from both sides.
+                // The ordinary cuboid's opposite face points to unrelated atlas pixels.
+                regions[1]
+            } else { regions[f] };
+            if b.size.x == 0. && f == 0 {
+                x += tw;
+                tw = -tw;
+            }
             // Q 版每面独立 UV：把 [u0,v0,u1,v1]（0..16 单位）按 rotation 排到
             // 四个顶点上，再乘 4 转成 64 基准贴图坐标。
             // 坐标映射是绕 Y 轴 180° 的镜像，会翻转南北东西面的 u 轴（左右），
@@ -2003,8 +2078,15 @@ impl Frame {
             .fold(f32::NEG_INFINITY, f32::max)
             .ceil()
             .min(self.height as f32) as usize;
+        // Entirely off-canvas geometry has no scanline span (also avoids unsigned subtraction).
+        #[cfg(target_os = "macos")]
+        if minx >= maxx || miny >= maxy { return; }
         let texscale = skin.image.width() as f32 / 64.;
+        #[cfg(not(target_os = "macos"))]
         let shades = [0.80f32, 0.80, 1., 0.62, 0.94, 0.86];
+        #[cfg(target_os = "macos")]
+        let gray = self.keyboard_shades[face];
+        #[cfg(not(target_os = "macos"))]
         let gray = self.keyboard_color.map(|c| {
             let l = (((c as f32 / 255. + 0.055) / 1.055).powf(2.4) * shades[face]).max(0.);
             ((1.055 * l.powf(1. / 2.4) - 0.055) * 255. + 0.5) as u8
@@ -2048,12 +2130,26 @@ impl Frame {
                 dx * (miny as i64 * 256 + 128 - s.1) - dy * (minx as i64 * 256 + 128 - s.0) + bias,
             )
         });
+        let sample_lut = if skin.colors.is_empty() { Some(&shade_lut()[face]) } else { None };
         for y in miny..maxy {
             let row_a = a0 + (y - miny) as f32 * ay;
             let row_c = c0 + (y - miny) as f32 * cy;
             let coverage = edges.map(|(dx, _, start)| start + dx * (y - miny) as i64 * 256);
-            for x in minx..maxx {
+            #[cfg(target_os = "macos")]
+            let span = covered_span(coverage, edges.map(|(_, dy, _)| -dy * 256), maxx - minx);
+            #[cfg(all(test, target_os = "macos"))]
+            let span = if self.reference_coverage { 0..maxx-minx } else { span };
+            #[cfg(target_os = "macos")]
+            let pixels = (minx + span.start)..(minx + span.end);
+            #[cfg(not(target_os = "macos"))]
+            let pixels = minx..maxx;
+            for x in pixels {
+                #[cfg(not(target_os = "macos"))]
                 if (0..3).any(|e| coverage[e] - edges[e].1 * (x - minx) as i64 * 256 < 0) {
+                    continue;
+                }
+                #[cfg(all(test, target_os = "macos"))]
+                if self.reference_coverage && (0..3).any(|e| coverage[e] - edges[e].1 * (x - minx) as i64 * 256 < 0) {
                     continue;
                 }
                 let a = row_a + (x - minx) as f32 * ax;
@@ -2085,9 +2181,8 @@ impl Frame {
                     let ti = (yy * skin.image.width() + xx) as usize;
                     {
                         let p = skin.image.get_pixel(xx, yy);
-                        let color = if skin.colors.is_empty() {
-                            let lut = shade_lut();
-                            [lut[face][0][p[0] as usize], lut[face][1][p[1] as usize], lut[face][2][p[2] as usize]]
+                        let color = if let Some(lut) = sample_lut {
+                            [lut[0][p[0] as usize], lut[1][p[1] as usize], lut[2][p[2] as usize]]
                         } else { skin.colors[ti][face] };
                         (color, p[3])
                     }
@@ -2142,6 +2237,84 @@ fn edge(a: Vec3, b: Vec3, p: Vec3) -> f32 {
 mod tests {
     use super::*;
     #[test]
+    #[cfg(target_os = "macos")]
+    fn scanline_spans_match_integer_edge_coverage() {
+        for width in [0,1,17,525] {
+            for value in [-1025,-256,-1,0,1,256,1025] {
+                for step in [-257,-16,0,16,257] {
+                    let coverage = [value, 511-value, 1024];
+                    let steps = [step,-step,0];
+                    let expected: Vec<_> = (0..width).filter(|&x| (0..3).all(|e| coverage[e]+steps[e]*x as i64>=0)).collect();
+                    assert_eq!(covered_span(coverage,steps,width).collect::<Vec<_>>(),expected);
+                }
+            }
+        }
+    }
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn scanline_spans_match_random_half_planes() {
+        let mut seed = 713u64;
+        let mut next = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1); (seed >> 32) as i64 };
+        for _ in 0..5000 {
+            let width = (next() % 512) as usize;
+            let coverage = std::array::from_fn(|_| next() % 200001 - 100000);
+            let steps = std::array::from_fn(|_| next() % 2049 - 1024);
+            let expected: Vec<_> = (0..width).filter(|&x| (0..3).all(|e| coverage[e]+steps[e]*x as i64>=0)).collect();
+            assert_eq!(covered_span(coverage,steps,width).collect::<Vec<_>>(),expected);
+        }
+    }
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn scanline_raster_is_pixel_identical() {
+        let mut skin = Skin::load(DEFAULT_SKIN).unwrap();
+        // Include semitransparent outer layers, where a single coverage error doubles blending.
+        for pixel in skin.image.pixels_mut() { if pixel[3] > 0 { pixel[3] = 160; } }
+        for chibi in [false,true] { for posture in ["standing","sitting","custom"] {
+            for style in ["simple","detailed"] {
+                let mut s = Settings::default();
+                s.chibi=chibi; s.posture=posture.into(); s.keyboard_style=style.into();
+                s.keyboard_color="#01020A".into(); s.breathing_animation=true;
+                s.model_rotation = [17., -23., 11.];
+                let mut pose = Pose::new(&s);
+                pose.update(&s,&skin,Vec2::new(22.,300.),360.,420.,false,1.2,0.016);
+                let mut optimized=Frame::new(234,273);
+                let mut reference=Frame::new(234,273); reference.reference_coverage=true;
+                optimized.draw(&s,&skin,&pose); reference.draw(&s,&skin,&pose);
+                assert_eq!(optimized.pixels,reference.pixels,"{chibi}/{posture}/{style}");
+                assert_eq!(optimized.depth,reference.depth);
+                assert_eq!(optimized.bounds,reference.bounds);
+            }
+        }}
+    }
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn cached_keyboard_shades_match_original_formula() {
+        for color in [[0,0,0],[1,2,10],[131,135,138],[255,255,255],[255,0,128]] {
+            let cached = keyboard_shades(color);
+            for (face,shade) in [0.80f32,0.80,1.,0.62,0.94,0.86].into_iter().enumerate() {
+                let expected = color.map(|c| {
+                    let l = (((c as f32 / 255. + 0.055) / 1.055).powf(2.4) * shade).max(0.);
+                    ((1.055 * l.powf(1. / 2.4) - 0.055) * 255. + 0.5) as u8
+                });
+                assert_eq!(cached[face],expected);
+            }
+        }
+    }
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn offscreen_triangles_leave_frame_untouched() {
+        let skin = Skin::load(DEFAULT_SKIN).unwrap();
+        let s = Settings::default();
+        let pose = Pose::new(&s);
+        let part = parts_with_cape(&s,&skin,&pose,None).remove(0);
+        for offset in [Vec3::new(200.,0.,0.), Vec3::new(0.,200.,0.), Vec3::new(-200.,0.,0.)] {
+            let mut f = Frame::new(32,32);
+            let p = [Vec3::ZERO,Vec3::new(8.,0.,0.),Vec3::new(0.,8.,0.)].map(|p|p+offset);
+            f.triangle(p,[Vec2::ZERO;3],0,&part,Tex::of(&skin.image,&skin.colors));
+            assert!(f.pixels.iter().all(|&v|v==0));
+        }
+    }
+    #[test]
     fn compact_color_sampling_is_pixel_identical() {
         let mut skin = Skin::load(DEFAULT_SKIN).unwrap();
         let mut s = Settings::default();
@@ -2160,7 +2333,25 @@ mod tests {
             }
         }
     }
-
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn alternating_press_is_as_visible_as_precise() {
+        for chibi in [false, true] {
+            let (mut s, skin, mut p) = if chibi { seated_chibi() } else { seated() };
+            s.typing_mode = "alternating".into();
+            for i in 0..120 { tick(&mut p, &s, &skin, 0.5 + i as f32 / 120., false); }
+            let idle = p.arms;
+            p.key(81, true, 2., &s);
+            let side = p.held[0].side;
+            let mut reach = 0f32;
+            for i in 0..60 {
+                tick(&mut p, &s, &skin, 2. + i as f32 / 120., false);
+                reach = reach.max(p.arms[side].angle_between(idle[side]));
+            }
+            assert!(reach.to_degrees() > 15., "chibi={chibi} reach={}", reach.to_degrees());
+            assert!(p.arms[1 - side].angle_between(idle[1 - side]) < 0.02);
+        }
+    }
     #[test]
     fn breathing_runs_immediately_through_actions_and_preserves_custom_pose() {
         let skin=Skin::load(DEFAULT_SKIN).unwrap();
@@ -3725,25 +3916,6 @@ mod tests {
         p.key(81, false, 4., &s);
         p.key(81, true, 4.01, &s);
         assert_ne!(p.held[0].side, side);
-    }
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn alternating_press_is_as_visible_as_precise() {
-        for chibi in [false, true] {
-            let (mut s, skin, mut p) = if chibi { seated_chibi() } else { seated() };
-            s.typing_mode = "alternating".into();
-            for i in 0..120 { tick(&mut p, &s, &skin, 0.5 + i as f32 / 120., false); }
-            let idle = p.arms;
-            p.key(81, true, 2., &s);
-            let side = p.held[0].side;
-            let mut reach = 0f32;
-            for i in 0..60 {
-                tick(&mut p, &s, &skin, 2. + i as f32 / 120., false);
-                reach = reach.max(p.arms[side].angle_between(idle[side]));
-            }
-            assert!(reach.to_degrees() > 15., "chibi={chibi} reach={}", reach.to_degrees());
-            assert!(p.arms[1 - side].angle_between(idle[1 - side]) < 0.02);
-        }
     }
     #[test]
     fn swing_overrides_then_returns_to_live_keyboard_pose() {

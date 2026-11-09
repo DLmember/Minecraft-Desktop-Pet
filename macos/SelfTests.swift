@@ -14,6 +14,14 @@ enum InputSelfTests {
             let utf16 = Array(text.utf16); event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
             return event
         }
+        check(RenderBudget.fps(demand: 1, interacting: false, requested: 120) == 15, "breathing uses low-rate budget")
+        check(RenderBudget.fps(demand: 1, interacting: true, requested: 120) == 120, "input overrides breathing budget")
+        check(RenderBudget.fps(demand: 2, interacting: false, requested: 60) == 60, "gesture keeps requested FPS")
+        check(RenderBudget.size(points: NSSize(width: 360, height: 420)) == NSSize(width: 450, height: 525), "default render quality retained")
+        check(RenderBudget.size(points: NSSize(width: 234, height: 273)) == NSSize(width: 293, height: 341), "small pet uses smaller canvas")
+        check(RenderBudget.size(points: NSSize(width: CGFloat.nan, height: CGFloat.infinity)) == NSSize(width: 1, height: 1), "nonfinite render geometry is bounded")
+        check(RenderBudget.size(points: NSSize(width: 10000, height: -1)) == NSSize(width: 450, height: 1), "render allocation has limits")
+        check(RenderBudget.size(points: NSSize(width: 648, height: 756)) == NSSize(width: 450, height: 525), "enlarging does not increase the old pixel budget")
         let chat = QuickChat()
         check(!TapHealth.hasKeys(0x1000), "flags-only tap is not a working keyboard connection")
         check(!TapHealth.hasKeys(0x1400), "missing keyUp is not a working connection")

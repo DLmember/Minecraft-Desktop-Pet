@@ -319,7 +319,7 @@ impl Frame {
                     let q = s.chibi_body_scale / 100.;
                     Vec3::new(pos.x * 0.4 * q, 3. + 0.45 * q, (2.8 + pos.y * 0.18) * q) * 1.5
                 } else { Vec3::new(pos.x, 10.3, 9.4 + pos.y) } } else { continue };
-                let world=model_transform(s).transform_point3(local);
+                let world=(wine_transform(s,pose)*model_transform(s)).transform_point3(local);
                 let mut screen=project(world,self.width as f32,self.height as f32);
                 screen.y-=rise*t*self.width as f32/44.;
                 self.label(&letter.label,screen,1.-t*t,letter.color);
@@ -437,9 +437,9 @@ mod tests {
     #[test]
     fn fallback_letters_use_selected_hand_and_keep_their_origin() {
         let skin=Skin::load(DEFAULT_SKIN).unwrap();
-        for chibi in [false,true] { for mode in ["precise","alternating"] {
+        for wine in [false,true] { for chibi in [false,true] { for mode in ["precise","alternating"] {
             let mut s=Settings::default();s.posture="sitting".into();s.typing_letters=true;
-            s.chibi=chibi;s.typing_mode=mode.into();
+            s.chibi=chibi;s.typing_mode=mode.into();s.wine=wine;
             let mut p=Pose::new(&s);
             p.key(96,true,0.,&s);p.key(97,true,0.,&s);
             p.update(&s,&skin,Vec2::ZERO,360.,420.,false,0.01,0.01);
@@ -448,7 +448,7 @@ mod tests {
             let boxes=parts(&s,&skin,&p);
             for letter in &p.letters {
                 let arm=&boxes[2+letter.side];
-                let expected=model_transform(&s).inverse().transform_point3(arm.transform.transform_point3(Vec3::new(0.,if chibi {-2.} else {-6.},0.)));
+                let expected=(wine_transform(&s,&p)*model_transform(&s)).inverse().transform_point3(arm.transform.transform_point3(Vec3::new(0.,if chibi {-2.} else {-6.},0.)));
                 assert!(letter.hand_origin.unwrap().abs_diff_eq(expected,1e-5));
             }
             let origin=p.letters[0].hand_origin;
@@ -457,7 +457,7 @@ mod tests {
             p.key(96,true,0.3,&s);assert_eq!(p.letters.len(),2);
             p.key(65,true,0.3,&s);
             assert_eq!(p.letters[2].pos.is_none(),mode=="alternating");
-        }}
+        }}}
     }
     #[test]
     #[cfg(windows)]

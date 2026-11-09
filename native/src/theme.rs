@@ -23,6 +23,7 @@ impl App {
         let dark=self.panel_dark as i32;
         windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(self.panel,20,&dark as *const _ as *const _,4);
         self.github_icon();
+        self.refresh_capes();
         RedrawWindow(self.panel,null(),null_mut(),RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);
     }
     pub(super) unsafe fn theme_message(&mut self,hwnd:HWND,msg:u32,w:WPARAM,l:LPARAM)->Option<LRESULT> {

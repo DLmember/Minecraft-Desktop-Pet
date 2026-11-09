@@ -45,12 +45,37 @@ extension AppDelegate {
                 precondition(root.hitTest(point) === button, "Scaled navigation retains mouse hit testing")
             }
         }
+        // A CGImage must own immutable pixels even when the pool resizes or advances.
+        let originalSettings = settings
+        for scale in [0.65, 1.0, 1.8] {
+            settings["scale"] = scale; changed(); tick()
+            let expected = RenderBudget.size(points: pet.frame.size)
+            precondition(renderSize == expected && view.bitmap?.width == Int(expected.width)
+                         && view.bitmap?.height == Int(expected.height), "Window/core/image geometry stays synchronized")
+        }
+        settings = originalSettings; changed(); tick()
+        let wasHidden = hidden
+        hidden = true; tick(); precondition(timerRate == 2, "Hidden pet uses low-frequency checks")
+        hidden = false; wake(); precondition(timerRate == max(30, number("fps")), "Unhide wakes without waiting for the idle timer")
+        hidden = wasHidden; wake()
+        let probe = PetView(frame: NSRect(x: 0, y: 0, width: 16, height: 16))
+        let red = [UInt8](repeating: 127, count: 16 * 16 * 4)
+        red.withUnsafeBufferPointer { probe.updatePixels($0.baseAddress!, width: 16, height: 16) }
+        let old = probe.bitmap!
+        let sameSize = [UInt8](repeating: 19, count: 16 * 16 * 4)
+        sameSize.withUnsafeBufferPointer { probe.updatePixels($0.baseAddress!, width: 16, height: 16) }
+        precondition((old.dataProvider!.data! as Data).first == 127, "Next frame cannot overwrite a retained image")
+        let blue = [UInt8](repeating: 43, count: 8 * 8 * 4)
+        blue.withUnsafeBufferPointer { probe.updatePixels($0.baseAddress!, width: 8, height: 8) }
+        precondition(probe.bitmap!.width == 8 && old.width == 16)
+        let retainedBytes = old.dataProvider!.data! as Data
+        precondition(retainedBytes.first == 127 && retainedBytes.count == red.count, "Resizing retains old frame memory safely")
         checkCompactConsole()
         func controls(_ view: NSView) -> [NSControl] {
             (view as? NSControl).map { [$0] } ?? view.subviews.flatMap { controls($0) }
         }
         func all() -> [NSControl] { controlTabs!.selectedTabViewItem!.view.map(controls) ?? [] }
-        for key in ["showCape","autostart","typingLetters","daDance","musicNotes","teaseEnabled","idleAnimation","chibi",
+        for key in ["autostart","typingLetters","daDance","musicNotes","teaseEnabled","idleAnimation","chibi",
                     "occasionalStretch","occasionalTilt","occasionalSleepy"] {
             guard let b = all().compactMap({$0 as? NSButton}).first(where:{bindings[ObjectIdentifier($0)]?.key == key}) else { preconditionFailure("Missing \(key)") }
             let expected = !flag(key)
@@ -72,7 +97,7 @@ extension AppDelegate {
         precondition(settings["patVolume"] as? Int == 72, "Sound volume is stored as a whole percent")
         precondition(bindings[ObjectIdentifier(volume)]?.label?.stringValue == "72%")
         precondition(patSound.loaded, "Both PAT meows are bundled")
-        let patRow = volume.frame.minY, otherRow = button("showCape").frame.minY, squashRow = all().compactMap { $0 as? NSSlider }
+        let patRow = volume.frame.minY, otherRow = button("chibi").frame.minY, squashRow = all().compactMap { $0 as? NSSlider }
             .first { bindings[ObjectIdentifier($0)]?.key == "chibiBodyScale" }!.frame.minY
         precondition(otherRow < patRow && patRow < squashRow, "PAT row sits between Q 版身体大小 and 其他")
         let lock = lockDoubleClickBox!
@@ -91,7 +116,54 @@ extension AppDelegate {
         }
         let shown = permissionSummary!.attributedStringValue.string
         precondition(shown.hasPrefix("键盘互动") && shown.contains("快速聊天") && !shown.contains("连接"), "Console shows authorization, not connection")
+        precondition(pageButtons[2].title == "其他设置")
+        let wine = button("wine"); wine.state = .on; controlChanged(wine); save(); loadSettings()
+        precondition(flag("wine") && pet_frame_demand(core, now) == 2, "Wine is persisted and continuously animated")
+        wine.state = .off; controlChanged(wine); save()
+        showCapes()
+        precondition(capeEntries.count > 50 && capePanel!.isVisible)
+        if let v = capePanel?.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+            v.cacheDisplay(in: v.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: dataDir.appendingPathComponent("smoke-capes.png"))
+        }
+        let choose = capePanel!.contentView!.subviews.compactMap { $0 as? NSButton }.first { $0.tag == 2 && $0.action == #selector(selectCape(_:)) }!
+        choose.performClick(nil); loadSettings()
+        precondition(settings["capeChoice"] as? String == capeEntries[0].id)
+        nextCapePage(); precondition(capePage == 1)
+        previousCapePage(); precondition(capePage == 0)
+        let noCape = capePanel!.contentView!.subviews.compactMap { $0 as? NSButton }.first { $0.tag == 1 && $0.action == #selector(selectCape(_:)) }!
+        noCape.performClick(nil); loadSettings(); precondition(settings["capeChoice"] as? String == "none")
+        capePanel!.performClose(nil); precondition(capePanel == nil && capeEntries.isEmpty)
+        showCapture(); let capturePanel = captureWindow!
+        precondition(capturePanel.isVisible && capturePanel.isOpaque && captureView!.bitmap === view.bitmap)
+        let greenProbe = CaptureView(frame: NSRect(x: 0, y: 0, width: 20, height: 20))
+        let imageRep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 20, pixelsHigh: 20,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: imageRep)
+        greenProbe.draw(greenProbe.bounds)
+        NSGraphicsContext.restoreGraphicsState()
+        let green = imageRep.colorAt(x: 0, y: 0)!.usingColorSpace(.sRGB)!
+        precondition(green.greenComponent > 0.99 && green.redComponent < 0.01 && green.blueComponent < 0.01 && green.alphaComponent > 0.99,
+                     "Capture matte is opaque chroma green")
+        precondition(CaptureView.imageRect(image: NSSize(width: 100,height:200), bounds: NSRect(x:0,y:0,width:300,height:300)) == NSRect(x:75,y:0,width:150,height:300))
+        toggleCapturePlacement(); precondition(captureParked)
+        toggleCapturePlacement(); precondition(!captureParked)
+        settings["wine"] = true; changed(); tick()
+        precondition(captureView!.bitmap === view.bitmap, "Capture reuses the same frame without a second rasterizer")
+        settings["wine"] = false; changed()
+        if let v = captureView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+            v.cacheDisplay(in: v.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: dataDir.appendingPathComponent("smoke-capture.png"))
+        }
+        capturePanel.performClose(nil); precondition(captureWindow == nil && captureView == nil)
         pageButtons[2].performClick(nil)
+        for choice in ["none", "rabbit", "cat", "heart", "axolotl", "lollipop"] {
+            let radio = all().compactMap { $0 as? NSButton }.first { bindings[ObjectIdentifier($0)]?.key == "decoration" && bindings[ObjectIdentifier($0)]?.choices.first as? String == choice }!
+            radio.performClick(nil); save(); loadSettings(); tick()
+            precondition(settings["decoration"] as? String == choice)
+        }
         for style in ["simple", "detailed"] {
             let radio = all().compactMap { $0 as? NSButton }.first {
                 bindings[ObjectIdentifier($0)]?.key == "keyboardStyle" && bindings[ObjectIdentifier($0)]?.choices.first as? String == style }!
@@ -134,9 +206,11 @@ extension AppDelegate {
         precondition(arm != nil, "Selecting one radio row preserves other groups")
         let delay = all().compactMap { $0 as? NSPopUpButton }.first { bindings[ObjectIdentifier($0)]?.key == "autostartDelay" }!
         delay.selectItem(at: delay.numberOfItems - 1); controlChanged(delay); save()
+        pageButtons[2].performClick(nil)
         let fps = all().compactMap { $0 as? NSSlider }.first { bindings[ObjectIdentifier($0)]?.key == "fps" }!
         fps.doubleValue = 6; controlChanged(fps); save(); loadSettings()
         precondition(number("fps") == 240, "FPS slider uses supported frame-rate values")
+        pageButtons[0].performClick(nil)
         let footerControls = controls(panel!.contentView!)
         let github = footerControls.compactMap { $0 as? NSButton }.first { $0.title == "GitHub" }!
         precondition(github.image != nil, "Bundled GitHub icon is present")
@@ -157,7 +231,7 @@ extension AppDelegate {
             precondition(selectedConsolePage == index && pageButtons[index].state == .on)
             precondition(controlTabs!.tabViewItems.filter {!($0.view?.subviews.isEmpty ?? true)}.count == 1)
             if index == 2 {
-                precondition(all().filter {$0 is NSSlider}.count == 18, "One pose at a time")
+                precondition(all().filter {$0 is NSSlider}.count == 19, "One pose at a time")
                 let selector = all().compactMap { $0 as? NSButton }.first {
                     let binding = bindings[ObjectIdentifier($0)]
                     return binding?.key == "customBase" && binding?.choices.first as? String == "sitting"
@@ -296,6 +370,70 @@ extension AppDelegate {
                 try? data.write(to:self.dataDir.appendingPathComponent("memory-report.json"))
             }
             print("Memory exercise completed"); NSApp.terminate(nil)
+        }
+    }
+}
+
+extension AppDelegate {
+    /// Isolated benchmark: no event tap, player control, login registration or audio.
+    /// Configuration lives in --data-dir; measure CPU time rather than instantaneous ps.
+    func startCPUExercise() {
+        precondition(smoke && CommandLine.arguments.contains("--data-dir"))
+        func cpu() -> Double {
+            var usage = rusage(); getrusage(RUSAGE_SELF, &usage)
+            return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec)
+                + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1_000_000
+        }
+        let scenario = CommandLine.arguments.firstIndex(of: "--cpu-scenario").flatMap {
+            CommandLine.arguments.indices.contains($0 + 1) ? CommandLine.arguments[$0 + 1] : nil
+        } ?? "steady"
+        var stimulus: Timer?
+        if scenario == "interaction" {
+            var n = 0
+            stimulus = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                switch n % 3 {
+                case 0: pet_key(self.core, 65, true, self.now); pet_key(self.core, 65, false, self.now)
+                case 1: _ = pet_gesture(self.core, 0, self.now)
+                default: _ = pet_mouse(self.core, 0, true, 0, 0, self.now); pet_hold_cancel(self.core, self.now)
+                }
+                n += 1; self.wake()
+            }
+        }
+        if scenario == "gaze" {
+            settings["trackMouse"] = true; changed()
+            stimulus = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                let t = Double(self.now)
+                self.benchmarkCursor = NSPoint(x: self.pet.frame.midX + sin(t * 2) * 160,
+                                              y: self.pet.frame.midY + cos(t * 2) * 120)
+            }
+        }
+        if scenario == "hidden" { hidden = true; pet.orderOut(nil) }
+        if scenario == "console" { showSettings() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            let began = ProcessInfo.processInfo.systemUptime, used = cpu(), frames = self.renderedFrames
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+                stimulus?.invalidate()
+                let elapsed = ProcessInfo.processInfo.systemUptime - began
+                var info = task_vm_info_data_t()
+                var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / 4)
+                _ = withUnsafeMutablePointer(to: &info) { ptr in
+                    ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                        task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+                    }
+                }
+                let report: [String: Any] = ["cpuPercent": (cpu() - used) / elapsed * 100,
+                    "wallSeconds": elapsed, "frames": self.renderedFrames - frames,
+                    "renderFPS": Double(self.renderedFrames - frames) / elapsed,
+                    "width": self.view.bitmap?.width ?? 0, "height": self.view.bitmap?.height ?? 0,
+                    "physicalFootprint": info.phys_footprint, "scenario": scenario]
+                let bytes = try! JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                try! bytes.write(to: self.dataDir.appendingPathComponent("cpu-report.json"))
+                self.writeSmokeReport()
+                print(String(data: bytes, encoding: .utf8)!)
+                NSApp.terminate(nil)
+            }
         }
     }
 }

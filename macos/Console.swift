@@ -23,7 +23,7 @@ extension AppDelegate {
         let root = w.contentView!
         // Scale the existing layout as one view, including native hit testing.
         root.setBoundsSize(ConsoleSize.design)
-        for (index, title) in ["常规", "视线与角度", "自定义姿态"].enumerated() {
+        for (index, title) in ["常规", "视线与角度", "其他设置"].enumerated() {
             let button = NSButton(title: title, target: self, action: #selector(selectConsolePage(_:)))
             button.setButtonType(.pushOnPushOff); button.bezelStyle = .regularSquare
             button.font = .systemFont(ofSize: 15, weight: .medium); button.tag = index
@@ -32,7 +32,7 @@ extension AppDelegate {
         }
         let tabs = NSTabView(frame: NSRect(origin: NSPoint(x: 24, y: 114), size: ConsoleSize.page))
         tabs.tabViewType = .noTabsNoBorder
-        for title in ["常规", "视线与角度", "自定义姿态"] {
+        for title in ["常规", "视线与角度", "其他设置"] {
             let item = NSTabViewItem(identifier: title); item.label = title; tabs.addTabViewItem(item)
         }
         root.addSubview(tabs); controlTabs = tabs; panel = w; tabs.delegate = self
@@ -47,11 +47,6 @@ extension AppDelegate {
             github.image = icon; github.imagePosition = .imageLeading
         }
         github.setAccessibilityLabel("GitHub 项目主页")
-        // Footer control: page bindings are cleared on every page switch, so it has its own action.
-        let lock = NSButton(checkboxWithTitle: "锁定双击（双击桌宠不打开设置面板）", target: self, action: #selector(toggleLockDoubleClick(_:)))
-        lock.font = .systemFont(ofSize: 11); lock.state = flag("lockDoubleClick") ? .on : .off
-        lock.frame = NSRect(x: 392, y: 72, width: 218, height: 24)
-        root.addSubview(lock); lockDoubleClickBox = lock
         saveStatus = label(root, "已保存", 24, 43, 80)
         permissionSummary = label(root, "", 112, 43, 420)
         permissionSummary?.font = .systemFont(ofSize: 11); permissionSummary?.textColor = .secondaryLabelColor
@@ -82,6 +77,8 @@ extension AppDelegate {
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         if window === guidePanel { closeGuide() }
+        if window === capePanel { capePanel = nil; capeEntries.removeAll() }
+        if window === captureWindow { closeCapture() }
         if window === panel {
             closePermissions(); save(); selectedConsolePage = controlTabs?.indexOfTabViewItem(controlTabs!.selectedTabViewItem!) ?? 0
             releaseConsole()
@@ -93,7 +90,7 @@ extension AppDelegate {
     }
     func populatePage(_ index: Int) {
         guard let tabs = controlTabs else { return }
-        bindings.removeAll(); skinSummary = nil; onlineField = nil; onlineStatus = nil; keyboardColorField = nil; musicToggle = nil
+        bindings.removeAll(); skinSummary = nil; onlineField = nil; onlineStatus = nil; keyboardColorField = nil; musicToggle = nil; lockDoubleClickBox = nil
         for (i, item) in tabs.tabViewItems.enumerated() where i != index { item.view = NSView() }
         selectedConsolePage = index
         for button in pageButtons { button.state = button.tag == index ? .on : .off }
@@ -101,8 +98,13 @@ extension AppDelegate {
         tabs.tabViewItems[index].view = content
         switch index {
         case 1: addHead(content); raise(content, above: 0)
-        case 2: addPose(content); raise(content, above: 0); addKeyboardLook(content)
-        default: addGeneral(content); raise(content, above: 60); addPat(content)
+        case 2: addPose(content); raise(content, above: 0); addKeyboardLook(content); addExtras(content)
+        default:
+            addGeneral(content); raise(content, above: 60); addPat(content)
+            // Close gaps left by the removed outer-layer and FPS rows.
+            for sub in content.subviews where sub.frame.minY >= 200 && sub.frame.minY < 470 {
+                sub.frame.origin.y += 32
+            }
         }
     }
     /// The pages were laid out for the 2.5.2 height; lift rows to free the new 36-point row.
@@ -123,14 +125,14 @@ extension AppDelegate {
     }
     /// 自定义姿态 row added in 2.5.3: keyboard style, and the colour moved here from 常规.
     func addKeyboardLook(_ view: NSView) {
-        label(view, "键盘样式", 0, 5, 110)
-        radios(view, "keyboardStyle", ["简洁", "细节"], ["simple", "detailed"], 126, 2, 130)
-        label(view, "键盘色号", 386, 5, 90)
-        let color = NSTextField(frame: NSRect(x: 486, y: 1, width: 116, height: 25))
+        label(view, "键盘样式", 0, 69, 110)
+        radios(view, "keyboardStyle", ["简洁", "细节"], ["simple", "detailed"], 126, 66, 130)
+        label(view, "键盘色号", 386, 69, 90)
+        let color = NSTextField(frame: NSRect(x: 486, y: 65, width: 116, height: 25))
         color.stringValue = settings["keyboardColor"] as? String ?? "#83878A"; color.placeholderString = "#83878A"
         color.target = self; color.action = #selector(applyKeyboardColor); color.setAccessibilityLabel("键盘色号")
         view.addSubview(color); keyboardColorField = color
-        action(view, "✓", #selector(applyKeyboardColor), 610, -1, 42).setAccessibilityLabel("应用键盘色号")
+        action(view, "✓", #selector(applyKeyboardColor), 610, 63, 42).setAccessibilityLabel("应用键盘色号")
     }
     @discardableResult
     func label(_ view: NSView, _ text: String, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat = 20) -> NSTextField {
@@ -292,44 +294,42 @@ extension AppDelegate {
         skinSummary?.lineBreakMode = .byTruncatingMiddle
         action(view, "导入皮肤…", #selector(importSkin), 466, 546, 124)
         action(view, "恢复内置", #selector(restoreBuiltinSkin), 598, 546, 118)
-        label(view, "正版 ID", 0, 515, 110)
         let field = NSTextField(frame: NSRect(x: 126, y: 512, width: 334, height: 25))
         field.placeholderString = "Java 版用户名或 UUID"; view.addSubview(field); onlineField = field
         action(view, "获取皮肤", #selector(downloadSkin), 466, 509, 124)
-        label(view, "无需登录", 602, 515, 110)
+        action(view, "自选披风", #selector(showCapes), 598, 509, 118)
         onlineStatus = label(view, "", 126, 488, 586)
         onlineStatus?.font = .systemFont(ofSize: 11); onlineStatus?.textColor = .secondaryLabelColor
-        for (title, y) in [("手臂",452),("外观",420),("姿势",388),("敲字",356),("主手",324),
-                            ("桌面",292),("键盘",260),("动画",228),("其他",36),("音乐",4)] {
+        for (title, y) in [("手臂",452),("姿势",388),("敲字",356),("主手",324),
+                            ("桌面",292),("键盘",260),("动画",228),("音乐",4)] {
             label(view, title, 0, CGFloat(y + 3), 110)
         }
         radios(view, "armModel", ["经典（4 px）", "纤细（3 px）"], ["classic","slim"], 126, 452, 230)
-        check(view, "显示皮肤外层", "outerLayer", 126, 420, 260)
-        check(view, "Q 版小人", "chibi", 478, 420, 210)
         radios(view, "posture", ["站立","坐下","自定义"], ["standing","sitting","custom"], 126, 388, 112)
-        label(view, "站立时按住 Shift 潜行", 478, 391, 234)
         radios(view, "typingMode", ["精准按键","双手交替"], ["precise","alternating"], 126, 356, 230)
         radios(view, "mainHand", ["右手挥动","左手挥动","实际映射","反向映射"],
                ["right","left","mapped","reverse"], 126, 324, 146)
         check(view, "保持置顶", "alwaysOnTop", 126, 292, 210)
         check(view, "完全鼠标穿透", "clickThrough", 356, 292, 220)
-        action(view, "找回桌宠", #selector(recenter), 598, 289, 118)
+        let lock = NSButton(checkboxWithTitle: "锁定双击", target: self, action: #selector(toggleLockDoubleClick(_:)))
+        lock.font = .systemFont(ofSize: 13); lock.state = flag("lockDoubleClick") ? .on : .off
+        lock.frame = NSRect(x: 580, y: 292, width: 132, height: 24); view.addSubview(lock); lockDoubleClickBox = lock
         check(view, "全局键盘互动", "keyboardEnabled", 126, 260, 220)
         check(view, "hyp 快速队伍聊天", "hypQuickChat", 356, 260, 220)
         label(view, "# → /p chat", 594, 263, 118)
-        check(view, "DA 眨眼（需修改过皮肤）", "daBlink", 126, 228, 230)
-        check(view, "DA 扭腰", "daDance", 360, 228, 100)
-        check(view, "敲字浮现字", "typingLetters", 464, 228, 124)
-        check(view, "可调戏", "teaseEnabled", 592, 228, 120)
+        check(view, "DA 眨眼（需修改过皮肤）", "daBlink", 126, 228, 218)
+        check(view, "DA 扭腰", "daDance", 348, 228, 84)
+        check(view, "邦友的酒", "wine", 436, 228, 94)
+        check(view, "敲字浮现字", "typingLetters", 534, 228, 106)
+        check(view, "可调戏", "teaseEnabled", 644, 228, 72)
         check(view, "呼吸动画", "idleAnimation", 126, 196, 120)
         check(view, "偶尔伸懒腰", "occasionalStretch", 250, 196, 140)
         check(view, "偶尔歪头", "occasionalTilt", 394, 196, 130)
         check(view, "偶尔犯困", "occasionalSleepy", 528, 196, 140)
         generalSlider(view, "大小", "scale", 0.65, 1.8, 164)
-        generalSlider(view, "帧率", "fps", 0, 6, 132, choices: [30,60,90,120,144,165,240])
         generalSlider(view, "打字压低", "typingSquash", 0, 30, 100)
         generalSlider(view, "Q 版身体大小", "chibiBodyScale", 50, 180, 68)
-        check(view, "显示正版披风", "showCape", 126, 36, 260)
+        check(view, "Q 版小人", "chibi", 126, 36, 260)
         check(view, "随 macOS 登录自动启动", "autostart", 412, 36, 300)
         check(view, "播放音乐时冒音符", "musicNotes", 126, 4, 280)
         popup(view, "登录延迟", "autostartDelay", ["立即","5 秒","15 秒","30 秒","60 秒","120 秒"],
@@ -371,7 +371,7 @@ extension AppDelegate {
         }
         let key = settings["customBase"] as? String == "sitting" ? "customSittingPose" : "customPose"
         for (i, part) in [("head","头部"),("body","身体"),("leftArm","左臂"),("rightArm","右臂"),("leftLeg","左腿"),("rightLeg","右腿")].enumerated() {
-            let y = CGFloat(409 - i * 54); label(view, part.1, 0, y + 3, 85)
+            let y = CGFloat(421 - i * 44); label(view, part.1, 0, y + 3, 85)
             for axis in 0..<3 {
                 let x = CGFloat(98 + axis * 205), path = "\(key).\(part.0).\(axis)"
                 let out = label(view, displayValue(path, value(path)), x + 142, y + 3, 58)
@@ -383,8 +383,16 @@ extension AppDelegate {
                 bindings[ObjectIdentifier(slider)] = Binding(path, [], out); view.addSubview(slider)
             }
         }
-        label(view, "坐姿支持敲字、长按和挥手；互动结束回到所设姿态。", 0, 64, 712).textColor = .secondaryLabelColor
-        label(view, "头部角度在关闭视线跟随后生效；不弯曲肢体。", 0, 38, 712).textColor = .secondaryLabelColor
+
+    }
+    func addExtras(_ view: NSView) {
+        // Keep the macOS CPU budget setting, but move it off the simplified 常规 page.
+        generalSlider(view, "帧率", "fps", 0, 6, 112, choices: [30,60,90,120,144,165,240])
+        label(view, "装饰", 0, 163, 110)
+        radios(view, "decoration", ["无", "兔耳", "猫耳", "爱心", "美西螈", "棒棒糖"],
+               ["none", "rabbit", "cat", "heart", "axolotl", "lollipop"], 126, 160, 97)
+        action(view, "直播采集窗口", #selector(showCapture), 126, 12, 160)
+        action(view, "放到后面／移回前面", #selector(toggleCapturePlacement), 300, 12, 210)
     }
     func syncLoginStartup() throws {
         try LoginStartup.setEnabled(flag("autostart"), app: Bundle.main.bundleURL, data: dataDir, directory: loginDirectory)

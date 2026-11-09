@@ -3,6 +3,7 @@
 mod config;
 mod keyboard;
 mod render;
+mod cape_catalog;
 use config::{Settings, Store};
 use glam::Vec2;
 use render::{Cape, Frame, Gesture, Pose, Skin};
@@ -80,6 +81,9 @@ impl PetCore {
             || self.settings.custom_base != s.custom_base {
             self.pose.reset_swing();
         }
+        if self.settings.cape_choice != s.cape_choice || self.settings.cape_path != s.cape_path {
+            self.cape = load_selected_cape(&s);
+        }
         self.settings = s;
     }
     fn save(&mut self) -> bool {
@@ -87,6 +91,13 @@ impl PetCore {
             Ok(()) => { self.message = CString::default(); true }
             Err(e) => self.error(e),
         }
+    }
+}
+fn load_selected_cape(s: &Settings) -> Option<Cape> {
+    match s.cape_choice.as_str() {
+        "none" => None,
+        "account" => std::fs::read(&s.cape_path).ok().and_then(|bytes| Cape::load(&bytes).ok()),
+        id => cape_catalog::ENTRIES.iter().find(|e| e.id == id).and_then(|e| Cape::load(e.bytes).ok()),
     }
 }
 unsafe fn string(p: *const c_char) -> Option<String> {
@@ -100,7 +111,7 @@ pub unsafe extern "C" fn pet_create(dir: *const c_char) -> *mut PetCore {
     if store.read_error.is_some() { return ptr::null_mut(); }
     let bytes = std::fs::read(&settings.skin_path).unwrap_or_else(|_| render::DEFAULT_SKIN.to_vec());
     let skin = Skin::load(&bytes).unwrap_or_else(|_| Skin::load(render::DEFAULT_SKIN).unwrap());
-    let cape = std::fs::read(&settings.cape_path).ok().and_then(|bytes| Cape::load(&bytes).ok());
+    let cape = load_selected_cape(&settings);
     let pose = Pose::new(&settings);
     Box::into_raw(Box::new(PetCore {settings, store, skin, cape, pose, frame: Frame::new(450, 525), message: CString::default(), json: CString::default(),
         hold: HoldTracker::default(),
@@ -136,7 +147,7 @@ pub unsafe extern "C" fn pet_apply(core: *mut PetCore, json: *const c_char) -> b
             s.clean();
             let old = c.settings.clone();
             c.update_settings(s);
-            if !c.save() { c.settings = old; return false; }
+            if !c.save() { c.update_settings(old); return false; }
             true
         },
         Err(e) => c.error(e.to_string()),
@@ -159,8 +170,10 @@ pub unsafe extern "C" fn pet_import_profile(core: *mut PetCore, skin_path: *cons
         let cape = cape_data.as_deref().map(Cape::load).transpose()?;
         let mut next = c.settings.clone();
         next.skin_name = string(name).unwrap_or_else(|| PathBuf::from(&path).file_name().unwrap_or_default().to_string_lossy().into_owned());
-        if let Some(model) = string(model) { next.arm_model = model; }
+        next.detected_arm_model = string(model).filter(|m| m == "slim" || m == "classic");
+        if let Some(model) = &next.detected_arm_model { next.arm_model = model.clone(); }
         if skin.legacy { next.arm_model = "classic".into(); }
+        if next.detected_arm_model.is_some() { next.detected_arm_model = Some(next.arm_model.clone()); }
         next.clean();
         // A unique generation keeps active files unchanged until settings commit.
         static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -185,7 +198,8 @@ pub unsafe extern "C" fn pet_import_profile(core: *mut PetCore, skin_path: *cons
     match result {
         Ok((skin, cape, next)) => {
             let previous = [c.settings.skin_path.clone(), c.settings.cape_path.clone()];
-            c.update_settings(next); c.skin = skin; c.cape = cape;
+            c.update_settings(next); c.skin = skin;
+            c.cape = if c.settings.cape_choice == "account" { cape } else { load_selected_cape(&c.settings) };
             c.message = CString::default();
             // Remove only files created by this importer, never user source files.
             for path in previous {
@@ -206,6 +220,7 @@ pub unsafe extern "C" fn pet_restore_skin(core: *mut PetCore) -> bool {
     let Some(c) = core.as_mut() else { return false; };
     let mut next = c.settings.clone();
     next.skin_path.clear();
+    next.detected_arm_model = None;
     next.skin_name = "内置 · 林间旅人".into();
     // Match the Windows restore-skin command: keep poses, cape, startup and
     // interaction preferences. Commit successfully before changing the render.
@@ -214,6 +229,33 @@ pub unsafe extern "C" fn pet_restore_skin(core: *mut PetCore) -> bool {
     c.skin = Skin::load(render::DEFAULT_SKIN).unwrap();
     c.message = CString::default();
     true
+}
+/// Borrowed JSON, valid until the next call that replaces core.json.
+#[no_mangle]
+pub unsafe extern "C" fn pet_cape_catalog(core: *mut PetCore) -> *const c_char {
+    let Some(c) = core.as_mut() else { return ptr::null(); };
+    let entries: Vec<_> = cape_catalog::ENTRIES.iter().map(|e| serde_json::json!({"id":e.id,"name":e.name})).collect();
+    c.json = CString::new(serde_json::to_string(&entries).unwrap()).unwrap();
+    c.json.as_ptr()
+}
+/// Immutable embedded PNG; valid for process lifetime. Never free it in Swift.
+#[no_mangle]
+pub unsafe extern "C" fn pet_cape_png(index: u32, length: *mut usize) -> *const u8 {
+    let Some(length) = length.as_mut() else { return ptr::null(); };
+    *length = 0;
+    let Some(entry) = cape_catalog::ENTRIES.get(index as usize) else { return ptr::null(); };
+    *length = entry.bytes.len(); entry.bytes.as_ptr()
+}
+/// Validated selection persisted without replacing the account cape file.
+#[no_mangle]
+pub unsafe extern "C" fn pet_select_cape(core: *mut PetCore, id: *const c_char) -> bool {
+    let (Some(c),Some(id)) = (core.as_mut(),string(id)) else { return false; };
+    if id != "account" && id != "none" && !cape_catalog::ENTRIES.iter().any(|e| e.id == id) {
+        return c.error("未知披风。".into());
+    }
+    let mut next = c.settings.clone(); next.cape_choice = id; next.show_cape = true;
+    if let Err(e) = c.store.save(&next) { return c.error(e); }
+    c.update_settings(next); true
 }
 #[no_mangle]
 pub unsafe extern "C" fn pet_reset(core: *mut PetCore) -> bool {
@@ -289,12 +331,29 @@ pub unsafe extern "C" fn pet_gesture(core: *mut PetCore, kind: u32, now: f32) ->
 /// `now` lets the occasional-action deadline wake the idle frame timer.
 #[no_mangle]
 pub unsafe extern "C" fn pet_needs_frames(core: *mut PetCore, now: f32) -> bool {
-    core.as_ref().is_some_and(|c| c.pose.needs_frames()
-        || c.pose.gesture_due(&c.settings, now)
-        || c.settings.breathing_animation
-        || (c.settings.da_blink && c.skin.eyes.is_some())
+    pet_frame_demand(core, now) != 0
+}
+/// 0: idle, 1: breathing only, 2: time-sensitive animation. No state is advanced here.
+#[no_mangle]
+pub unsafe extern "C" fn pet_frame_demand(core: *mut PetCore, now: f32) -> u32 {
+    let Some(c) = core.as_ref() else { return 0; };
+    let blinking = c.settings.da_blink && c.skin.eyes.is_some()
+        && (c.pose.blink_at(now) > 0.0001 || c.pose.eyelid < 0.9999);
+    if c.settings.wine || blinking || c.pose.interactive_frames(now) || c.pose.gesture_due(&c.settings, now)
         || (c.settings.da_dance && c.settings.posture == "standing")
-        || (c.settings.music_notes && c.pose.music_playing))
+        || (c.settings.music_notes && c.pose.music_playing) { return 2; }
+    if c.settings.breathing_animation || c.pose.breathing_frames() { return 1; }
+    0
+}
+/// Resize only on window geometry changes. Bound allocation and keep pixel/depth buffers paired.
+#[no_mangle]
+pub unsafe extern "C" fn pet_resize(core: *mut PetCore, width: u32, height: u32) -> bool {
+    let Some(c) = core.as_mut() else { return false; };
+    if width < 1 || height < 1 || width > 2048 || height > 2048 { return false; }
+    if c.frame.width != width as usize || c.frame.height != height as usize {
+        c.frame = Frame::new(width as usize, height as usize);
+    }
+    true
 }
 #[no_mangle]
 pub unsafe extern "C" fn pet_pixels(core: *mut PetCore) -> *const u8 {
@@ -315,13 +374,117 @@ pub unsafe extern "C" fn pet_render(core: *mut PetCore, x: f32, y: f32, width: f
 #[no_mangle]
 pub unsafe extern "C" fn pet_hit(core: *mut PetCore, x: f32, y: f32) -> bool {
     let Some(c) = core.as_ref() else { return false; };
-    if x < 0. || y < 0. || x >= 1. || y >= 1. { return false; }
-    c.frame.pixels[((y * 525.) as usize * 450 + (x * 450.) as usize) * 4 + 3] != 0
+    if !x.is_finite() || !y.is_finite() || x < 0. || y < 0. || x >= 1. || y >= 1. { return false; }
+    let xx = ((x * c.frame.width as f32) as usize).min(c.frame.width - 1);
+    let yy = ((y * c.frame.height as f32) as usize).min(c.frame.height - 1);
+    c.frame.pixels[(yy * c.frame.width + xx) * 4 + 3] != 0
 }
 
 #[cfg(test)]
 mod ffi_tests {
     use super::*;
+    #[test]
+    fn macos_cpu_demand_and_resize_are_bounded() {
+        let dir = std::env::temp_dir().join(format!("pet-cpu-{}", std::process::id()));
+        let path = CString::new(dir.to_str().unwrap()).unwrap();
+        unsafe {
+            let core = pet_create(path.as_ptr());
+            assert!(!core.is_null());
+            (*core).settings.da_blink = false;
+            (*core).settings.da_dance = false;
+            (*core).settings.breathing_animation = false;
+            (*core).settings.music_notes = false;
+            (*core).pose = Pose::new(&(*core).settings);
+            assert_eq!(pet_frame_demand(core, 10.), 0);
+            (*core).settings.breathing_animation = true;
+            assert_eq!(pet_frame_demand(core, 10.), 1);
+            pet_render(core,0.,0.,360.,420.,false,10.,0.1);
+            (*core).settings.breathing_animation = false;
+            assert_eq!(pet_frame_demand(core,10.),1,"breathing fade-out must finish before sleeping");
+            for i in 1..20 { pet_render(core,0.,0.,360.,420.,false,10.+i as f32/15.,1./15.); }
+            assert_eq!(pet_frame_demand(core,12.),0,"finished breathing fade-out sleeps");
+            (*core).settings.breathing_animation = true;
+            pet_gesture(core, 0, 13.);
+            assert_eq!(pet_frame_demand(core, 13.), 2);
+            (*core).pose = Pose::new(&(*core).settings);
+            (*core).settings.breathing_animation = false;
+            let mut image = (*core).skin.image.clone();
+            for (x,y,c) in [(4,6,[215,163,121,255]),(5,6,[215,163,121,255]),
+                           (4,7,[242,228,201,255]),(5,7,[59,97,76,255])] {
+                image.put_pixel(x,y,image::Rgba(c));
+            }
+            let mut png = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+            (*core).skin = Skin::load(png.get_ref()).unwrap();
+            assert!((*core).skin.eyes.is_some());
+            (*core).settings.da_blink = true;
+            let open = (0..1000).map(|i| i as f32 / 100.).find(|&t| (*core).pose.blink_at(t) == 0.).unwrap();
+            let closed = (0..1000).map(|i| i as f32 / 100.).find(|&t| (*core).pose.blink_at(t) > 0.5).unwrap();
+            (*core).pose.eyelid = 1.;
+            assert_eq!(pet_frame_demand(core, open), 0, "between blinks the renderer sleeps");
+            assert_eq!(pet_frame_demand(core, closed), 2);
+            (*core).pose.eyelid = 0.;
+            assert_eq!(pet_frame_demand(core, open), 2, "must draw the final open-eye frame");
+            for (w,h) in [(293,341),(450,525),(810,945),(1,1)] {
+                assert!(pet_resize(core,w,h));
+                assert_eq!((*core).frame.pixels.len(), (w*h*4) as usize);
+                let before = pet_pixels(core);
+                assert!(pet_resize(core,w,h));
+                assert_eq!(pet_pixels(core),before,"unchanged size does not allocate");
+                (*core).frame.pixels.fill(255);
+                assert!(pet_hit(core,0.5,0.5));
+                assert!(!pet_hit(core,f32::NAN,0.5));
+                assert!(!pet_hit(core,0.5,f32::INFINITY));
+                assert!(!pet_hit(core,1.,0.5));
+                assert!(!pet_resize(core,0,10));
+                assert!(!pet_resize(core,4096,4096));
+            }
+            pet_destroy(core);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn v26_cape_catalog_persistence_and_wine_demand() {
+        let dir = std::env::temp_dir().join(format!("pet-v26-{}",std::process::id()));
+        let path = CString::new(dir.to_str().unwrap()).unwrap();
+        unsafe {
+            let core = pet_create(path.as_ptr()); assert!(!core.is_null());
+            let catalog: serde_json::Value = serde_json::from_str(CStr::from_ptr(pet_cape_catalog(core)).to_str().unwrap()).unwrap();
+            assert_eq!(catalog.as_array().unwrap().len(),cape_catalog::ENTRIES.len());
+            let mut ids=std::collections::HashSet::new();
+            for (i,e) in cape_catalog::ENTRIES.iter().enumerate() {
+                assert!(ids.insert(e.id));
+                let mut length=0; let data=pet_cape_png(i as u32,&mut length);
+                assert!(!data.is_null()); assert!(Cape::load(std::slice::from_raw_parts(data,length)).is_ok());
+            }
+            let mut length=99; assert!(pet_cape_png(u32::MAX,&mut length).is_null());assert_eq!(length,0);
+            let id=CString::new(cape_catalog::ENTRIES[0].id).unwrap();
+            assert!(pet_select_cape(core,id.as_ptr()));assert!((*core).cape.is_some());
+            assert!(!pet_select_cape(core,c"not-a-cape".as_ptr()));
+            assert_eq!((*core).settings.cape_choice,cape_catalog::ENTRIES[0].id);
+            pet_destroy(core);
+            let core=pet_create(path.as_ptr());assert!((*core).cape.is_some());
+            assert!(pet_select_cape(core,c"none".as_ptr()));assert!((*core).cape.is_none());
+            // Chosen capes never overwrite the account cape file.
+            let cape_path=dir.join("account.png");std::fs::write(&cape_path,cape_catalog::ENTRIES[1].bytes).unwrap();
+            (*core).settings.cape_path=cape_path.to_str().unwrap().into();
+            assert!(pet_select_cape(core,c"account".as_ptr()));assert!((*core).cape.is_some());
+            (*core).settings.detected_arm_model = Some("slim".into());
+            assert!(pet_restore_skin(core)); assert!((*core).settings.detected_arm_model.is_none());
+            assert!(pet_select_cape(core,id.as_ptr()));assert_eq!(std::fs::read(cape_path).unwrap(),cape_catalog::ENTRIES[1].bytes);
+            (*core).settings.da_blink=false;(*core).settings.breathing_animation=false;(*core).settings.wine=true;
+            (*core).pose=Pose::new(&(*core).settings);
+            assert_eq!(pet_frame_demand(core,10.),2,"wine must wake even an otherwise idle pet");
+            (*core).settings.wine=false;assert_eq!(pet_frame_demand(core,10.),0);
+            for choice in ["none","rabbit","cat","heart","axolotl","lollipop"] {
+                (*core).settings.decoration=choice.into();
+                pet_render(core,0.,0.,360.,420.,false,1.,0.016);
+                assert_eq!(pet_frame_demand(core,10.),0,"static decorations must not force continuous render");
+            }
+            pet_destroy(core);
+        }
+        let _=std::fs::remove_dir_all(dir);
+    }
     #[test]
     fn restoring_builtin_skin_keeps_other_preferences() {
         let dir = std::env::temp_dir().join(format!("pet-restore-skin-{}", std::process::id()));
