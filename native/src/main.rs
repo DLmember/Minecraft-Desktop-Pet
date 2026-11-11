@@ -14,6 +14,8 @@ mod window_order;
 mod menu_clock;
 mod capture;
 mod capes;
+mod input_stats;
+mod input_stats_ui;
 use config::{Position, Settings, Store};
 use glam::Vec2;
 use render::{Cape, Frame, Pose, Skin};
@@ -30,10 +32,13 @@ use windows_sys::Win32::{
 };
 const TRAY_MSG: u32 = WM_APP + 1;
 const KEY_MSG: u32 = WM_APP + 2;
+const STATS_KEY_MSG: u32 = WM_APP + 3;
+const STATS_MOUSE_MSG: u32 = WM_APP + 4;
 const SHOW_MSG: u32 = WM_APP + 10;
 const SNAPSHOT_MSG: u32 = WM_APP + 11;
 static mut APP: *mut App = null_mut();
 static mut PET_HWND: HWND = null_mut();
+static STATS_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 // Diagnostic runs can isolate their injected test events from the user's typing.
 static mut TEST_INPUT_ONLY: bool = false;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -228,6 +233,11 @@ pub struct App {
     hwnd: HWND,
     panel: HWND,
     hook: HHOOK,
+    stats_mouse_hook: HHOOK,
+    stats: input_stats::Store,
+    stats_enabled: bool,
+    stats_held: std::collections::HashSet<u32>,
+    stats_next_save: f64,
     download: Option<std::sync::mpsc::Receiver<Result<online::Download, String>>>,
     online_id: String,
     online_notice: String,
@@ -290,6 +300,8 @@ pub struct App {
 }
 impl App {
     fn new(dir: PathBuf, diagnostic: bool) -> Self {
+        let stats = input_stats::Store::load(&dir);
+        let stats_enabled = stats.enabled && stats.read_error.is_none();
         let mut store = Store::new(dir);
         let mut settings = store.load();
         let bytes =
@@ -317,6 +329,11 @@ impl App {
             hwnd: null_mut(),
             panel: null_mut(),
             hook: null_mut(),
+            stats_mouse_hook: null_mut(),
+            stats,
+            stats_enabled,
+            stats_held: std::collections::HashSet::new(),
+            stats_next_save: 5.,
             download: None,
             online_id: String::new(),
             online_notice: String::new(),
@@ -604,6 +621,10 @@ impl App {
     }
     unsafe fn tick(&mut self) {
         let clock = self.start.elapsed().as_secs_f64();
+        if clock >= self.stats_next_save {
+            self.stats_next_save = clock + 5.;
+            if let Err(error) = self.stats.save() { self.notice = error; }
+        }
         if clock >= self.next_display_check {
             self.next_display_check = clock + 1.;
             let mut info: MONITORINFOEXW = std::mem::zeroed();
@@ -818,6 +839,7 @@ impl App {
         hyp_chat::enable(self.settings.hyp_quick_chat);
         let needed = self.settings.keyboard_enabled
             || self.settings.hyp_quick_chat
+            || self.stats_enabled
             || hyp_chat::has_pending_keyup();
         if !needed && !self.hook.is_null() {
             UnhookWindowsHookEx(self.hook);
@@ -835,6 +857,29 @@ impl App {
             }
         }
         self.reset_keys();
+    }
+    unsafe fn set_stats_enabled(&mut self, enabled: bool) -> bool {
+        if enabled && self.stats.read_error.is_some() { return false; }
+        self.stats_enabled=enabled;
+        if enabled && self.stats_mouse_hook.is_null() {
+            self.stats_mouse_hook=SetWindowsHookExW(WH_MOUSE_LL,Some(stats_mouse_hook),GetModuleHandleW(null()),0);
+            if self.stats_mouse_hook.is_null() { self.stats_enabled=false; }
+        }
+        if !self.stats_enabled && !self.stats_mouse_hook.is_null() {
+            UnhookWindowsHookEx(self.stats_mouse_hook);
+            self.stats_mouse_hook=null_mut();
+        }
+        self.hook();
+        if self.stats_enabled && self.hook.is_null() {
+            self.stats_enabled=false;
+            UnhookWindowsHookEx(self.stats_mouse_hook);
+            self.stats_mouse_hook=null_mut();
+        }
+        self.stats_held.clear();
+        STATS_ACTIVE.store(self.stats_enabled,std::sync::atomic::Ordering::Relaxed);
+        self.stats.set_enabled(self.stats_enabled);
+        if let Err(error)=self.stats.save() { self.notice=error; }
+        self.stats_enabled
     }
     unsafe fn changed(&mut self) {
         self.settings.clean();
@@ -891,6 +936,10 @@ impl App {
         self.wake();
     }
     unsafe fn command(&mut self, id: u32) {
+        if id == 190 {
+            input_stats_ui::open(self.hwnd, &mut self.stats, toggle_stats);
+            return;
+        }
         match id {
             188 => self.show_capes(),
             189 => { self.settings.wine = !self.settings.wine; self.changed(); }
@@ -1191,6 +1240,7 @@ impl App {
             (160, "随 Windows 登录启动", self.settings.autostart),
         ]);
         append(menu, 0, "", false);
+        append(menu, 190, "按键统计…", false);
         append(menu, 199, "退出 Minecraft桌宠", false);
         let mut p = POINT { x: 0, y: 0 };
         GetCursorPos(&mut p);
@@ -1245,6 +1295,10 @@ unsafe extern "system" fn keyboard_hook(code: i32, w: WPARAM, l: LPARAM) -> LRES
             } else {
                 k.vkCode
             };
+            if k.flags & LLKHF_INJECTED == 0 && STATS_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+                PostMessageW(PET_HWND, STATS_KEY_MSG, vk as usize,
+                    if matches!(w as u32, WM_KEYDOWN | WM_SYSKEYDOWN) { 1 } else { 0 });
+            }
             PostMessageW(
                 PET_HWND,
                 KEY_MSG,
@@ -1261,6 +1315,44 @@ unsafe extern "system" fn keyboard_hook(code: i32, w: WPARAM, l: LPARAM) -> LRES
         }
     }
     CallNextHookEx(null_mut(), code, w, l)
+}
+unsafe fn toggle_stats(enabled: bool) -> bool {
+    if APP.is_null() { return false; }
+    (*APP).set_stats_enabled(enabled)
+}
+unsafe extern "system" fn stats_mouse_hook(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
+    if code >= 0 && !PET_HWND.is_null() {
+        let message=w as u32;
+        if matches!(message, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN | WM_MOUSEWHEEL) {
+            let info=&*(l as *const MSLLHOOKSTRUCT);
+            if info.flags & LLMHF_INJECTED == 0 {
+                PostMessageW(PET_HWND, STATS_MOUSE_MSG, message as usize, info.mouseData as isize);
+            }
+        }
+    }
+    CallNextHookEx(null_mut(),code,w,l)
+}
+fn stats_key_name(vk: u32) -> String {
+    match vk {
+        0x30..=0x39 | 0x41..=0x5a => char::from_u32(vk).unwrap().to_string(),
+        0x70..=0x87 => format!("F{}",vk-0x6f),
+        0x08=>"Backspace".into(),0x09=>"Tab".into(),0x0d|0x1000=>"Enter".into(),
+        0x1b=>"Esc".into(),0x20=>"Space".into(),0x14=>"Caps".into(),
+        0xa0=>"LShift".into(),0xa1=>"RShift".into(),0xa2=>"LCtrl".into(),0xa3=>"RCtrl".into(),
+        0xa4=>"LAlt".into(),0xa5=>"RAlt".into(),0x5b=>"LWin".into(),0x5c=>"RWin".into(),0x5d=>"Menu".into(),
+        0xba=>";".into(),0xbb=>"=".into(),0xbc=>",".into(),0xbd=>"-".into(),0xbe=>".".into(),
+        0xbf=>"/".into(),0xc0=>"`".into(),0xdb=>"[".into(),0xdc=>"\\".into(),0xdd=>"]".into(),0xde=>"'".into(),
+        _=>format!("VK_{vk:02X}"),
+    }
+}
+fn stats_mouse_name(message: u32, data: u32) -> Option<&'static str> {
+    match message {
+        WM_LBUTTONDOWN=>Some("MouseLeft"),WM_RBUTTONDOWN=>Some("MouseRight"),
+        WM_MBUTTONDOWN=>Some("MouseMiddle"),
+        WM_XBUTTONDOWN=>match data>>16 { 1=>Some("MouseSide1"),2=>Some("MouseSide2"),_=>None },
+        WM_MOUSEWHEEL=>match (data>>16) as u16 as i16 { d if d>0=>Some("MouseWheelUp"),d if d<0=>Some("MouseWheelDown"),_=>None },
+        _=>None,
+    }
 }
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     if APP.is_null() {
@@ -1316,6 +1408,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                 if a.settings.is_sitting() {
                     a.wake();
                 }
+            }
+            0
+        }
+        STATS_KEY_MSG => {
+            let vk=w as u32;
+            if l == 0 { a.stats_held.remove(&vk); }
+            else if a.stats_enabled && a.stats_held.insert(vk) { a.stats.count(&stats_key_name(vk)); }
+            0
+        }
+        STATS_MOUSE_MSG => {
+            if a.stats_enabled {
+                if let Some(id)=stats_mouse_name(w as u32,l as u32) { a.stats.count(id); }
             }
             0
         }
@@ -1433,6 +1537,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             0
         }
         WM_DESTROY => {
+            input_stats_ui::close();
+            if !a.stats_mouse_hook.is_null() { UnhookWindowsHookEx(a.stats_mouse_hook);a.stats_mouse_hook=null_mut(); }
+            let _=a.stats.save();
             a.tray(NIM_DELETE);
             UnregisterHotKey(hwnd, 1);
             if !a.hook.is_null() {
@@ -1621,6 +1728,7 @@ fn main() {
         DragAcceptFiles(hwnd, 1);
         app.flags();
         app.hook();
+        if app.stats_enabled { app.set_stats_enabled(true); }
         app.tray_ok = app.tray(NIM_ADD);
         app.tray_error = if app.tray_ok { 0 } else { GetLastError() };
         if !app.tray_ok {
@@ -2094,6 +2202,21 @@ fn render_test(args: &[String]) {
 #[cfg(test)]
 mod hold_tracker_tests {
     use super::*;
+    #[test]
+    fn statistics_maps_mouse_and_wheel_events() {
+        assert_eq!(stats_mouse_name(WM_LBUTTONDOWN,0),Some("MouseLeft"));
+        assert_eq!(stats_mouse_name(WM_RBUTTONDOWN,0),Some("MouseRight"));
+        assert_eq!(stats_mouse_name(WM_MBUTTONDOWN,0),Some("MouseMiddle"));
+        assert_eq!(stats_mouse_name(WM_XBUTTONDOWN,1<<16),Some("MouseSide1"));
+        assert_eq!(stats_mouse_name(WM_XBUTTONDOWN,2<<16),Some("MouseSide2"));
+        assert_eq!(stats_mouse_name(WM_XBUTTONDOWN,3<<16),None);
+        assert_eq!(stats_mouse_name(WM_MOUSEWHEEL,30<<16),Some("MouseWheelUp"));
+        assert_eq!(stats_mouse_name(WM_MOUSEWHEEL,((-120i16 as u16) as u32)<<16),Some("MouseWheelDown"));
+        assert_eq!(stats_mouse_name(WM_MOUSEWHEEL,0),None);
+        assert_eq!(stats_mouse_name(WM_MOUSEMOVE,0),None);
+        assert_eq!(stats_key_name(0x41),"A");
+        assert_eq!(stats_key_name(0x20),"Space");
+    }
     fn at(x: i32, y: i32) -> POINT {
         POINT { x, y }
     }
