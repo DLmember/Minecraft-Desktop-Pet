@@ -83,6 +83,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Action te
 
 产物：`native/target/release/minecraft-pet.exe`。脚本使用 Cargo.lock 锁定的依赖；首次构建需要网络下载依赖。可通过 `-RustToolchain` 选择已安装的 GNU 工具链版本。
 
+#### 可选状态气泡
+
+在 Windows 上，可以用 `--status-bubble-file=<本地文件路径>` 启动桌宠，显示另一个本地程序生成的简短状态。示例：
+
+```powershell
+$statusFile = Join-Path $env:TEMP 'minecraft-pet-status.txt'
+Set-Content -LiteralPath $statusFile -Encoding utf8 -Value @('任务处理中', '今日用量 1250 Token')
+& .\native\target\release\minecraft-pet.exe "--status-bubble-file=$statusFile"
+```
+
+文件使用 UTF-8，每行一条，最多显示 8 行。程序应通过临时文件替换来更新状态，并在状态有效时定期刷新。文件为空、被删除或超过 30 秒未更新时，气泡会收起。桌宠只读取指定文件，外部程序负责收集和格式化用量。这个选项默认关闭。
+
 ### macOS
 
 本地移植复用原始 Rust 渲染、皮肤与动画，通过 Swift / AppKit 提供透明窗口、菜单栏、控制台及全局键盘互动，以及可选的井号聊天前缀替换。
