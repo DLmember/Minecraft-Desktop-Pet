@@ -101,4 +101,4 @@ scripts/build-macos.sh /absolute/path/to/output
 
 ## 许可
 
-应用代码及项目原创示例皮肤采用 [MIT License](LICENSE)。依赖许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 `native/licenses/`。用户导入的皮肤不受本项目许可证覆盖，请尊重原作者授权。
+应用代码及项目原创示例皮肤采用 [MIT License](LICENSE)。依赖许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 `native/licenses/`。用户导入的皮肤不受本项目许可证覆盖，请尊重原作者授权。 
