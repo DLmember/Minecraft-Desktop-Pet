@@ -2,10 +2,9 @@ import AppKit
 import UniformTypeIdentifiers
 
 enum ConsoleSize {
-    // 2.5.3 adds one row (PAT喵！ on 常规, keyboard style on 自定义姿态), +36 like Windows.
-    static let design = NSSize(width: 760, height: 816)
-    static let compact = NSSize(width: 646, height: 694)
-    static let page = NSSize(width: 712, height: 632)
+    static let design = NSSize(width: 760, height: 736)
+    static let compact = NSSize(width: 638, height: 618)
+    static let page = NSSize(width: 712, height: 552)
 }
 
 extension AppDelegate {
@@ -27,7 +26,7 @@ extension AppDelegate {
             let button = NSButton(title: title, target: self, action: #selector(selectConsolePage(_:)))
             button.setButtonType(.pushOnPushOff); button.bezelStyle = .regularSquare
             button.font = .systemFont(ofSize: 15, weight: .medium); button.tag = index
-            button.frame = NSRect(x: 24 + index * 246, y: 764, width: 220, height: 34)
+            button.frame = NSRect(x: CGFloat(24 + index * 246), y: ConsoleSize.design.height - 52, width: 220, height: 34)
             button.setAccessibilityLabel(title); root.addSubview(button); pageButtons.append(button)
         }
         let tabs = NSTabView(frame: NSRect(origin: NSPoint(x: 24, y: 114), size: ConsoleSize.page))
@@ -97,19 +96,10 @@ extension AppDelegate {
         let content = NSView(frame: NSRect(origin: .zero, size: ConsoleSize.page))
         tabs.tabViewItems[index].view = content
         switch index {
-        case 1: addHead(content); raise(content, above: 0)
-        case 2: addPose(content); raise(content, above: 0); addKeyboardLook(content); addExtras(content)
-        default:
-            addGeneral(content); raise(content, above: 60); addPat(content)
-            // Close gaps left by the removed outer-layer and FPS rows.
-            for sub in content.subviews where sub.frame.minY >= 200 && sub.frame.minY < 470 {
-                sub.frame.origin.y += 32
-            }
+        case 1: addHead(content)
+        case 2: addPose(content); addKeyboardLook(content); addExtras(content)
+        default: addGeneral(content); addPat(content)
         }
-    }
-    /// The pages were laid out for the 2.5.2 height; lift rows to free the new 36-point row.
-    func raise(_ view: NSView, above y: CGFloat) {
-        for sub in view.subviews where sub.frame.minY >= y { sub.frame.origin.y += 36 }
     }
     /// 常规 row added in 2.5.3, between Q 版身体大小 and 其他 (as on Windows).
     func addPat(_ view: NSView) {
@@ -277,7 +267,7 @@ extension AppDelegate {
         }
         if b.key.hasPrefix("custom") { settings["posture"] = "custom" }
         if let page = controlTabs?.selectedTabViewItem?.view { syncRadioStates(page) }
-        if b.key == "typingLetters" && flag("typingLetters") { prepareGlyphs() }
+        // Floating-letter glyphs are initialized on the first actual keystroke.
         changed()
         if b.key == "autostart" { save() }
         if b.key == "musicNotes" { configureMusic() }
@@ -289,46 +279,46 @@ extension AppDelegate {
         if b.key == "customBase" || b.key == "chibi" { populatePage(selectedConsolePage) }
     }
     func addGeneral(_ view: NSView) {
-        label(view, "皮肤", 0, 551, 110)
-        skinSummary = label(view, "", 126, 551, 320); updateSkinSummary()
+        label(view, "皮肤", 0, 523, 110)
+        skinSummary = label(view, "", 126, 523, 320); updateSkinSummary()
         skinSummary?.lineBreakMode = .byTruncatingMiddle
-        action(view, "导入皮肤…", #selector(importSkin), 466, 546, 124)
-        action(view, "恢复内置", #selector(restoreBuiltinSkin), 598, 546, 118)
-        let field = NSTextField(frame: NSRect(x: 126, y: 512, width: 334, height: 25))
+        action(view, "导入皮肤…", #selector(importSkin), 466, 518, 124)
+        action(view, "恢复内置", #selector(restoreBuiltinSkin), 598, 518, 118)
+        let field = NSTextField(frame: NSRect(x: 126, y: 484, width: 334, height: 25))
         field.placeholderString = "Java 版用户名或 UUID"; view.addSubview(field); onlineField = field
-        action(view, "获取皮肤", #selector(downloadSkin), 466, 509, 124)
-        action(view, "自选披风", #selector(showCapes), 598, 509, 118)
-        onlineStatus = label(view, "", 126, 488, 586)
+        action(view, "获取皮肤", #selector(downloadSkin), 466, 481, 124)
+        action(view, "自选披风", #selector(showCapes), 598, 481, 118)
+        onlineStatus = label(view, "", 126, 460, 586)
         onlineStatus?.font = .systemFont(ofSize: 11); onlineStatus?.textColor = .secondaryLabelColor
-        for (title, y) in [("手臂",452),("姿势",388),("敲字",356),("主手",324),
-                            ("桌面",292),("键盘",260),("动画",228),("音乐",4)] {
+        for (title, y) in [("手臂",424),("姿势",392),("敲字",360),("主手",328),
+                            ("桌面",296),("键盘",264),("动画",232),("音乐",4)] {
             label(view, title, 0, CGFloat(y + 3), 110)
         }
-        radios(view, "armModel", ["经典（4 px）", "纤细（3 px）"], ["classic","slim"], 126, 452, 230)
-        radios(view, "posture", ["站立","坐下","自定义"], ["standing","sitting","custom"], 126, 388, 112)
-        radios(view, "typingMode", ["精准按键","双手交替"], ["precise","alternating"], 126, 356, 230)
+        radios(view, "armModel", ["经典（4 px）", "纤细（3 px）"], ["classic","slim"], 126, 424, 230)
+        radios(view, "posture", ["站立","坐下","自定义"], ["standing","sitting","custom"], 126, 392, 112)
+        radios(view, "typingMode", ["精准按键","双手交替"], ["precise","alternating"], 126, 360, 230)
         radios(view, "mainHand", ["右手挥动","左手挥动","实际映射","反向映射"],
-               ["right","left","mapped","reverse"], 126, 324, 146)
-        check(view, "保持置顶", "alwaysOnTop", 126, 292, 210)
-        check(view, "完全鼠标穿透", "clickThrough", 356, 292, 220)
+               ["right","left","mapped","reverse"], 126, 328, 146)
+        check(view, "保持置顶", "alwaysOnTop", 126, 296, 210)
+        check(view, "完全鼠标穿透", "clickThrough", 356, 296, 220)
         let lock = NSButton(checkboxWithTitle: "锁定双击", target: self, action: #selector(toggleLockDoubleClick(_:)))
         lock.font = .systemFont(ofSize: 13); lock.state = flag("lockDoubleClick") ? .on : .off
-        lock.frame = NSRect(x: 580, y: 292, width: 132, height: 24); view.addSubview(lock); lockDoubleClickBox = lock
-        check(view, "全局键盘互动", "keyboardEnabled", 126, 260, 220)
-        check(view, "hyp 快速队伍聊天", "hypQuickChat", 356, 260, 220)
-        label(view, "# → /p chat", 594, 263, 118)
-        check(view, "DA 眨眼（需修改过皮肤）", "daBlink", 126, 228, 218)
-        check(view, "DA 扭腰", "daDance", 348, 228, 84)
-        check(view, "邦友的酒", "wine", 436, 228, 94)
-        check(view, "敲字浮现字", "typingLetters", 534, 228, 106)
-        check(view, "可调戏", "teaseEnabled", 644, 228, 72)
-        check(view, "呼吸动画", "idleAnimation", 126, 196, 120)
-        check(view, "偶尔伸懒腰", "occasionalStretch", 250, 196, 140)
-        check(view, "偶尔歪头", "occasionalTilt", 394, 196, 130)
-        check(view, "偶尔犯困", "occasionalSleepy", 528, 196, 140)
-        generalSlider(view, "大小", "scale", 0.65, 1.8, 164)
-        generalSlider(view, "打字压低", "typingSquash", 0, 30, 100)
-        generalSlider(view, "Q 版身体大小", "chibiBodyScale", 50, 180, 68)
+        lock.frame = NSRect(x: 580, y: 296, width: 132, height: 24); view.addSubview(lock); lockDoubleClickBox = lock
+        check(view, "全局键盘互动", "keyboardEnabled", 126, 264, 220)
+        check(view, "hyp 快速队伍聊天", "hypQuickChat", 356, 264, 220)
+        label(view, "# → /p chat", 594, 267, 118)
+        check(view, "DA 眨眼（需修改过皮肤）", "daBlink", 126, 232, 218)
+        check(view, "DA 扭腰", "daDance", 348, 232, 84)
+        check(view, "邦友的酒", "wine", 436, 232, 94)
+        check(view, "敲字浮现字", "typingLetters", 534, 232, 106)
+        check(view, "可调戏", "teaseEnabled", 644, 232, 72)
+        check(view, "呼吸动画", "idleAnimation", 126, 200, 120)
+        check(view, "偶尔伸懒腰", "occasionalStretch", 250, 200, 140)
+        check(view, "偶尔歪头", "occasionalTilt", 394, 200, 130)
+        check(view, "偶尔犯困", "occasionalSleepy", 528, 200, 140)
+        generalSlider(view, "大小", "scale", 0.65, 1.8, 168)
+        generalSlider(view, "打字压低", "typingSquash", 0, 30, 136)
+        generalSlider(view, "Q 版身体大小", "chibiBodyScale", 50, 180, 104)
         check(view, "Q 版小人", "chibi", 126, 36, 260)
         check(view, "随 macOS 登录自动启动", "autostart", 412, 36, 300)
         check(view, "播放音乐时冒音符", "musicNotes", 126, 4, 280)
@@ -336,10 +326,10 @@ extension AppDelegate {
               LoginStartup.delays, 412, 1, 300)
     }
     func addHead(_ view: NSView) {
-        label(view, "整体角度偏移", 0, 552, 300)
-        action(view, "角度归零", #selector(resetRotation), 598, 546, 118)
+        label(view, "整体角度偏移", 0, 528, 300)
+        action(view, "角度归零", #selector(resetRotation), 598, 522, 118)
         for (i, title) in ["前后俯仰 · X","左右转向 · Y","左右倾斜 · Z"].enumerated() {
-            generalSlider(view, title, "modelRotation.\(i)", -180, 180, CGFloat(500 - i * 43))
+            generalSlider(view, title, "modelRotation.\(i)", -180, 180, CGFloat(476 - i * 43))
         }
         check(view, "视线跟随鼠标", "trackMouse", 0, 350, 300)
         action(view, "跟随复位", #selector(resetHead), 598, 346, 118)
@@ -362,16 +352,16 @@ extension AppDelegate {
         label(view, "负值抬头，正值低头", 380, 60, 332).textColor = .secondaryLabelColor
     }
     func addPose(_ view: NSView) {
-        radios(view, "posture", ["使用自定义姿态"], ["custom"], 0, 548, 245)
-        radios(view, "customBase", ["站姿","坐姿"], ["standing","sitting"], 266, 548, 116)
-        action(view, "姿态归零", #selector(resetPose), 598, 546, 118)
-        label(view, "站姿和坐姿分别保存；坐姿角度在默认坐姿上调整。", 0, 508, 712)
+        radios(view, "posture", ["使用自定义姿态"], ["custom"], 0, 524, 245)
+        radios(view, "customBase", ["站姿","坐姿"], ["standing","sitting"], 266, 524, 116)
+        action(view, "姿态归零", #selector(resetPose), 598, 522, 118)
+        label(view, "站姿和坐姿分别保存；坐姿角度在默认坐姿上调整。", 0, 484, 712)
         for (i, axis) in ["前后旋转 · X", "左右旋转 · Y", "侧向旋转 · Z"].enumerated() {
-            label(view, axis, CGFloat(98 + i * 205), 460, 200).alignment = .center
+            label(view, axis, CGFloat(98 + i * 205), 438, 200).alignment = .center
         }
         let key = settings["customBase"] as? String == "sitting" ? "customSittingPose" : "customPose"
         for (i, part) in [("head","头部"),("body","身体"),("leftArm","左臂"),("rightArm","右臂"),("leftLeg","左腿"),("rightLeg","右腿")].enumerated() {
-            let y = CGFloat(421 - i * 44); label(view, part.1, 0, y + 3, 85)
+            let y = CGFloat(401 - i * 42); label(view, part.1, 0, y + 3, 85)
             for axis in 0..<3 {
                 let x = CGFloat(98 + axis * 205), path = "\(key).\(part.0).\(axis)"
                 let out = label(view, displayValue(path, value(path)), x + 142, y + 3, 58)
@@ -386,11 +376,11 @@ extension AppDelegate {
 
     }
     func addExtras(_ view: NSView) {
-        // Keep the macOS CPU budget setting, but move it off the simplified 常规 page.
-        generalSlider(view, "帧率", "fps", 0, 6, 112, choices: [30,60,90,120,144,165,240])
-        label(view, "装饰", 0, 163, 110)
+        label(view, "帧率", 0, 112, 110)
+        label(view, "跟随桌宠所在屏幕的刷新率", 126, 112, 360)
+        label(view, "装饰", 0, 150, 110)
         radios(view, "decoration", ["无", "兔耳", "猫耳", "爱心", "美西螈", "棒棒糖"],
-               ["none", "rabbit", "cat", "heart", "axolotl", "lollipop"], 126, 160, 97)
+               ["none", "rabbit", "cat", "heart", "axolotl", "lollipop"], 126, 147, 97)
         action(view, "直播采集窗口", #selector(showCapture), 126, 12, 160)
         action(view, "放到后面／移回前面", #selector(toggleCapturePlacement), 300, 12, 210)
     }

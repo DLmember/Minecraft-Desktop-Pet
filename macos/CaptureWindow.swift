@@ -47,5 +47,6 @@ extension AppDelegate {
         captureView?.bitmap = nil
         let w = captureWindow; captureWindow = nil; captureView = nil; captureParked = false
         w?.orderOut(nil)
+        if w != nil && core != nil { wake() }
     }
 }

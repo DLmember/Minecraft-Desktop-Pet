@@ -1,3 +1,6 @@
+#[cfg(target_os = "macos")]
+#[path = "render_metal_test.rs"]
+pub(crate) mod metal_test;
 pub(crate) use effects::install_glyphs;
 #[path = "render_effects.rs"]
 mod effects;
@@ -619,8 +622,10 @@ impl Pose {
     }
     /// AppKit separates slow breathing from gestures and short-lived effects.
     /// Windows keeps its existing needs_frames policy.
-    pub fn interactive_frames(&self, now: f32) -> bool {
-        self.gesture.is_some() || self.gesture_return.is_some() || self.dance > 0.001
+    pub fn interactive_frames(&self, s: &Settings, now: f32) -> bool {
+        let target_sit = if s.is_sitting() { 1. } else { 0. };
+        // Updating a setting may start a transition even when no input or animation is active.
+        self.sit != target_sit || self.gesture.is_some() || self.gesture_return.is_some() || self.dance > 0.001
             || self.feed_start.is_some() || self.tease_start.is_some()
             || !self.letters.is_empty() || !self.notes.is_empty()
             || self.hold_active() || self.pat_start.is_some() || self.swing_start.is_some()
@@ -1797,21 +1802,42 @@ pub struct Frame {
     #[cfg(target_os = "macos")]
     keyboard_shades: [[u8; 3]; 6],
     keyboard_detailed: bool,
+    #[cfg(target_os = "macos")]
+    pub(crate) metal_mesh: Option<metal_test::Mesh>,
     #[cfg(all(test, target_os = "macos"))]
     reference_coverage: bool,
 }
 impl Frame {
     pub fn new(w: usize, h: usize) -> Self {
+        let mut frame = Self::deferred(w, h);
+        frame.ensure_raster();
+        frame
+    }
+    #[cfg(target_os = "macos")]
+    pub(crate) fn release_raster(&mut self) {
+        if self.metal_mesh.is_some() {
+            self.pixels = Vec::new();
+            self.depth = Vec::new();
+        }
+    }
+    fn ensure_raster(&mut self) {
+        let count = self.width * self.height;
+        self.pixels.resize(count * 4, 0);
+        self.depth.resize(count, f32::INFINITY);
+    }
+    pub(crate) fn deferred(w: usize, h: usize) -> Self {
         Self {
             width: w,
             height: h,
-            pixels: vec![0; w * h * 4],
-            depth: vec![f32::INFINITY; w * h],
+            pixels: Vec::new(),
+            depth: Vec::new(),
             bounds: [0; 4],
             keyboard_color: [131, 135, 138],
             #[cfg(target_os = "macos")]
             keyboard_shades: keyboard_shades([131, 135, 138]),
             keyboard_detailed: false,
+            #[cfg(target_os = "macos")]
+            metal_mesh: None,
             #[cfg(all(test, target_os = "macos"))]
             reference_coverage: false,
         }
@@ -1827,9 +1853,16 @@ impl Frame {
         #[cfg(target_os = "macos")]
         if color != self.keyboard_color { self.keyboard_shades = keyboard_shades(color); }
         self.keyboard_color = color;
-        self.pixels.fill(0);
-        self.depth.fill(f32::INFINITY);
-        self.bounds = [self.width as i32, self.height as i32, 0, 0];
+        #[cfg(target_os = "macos")]
+        let software = self.metal_mesh.is_none();
+        #[cfg(not(target_os = "macos"))]
+        let software = true;
+        if software {
+            self.ensure_raster();
+            self.pixels.fill(0);
+            self.depth.fill(f32::INFINITY);
+            self.bounds = [self.width as i32, self.height as i32, 0, 0];
+        }
         let cape = cape.filter(|_| s.show_cape);
         for part in parts_with_cape(s, skin, pose, cape) {
             if part.cape {
@@ -1841,8 +1874,12 @@ impl Frame {
             }
         }
         self.draw_decorations(s,skin,pose);
-        self.draw_effects(s,skin,pose);
-        self.draw_tease_hand(s,skin,pose);
+        if software {
+            self.draw_effects(s,skin,pose);
+            self.draw_tease_hand(s,skin,pose);
+        } else {
+            self.draw_letters(s, skin, pose);
+        }
     }
     fn draw_box(&mut self, b: &BoxPart, skin: Tex) {
         let Vec3 { x: uv_w, y: uv_h, z: uv_d } = b.uv_size.unwrap_or(b.size);
@@ -2054,6 +2091,14 @@ impl Frame {
         if area.abs() < 0.0001 {
             return;
         }
+        #[cfg(target_os = "macos")]
+        if let Some(mesh) = &mut self.metal_mesh {
+            let solid = b.keyboard.then(|| self.keyboard_shades[face]);
+            mesh.push_triangle(p, uv, skin.image, face, solid,
+                               self.keyboard_detailed && face == 2,
+                               b.uv, b.size);
+            return;
+        }
         let minx = p
             .iter()
             .map(|p| p.x)
@@ -2081,7 +2126,9 @@ impl Frame {
         // Entirely off-canvas geometry has no scanline span (also avoids unsigned subtraction).
         #[cfg(target_os = "macos")]
         if minx >= maxx || miny >= maxy { return; }
-        let texscale = skin.image.width() as f32 / 64.;
+        let tex_width = skin.image.width();
+        let tex_height = skin.image.height();
+        let texscale = tex_width as f32 / 64.;
         #[cfg(not(target_os = "macos"))]
         let shades = [0.80f32, 0.80, 1., 0.62, 0.94, 0.86];
         #[cfg(target_os = "macos")]
@@ -2130,6 +2177,7 @@ impl Frame {
                 dx * (miny as i64 * 256 + 128 - s.1) - dy * (minx as i64 * 256 + 128 - s.0) + bias,
             )
         });
+        let detailed_keys = self.keyboard_detailed && face == 2;
         let sample_lut = if skin.colors.is_empty() { Some(&shade_lut()[face]) } else { None };
         for y in miny..maxy {
             let row_a = a0 + (y - miny) as f32 * ay;
@@ -2143,6 +2191,8 @@ impl Frame {
             let pixels = (minx + span.start)..(minx + span.end);
             #[cfg(not(target_os = "macos"))]
             let pixels = minx..maxx;
+            #[cfg(target_os = "macos")]
+            let mut painted = (pixels.end, pixels.start);
             for x in pixels {
                 #[cfg(not(target_os = "macos"))]
                 if (0..3).any(|e| coverage[e] - edges[e].1 * (x - minx) as i64 * 256 < 0) {
@@ -2160,25 +2210,28 @@ impl Frame {
                     continue;
                 }
                 let (color, alpha) = if b.keyboard {
-                    let top = uv[1] + (uv[0] - uv[1]) * a + (uv[2] - uv[1]) * c;
-                    let local = top - b.uv - Vec2::new(b.size.z, 0.);
-                    let row = ((local.y / b.size.z - 0.2) / 0.3).round();
-                    let stagger = if row == 1. { 0.025 } else { -0.025 };
-                    let col = (local.x / b.size.x * 6. - stagger * 6.).round();
-                    let center = Vec2::new((col / 6. + stagger) * b.size.x,
-                        (0.2 + row * 0.3) * b.size.z);
-                    let distance = (local - center).abs();
-                    let half_side = b.size.z * 0.11;
-                    let is_key = self.keyboard_detailed && face == 2 && (0. ..=2.).contains(&row)
-                        && (1. ..=5.).contains(&col)
-                        && distance.x <= half_side && distance.y <= half_side;
+                    // Side faces and the simple keyboard have uniform color.
+                    let is_key = if detailed_keys {
+                        let top = uv[1] + (uv[0] - uv[1]) * a + (uv[2] - uv[1]) * c;
+                        let local = top - b.uv - Vec2::new(b.size.z, 0.);
+                        let row = ((local.y / b.size.z - 0.2) / 0.3).round();
+                        let stagger = if row == 1. { 0.025 } else { -0.025 };
+                        let col = (local.x / b.size.x * 6. - stagger * 6.).round();
+                        let center = Vec2::new((col / 6. + stagger) * b.size.x,
+                            (0.2 + row * 0.3) * b.size.z);
+                        let distance = (local - center).abs();
+                        let half_side = b.size.z * 0.11;
+                        (0. ..=2.).contains(&row)
+                            && (1. ..=5.).contains(&col)
+                            && distance.x <= half_side && distance.y <= half_side
+                    } else { false };
                     (if is_key { key_gray } else { gray }, 255)
                 } else {
                     let tx = tex[1].x + ta.x * a + tc.x * c;
                     let ty = tex[1].y + ta.y * a + tc.y * c;
-                    let xx = (tx as u32).min(skin.image.width() - 1);
-                    let yy = (ty as u32).min(skin.image.height() - 1);
-                    let ti = (yy * skin.image.width() + xx) as usize;
+                    let xx = (tx as u32).min(tex_width - 1);
+                    let yy = (ty as u32).min(tex_height - 1);
+                    let ti = (yy * tex_width + xx) as usize;
                     {
                         let p = skin.image.get_pixel(xx, yy);
                         let color = if let Some(lut) = sample_lut {
@@ -2206,9 +2259,25 @@ impl Frame {
                         (aa + (self.pixels[off + 3] as u32 * inv + 127) / 255) as u8;
                 }
                 self.depth[i] = z;
-                self.bounds[0] = self.bounds[0].min(x as i32);
+                #[cfg(target_os = "macos")]
+                {
+                    painted.0 = painted.0.min(x);
+                    painted.1 = x + 1;
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    self.bounds[0] = self.bounds[0].min(x as i32);
+                    self.bounds[1] = self.bounds[1].min(y as i32);
+                    self.bounds[2] = self.bounds[2].max(x as i32 + 1);
+                    self.bounds[3] = self.bounds[3].max(y as i32 + 1);
+                }
+            }
+            // Update the frame bounds once per painted scanline.
+            #[cfg(target_os = "macos")]
+            if painted.0 < painted.1 {
+                self.bounds[0] = self.bounds[0].min(painted.0 as i32);
                 self.bounds[1] = self.bounds[1].min(y as i32);
-                self.bounds[2] = self.bounds[2].max(x as i32 + 1);
+                self.bounds[2] = self.bounds[2].max(painted.1 as i32);
                 self.bounds[3] = self.bounds[3].max(y as i32 + 1);
             }
         }

@@ -14,9 +14,11 @@ enum InputSelfTests {
             let utf16 = Array(text.utf16); event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
             return event
         }
-        check(RenderBudget.fps(demand: 1, interacting: false, requested: 120) == 15, "breathing uses low-rate budget")
-        check(RenderBudget.fps(demand: 1, interacting: true, requested: 120) == 120, "input overrides breathing budget")
-        check(RenderBudget.fps(demand: 2, interacting: false, requested: 60) == 60, "gesture keeps requested FPS")
+        check(RenderBudget.fps(demand: 0, interacting: false, gazeChanged: false, requested: 120) == 0, "static pet skips redraws")
+        check(RenderBudget.fps(demand: 1, interacting: false, gazeChanged: false, requested: 120) == 120, "breathing follows display cadence")
+        check(RenderBudget.fps(demand: 1, interacting: false, gazeChanged: true, requested: 120) == 120, "gaze follows display cadence")
+        check(RenderBudget.fps(demand: 1, interacting: true, gazeChanged: false, requested: 120) == 120, "input overrides breathing budget")
+        check(RenderBudget.fps(demand: 2, interacting: false, gazeChanged: true, requested: 60) == 60, "gesture keeps requested FPS")
         check(RenderBudget.size(points: NSSize(width: 360, height: 420)) == NSSize(width: 450, height: 525), "default render quality retained")
         check(RenderBudget.size(points: NSSize(width: 234, height: 273)) == NSSize(width: 293, height: 341), "small pet uses smaller canvas")
         check(RenderBudget.size(points: NSSize(width: CGFloat.nan, height: CGFloat.infinity)) == NSSize(width: 1, height: 1), "nonfinite render geometry is bounded")

@@ -119,6 +119,7 @@ final class InputController {
     struct Press { var observed = false; var upSince: TimeInterval? }
     private var held: [UInt16: Press] = [:]
     private var swallowedPhysical: [UInt16: Press] = [:]
+    var hasKeysToRecover: Bool { !held.isEmpty || !swallowedPhysical.isEmpty }
     var listeningAllowed: Bool { CGPreflightListenEventAccess() }
     var accessibilityAllowed: Bool { AXIsProcessTrusted() }
     var secureInput: Bool { IsSecureEventInputEnabled() }
@@ -252,6 +253,7 @@ final class InputController {
         }
     }
     func recoverReleasedKeys() {
+        guard hasKeysToRecover else { return }
         let clock = ProcessInfo.processInfo.systemUptime
         for code in Array(swallowedPhysical.keys) {
             guard var press = swallowedPhysical[code] else { continue }

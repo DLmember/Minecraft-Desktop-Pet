@@ -2,6 +2,13 @@
 
 本文根据 [GitHub Releases](https://github.com/DLmember/Minecraft-Desktop-Pet/releases) 整理，按版本倒序记录。各平台下载、校验文件及补充说明请以对应发布页为准。
 
+## [v2.6.0.1](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/tag/v2.6.0.1) · macOS
+
+- 本次发布不提供 Windows 版。Windows 用户可继续下载 v2.6。
+- 跟随和呼吸按桌宠所在屏幕的刷新率绘制。Apple Silicon 使用 Metal 和可复用的共享帧缓冲区，完全静止时暂停重绘。
+- 常规页移除「大小」与「打字压低」之间的空行，缩小控制台并保留全部设置。
+- 浮字、音效和软件绘制缓冲区按需分配。关闭直播采集或结束特效后，恢复 Metal 绘制并释放闲置的软件缓冲区。
+
 ## [v2.6](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/tag/v2.6)
 
 ### 新增与调整

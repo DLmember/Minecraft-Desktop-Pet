@@ -30,7 +30,9 @@ extension AppDelegate {
         let saved = settings
         precondition(StableVersion.parse("v2.5") == StableVersion.parse("2.5.0"))
         precondition(StableVersion.newer("v2.10", than: "2.9.1"))
-        for tag in ["v2.5-beta","v2.5-blockbench.1","latest","v2.4.12","2.5.0"] {
+        precondition(StableVersion.newer("v2.6.0.1", than: "2.6"))
+        precondition(!StableVersion.newer("v2.6.0.0", than: "2.6.0"))
+        for tag in ["v2.6.0.1.2","v2.5-beta","v2.5-blockbench.1","latest","v2.4.12","2.5.0"] {
             precondition(!StableVersion.newer(tag, than: "2.5.0"))
         }
         settings["clickThrough"] = false; settings["trackMouse"] = false; settings["hypQuickChat"] = true
@@ -39,7 +41,8 @@ extension AppDelegate {
         precondition(controlTabs?.numberOfTabViewItems == 3)
         func checkCompactConsole() {
             let root = panel!.contentView!
-            precondition(root.frame.size == ConsoleSize.compact && root.bounds.size == ConsoleSize.design)
+            precondition(root.frame.size == ConsoleSize.compact)
+            precondition(abs(root.bounds.width - ConsoleSize.design.width) < 0.01 && abs(root.bounds.height - ConsoleSize.design.height) < 0.01)
             for button in pageButtons {
                 let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
                 precondition(root.hitTest(point) === button, "Scaled navigation retains mouse hit testing")
@@ -48,25 +51,29 @@ extension AppDelegate {
         // A CGImage must own immutable pixels even when the pool resizes or advances.
         let originalSettings = settings
         for scale in [0.65, 1.0, 1.8] {
-            settings["scale"] = scale; changed(); tick()
+            settings["scale"] = scale; changed(); nextDraw = 0; tick()
             let expected = RenderBudget.size(points: pet.frame.size)
-            precondition(renderSize == expected && view.bitmap?.width == Int(expected.width)
-                         && view.bitmap?.height == Int(expected.height), "Window/core/image geometry stays synchronized")
+            precondition(renderSize == expected, "Window and Rust canvas stay synchronized")
+            if let bitmap = view.bitmap {
+                precondition(bitmap.width == Int(expected.width) && bitmap.height == Int(expected.height))
+            } else {
+                precondition(metal?.targetSize == expected, "Metal target follows the resized canvas")
+            }
         }
         settings = originalSettings; changed(); tick()
         let wasHidden = hidden
         hidden = true; tick(); precondition(timerRate == 2, "Hidden pet uses low-frequency checks")
-        hidden = false; wake(); precondition(timerRate == max(30, number("fps")), "Unhide wakes without waiting for the idle timer")
+        hidden = false; wake(); precondition(timerRate == displayHz, "Unhide wakes without waiting for the idle timer")
         hidden = wasHidden; wake()
         let probe = PetView(frame: NSRect(x: 0, y: 0, width: 16, height: 16))
         let red = [UInt8](repeating: 127, count: 16 * 16 * 4)
-        red.withUnsafeBufferPointer { probe.updatePixels($0.baseAddress!, width: 16, height: 16) }
+        precondition(red.withUnsafeBufferPointer { probe.updatePixels($0.baseAddress!, width: 16, height: 16) })
         let old = probe.bitmap!
         let sameSize = [UInt8](repeating: 19, count: 16 * 16 * 4)
-        sameSize.withUnsafeBufferPointer { probe.updatePixels($0.baseAddress!, width: 16, height: 16) }
+        precondition(sameSize.withUnsafeBufferPointer { probe.updatePixels($0.baseAddress!, width: 16, height: 16) })
         precondition((old.dataProvider!.data! as Data).first == 127, "Next frame cannot overwrite a retained image")
         let blue = [UInt8](repeating: 43, count: 8 * 8 * 4)
-        blue.withUnsafeBufferPointer { probe.updatePixels($0.baseAddress!, width: 8, height: 8) }
+        precondition(blue.withUnsafeBufferPointer { probe.updatePixels($0.baseAddress!, width: 8, height: 8) })
         precondition(probe.bitmap!.width == 8 && old.width == 16)
         let retainedBytes = old.dataProvider!.data! as Data
         precondition(retainedBytes.first == 127 && retainedBytes.count == red.count, "Resizing retains old frame memory safely")
@@ -207,9 +214,7 @@ extension AppDelegate {
         let delay = all().compactMap { $0 as? NSPopUpButton }.first { bindings[ObjectIdentifier($0)]?.key == "autostartDelay" }!
         delay.selectItem(at: delay.numberOfItems - 1); controlChanged(delay); save()
         pageButtons[2].performClick(nil)
-        let fps = all().compactMap { $0 as? NSSlider }.first { bindings[ObjectIdentifier($0)]?.key == "fps" }!
-        fps.doubleValue = 6; controlChanged(fps); save(); loadSettings()
-        precondition(number("fps") == 240, "FPS slider uses supported frame-rate values")
+        precondition(all().compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("屏幕的刷新率") })
         pageButtons[0].performClick(nil)
         let footerControls = controls(panel!.contentView!)
         let github = footerControls.compactMap { $0 as? NSButton }.first { $0.title == "GitHub" }!
@@ -231,7 +236,7 @@ extension AppDelegate {
             precondition(selectedConsolePage == index && pageButtons[index].state == .on)
             precondition(controlTabs!.tabViewItems.filter {!($0.view?.subviews.isEmpty ?? true)}.count == 1)
             if index == 2 {
-                precondition(all().filter {$0 is NSSlider}.count == 19, "One pose at a time")
+                precondition(all().filter {$0 is NSSlider}.count == 18, "One pose at a time")
                 let selector = all().compactMap { $0 as? NSButton }.first {
                     let binding = bindings[ObjectIdentifier($0)]
                     return binding?.key == "customBase" && binding?.choices.first as? String == "sitting"
@@ -306,7 +311,7 @@ extension AppDelegate {
         settings = saved; changed(); save()
         for _ in 0..<5 { panel?.close(); precondition(panel == nil && controlTabs == nil && bindings.isEmpty && pageButtons.isEmpty && consoleWindow?.contentView?.subviews.isEmpty == true); showSettings(); checkCompactConsole() }
         controlTabs?.selectTabViewItem(at:0)
-        print("UI regression passed: Windows-aligned native layout, GitHub icon without credit, radio groups, FPS slider, three lazy native pages, v2.5 settings, isolated poses, input permissions, quick chat, click dispatch, window release")
+        print("UI regression passed: Windows-aligned native layout, GitHub icon without credit, radio groups, display-synchronized FPS, three lazy native pages, v2.5 settings, isolated poses, input permissions, quick chat, click dispatch, window release")
     }
 
     /// Explicit isolated test mode; never installed as a background service.
@@ -332,36 +337,41 @@ extension AppDelegate {
             }
         }
         RunLoop.main.add(sampler,forMode:.common)
-        at(8) {
-            phase = "animated"
-            self.settings["idleAnimation"] = true; self.settings["typingLetters"] = true
-            self.settings["musicNotes"] = true; self.settings["posture"] = "sitting"
-            self.prepareGlyphs(); self.changed(); pet_music(self.core,true); self.feedApple()
-            for n in 0..<20 { at(Double(n)*0.3) { pet_key(self.core,65,true,self.now); pet_key(self.core,65,false,self.now); self.wake() } }
-        }
-        at(16) { phase = "console"; self.showSettings() }
-        for n in 0..<12 {
-            at(24+Double(n)*0.6) {
-                phase = "console-cycles"
-                self.controlTabs?.selectTabViewItem(at:n%3)
-                self.panel?.close(); self.showSettings()
+        if CommandLine.arguments.contains("--console-memory") {
+            at(8) { phase = "console"; self.showSettings() }
+            at(16) { phase = "closed"; self.panel?.close() }
+        } else {
+            at(8) {
+                phase = "animated"
+                self.settings["idleAnimation"] = true; self.settings["typingLetters"] = true
+                self.settings["musicNotes"] = true; self.settings["posture"] = "sitting"
+                self.prepareGlyphs(); self.changed(); pet_music(self.core,true); self.feedApple()
+                for n in 0..<20 { at(Double(n)*0.3) { pet_key(self.core,65,true,self.now); pet_key(self.core,65,false,self.now); self.wake() } }
+            }
+            at(16) { phase = "console"; self.showSettings() }
+            for n in 0..<12 {
+                at(24+Double(n)*0.6) {
+                    phase = "console-cycles"
+                    self.controlTabs?.selectTabViewItem(at:n%3)
+                    self.panel?.close(); self.showSettings()
+                }
+            }
+            at(33) { phase = "closed"; self.panel?.close() }
+            at(42) {
+                phase = "hd-skin"
+                if let i = CommandLine.arguments.firstIndex(of:"--test-skin"), CommandLine.arguments.count > i+1 {
+                    precondition(CommandLine.arguments[i+1].withCString {pet_import(self.core,$0)})
+                    self.loadSettings(); self.wake()
+                }
+            }
+            at(54) { phase = "hidden"; self.hidden = true; self.pet.orderOut(nil); self.wake() }
+            at(62) {
+                phase = "restored"; self.hidden = false; self.pet.orderFrontRegardless()
+                self.settings["idleAnimation"] = false; self.settings["musicNotes"] = false
+                pet_music(self.core,false); self.changed()
             }
         }
-        at(33) { phase = "closed"; self.panel?.close() }
-        at(42) {
-            phase = "hd-skin"
-            if let i = CommandLine.arguments.firstIndex(of:"--test-skin"), CommandLine.arguments.count > i+1 {
-                precondition(CommandLine.arguments[i+1].withCString {pet_import(self.core,$0)})
-                self.loadSettings(); self.wake()
-            }
-        }
-        at(54) { phase = "hidden"; self.hidden = true; self.pet.orderOut(nil); self.wake() }
-        at(62) {
-            phase = "restored"; self.hidden = false; self.pet.orderFrontRegardless()
-            self.settings["idleAnimation"] = false; self.settings["musicNotes"] = false
-            pet_music(self.core,false); self.changed()
-        }
-        at(73) {
+        at(CommandLine.arguments.contains("--console-memory") ? 30 : 73) {
             sampler.invalidate()
             let output:[String:Any] = ["samples":samples,"targetBytes":30_000_000,
                 "peakSampledFootprint":samples.compactMap{$0["physicalFootprint"] as? UInt64}.max() ?? 0,
@@ -387,17 +397,24 @@ extension AppDelegate {
         let scenario = CommandLine.arguments.firstIndex(of: "--cpu-scenario").flatMap {
             CommandLine.arguments.indices.contains($0 + 1) ? CommandLine.arguments[$0 + 1] : nil
         } ?? "steady"
+        let seconds = CommandLine.arguments.firstIndex(of: "--cpu-seconds").flatMap { i -> Double? in
+            guard CommandLine.arguments.indices.contains(i + 1), let value = Double(CommandLine.arguments[i + 1]),
+                  (8...300).contains(value) else { return nil }
+            return value
+        } ?? 8
+        // System pointer movement must not turn a breathing or idle run into gaze.
+        benchmarkCursor = NSPoint(x: pet.frame.midX + 150, y: pet.frame.midY + 130)
         var stimulus: Timer?
         if scenario == "interaction" {
             var n = 0
             stimulus = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
                 guard let self else { return }
                 switch n % 3 {
-                case 0: pet_key(self.core, 65, true, self.now); pet_key(self.core, 65, false, self.now)
+                case 0: self.prepareLettersIfNeeded(); pet_key(self.core, 65, true, self.now); pet_key(self.core, 65, false, self.now)
                 case 1: _ = pet_gesture(self.core, 0, self.now)
                 default: _ = pet_mouse(self.core, 0, true, 0, 0, self.now); pet_hold_cancel(self.core, self.now)
                 }
-                n += 1; self.wake()
+                n += 1; self.wake(interactive: true)
             }
         }
         if scenario == "gaze" {
@@ -407,13 +424,38 @@ extension AppDelegate {
                 let t = Double(self.now)
                 self.benchmarkCursor = NSPoint(x: self.pet.frame.midX + sin(t * 2) * 160,
                                               y: self.pet.frame.midY + cos(t * 2) * 120)
+                if self.timerRate != self.displayHz { self.pointerMoved() }
+            }
+        }
+        // Exercise both normal presentation and the immutable shared bitmap used by capture.
+        if scenario == "renderer-transitions" {
+            precondition(metal != nil)
+            settings["idleAnimation"] = true; changed()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                precondition(self.metalFrames > 0 && self.view.bitmap == nil)
+                self.showCapture()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                precondition(self.view.bitmap != nil && self.captureView?.bitmap === self.view.bitmap)
+                precondition(self.metal?.layer.isHidden == true)
+                self.closeCapture()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                precondition(self.view.bitmap == nil && self.metal?.layer.isHidden == false)
+                self.feedApple()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.3) {
+                precondition(self.view.bitmap != nil && self.metal?.layer.isHidden == true)
             }
         }
         if scenario == "hidden" { hidden = true; pet.orderOut(nil) }
         if scenario == "console" { showSettings() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             let began = ProcessInfo.processInfo.systemUptime, used = cpu(), frames = self.renderedFrames
-            DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+            let metal = self.metalFrames, software = self.softwareFrames, presented = self.metal?.presentations ?? 0
+            let projectCPU = self.benchmarkProjectCPU, submitCPU = self.benchmarkSubmitCPU
+            let surfaceUpdates = self.metal?.surfaceUpdates ?? 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
                 stimulus?.invalidate()
                 let elapsed = ProcessInfo.processInfo.systemUptime - began
                 var info = task_vm_info_data_t()
@@ -423,13 +465,37 @@ extension AppDelegate {
                         task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
                     }
                 }
-                let report: [String: Any] = ["cpuPercent": (cpu() - used) / elapsed * 100,
-                    "wallSeconds": elapsed, "frames": self.renderedFrames - frames,
+                var report: [String: Any] = ["cpuPercent": (cpu() - used) / elapsed * 100,
+                    "displayHz": self.displayHz, "peakFootprint": info.ledger_phys_footprint_peak, "wallSeconds": elapsed, "frames": self.renderedFrames - frames,
                     "renderFPS": Double(self.renderedFrames - frames) / elapsed,
-                    "width": self.view.bitmap?.width ?? 0, "height": self.view.bitmap?.height ?? 0,
+                    "metalFrames": self.metalFrames - metal, "softwareFrames": self.softwareFrames - software,
+                    "metalPresented": (self.metal?.presentations ?? 0) - presented,
+                    "surfaceLayerUpdates": (self.metal?.surfaceUpdates ?? 0) - surfaceUpdates,
+                    "width": Int(self.renderSize.width), "height": Int(self.renderSize.height),
                     "physicalFootprint": info.phys_footprint, "scenario": scenario]
+                if self.benchmarkBreakdown {
+                    report["mainThreadProjectCPU"] = Double(self.benchmarkProjectCPU - projectCPU) / elapsed / 10_000_000
+                    report["mainThreadSubmitCPU"] = Double(self.benchmarkSubmitCPU - submitCPU) / elapsed / 10_000_000
+                }
                 let bytes = try! JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
                 try! bytes.write(to: self.dataDir.appendingPathComponent("cpu-report.json"))
+                if CommandLine.arguments.contains("--metal-snapshot") {
+                    let r = self.pet.frame, size = self.renderSize
+                    if CommandLine.arguments.contains("--metal-typing-snapshot") {
+                        self.prepareLettersIfNeeded()
+                        pet_key(self.core, 65, true, 19.84)
+                        pet_key(self.core, 65, false, 19.85)
+                    }
+                    let url = self.dataDir.appendingPathComponent("snapshot.bgra")
+                    var mesh = PetMetalMesh()
+                    if let renderer = self.metal {
+                        guard pet_metal_mesh(self.core, 200, 190, Float(r.width), Float(r.height), false, 20, 0.016, &mesh),
+                              renderer.draw(mesh, size: size, snapshot: url) else { exit(2) }
+                    } else if let p = pet_render(self.core, 200, 190, Float(r.width), Float(r.height), false, 20, 0.016) {
+                        try! Data(bytes: p, count: Int(size.width * size.height * 4)).write(to: url)
+                        self.view.updatePixels(p, width: Int(size.width), height: Int(size.height))
+                    }
+                }
                 self.writeSmokeReport()
                 print(String(data: bytes, encoding: .utf8)!)
                 NSApp.terminate(nil)

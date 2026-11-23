@@ -69,6 +69,8 @@ impl PetCore {
         false
     }
     fn update_settings(&mut self, s: Settings) {
+        #[cfg(target_os = "macos")]
+        { self.frame.metal_mesh = None; }
         // Match the Windows command handlers: persistence is not an input reset.
         if self.settings.posture != s.posture
             || self.settings.custom_base != s.custom_base
@@ -113,7 +115,7 @@ pub unsafe extern "C" fn pet_create(dir: *const c_char) -> *mut PetCore {
     let skin = Skin::load(&bytes).unwrap_or_else(|_| Skin::load(render::DEFAULT_SKIN).unwrap());
     let cape = load_selected_cape(&settings);
     let pose = Pose::new(&settings);
-    Box::into_raw(Box::new(PetCore {settings, store, skin, cape, pose, frame: Frame::new(450, 525), message: CString::default(), json: CString::default(),
+    Box::into_raw(Box::new(PetCore {settings, store, skin, cape, pose, frame: Frame::deferred(450, 525), message: CString::default(), json: CString::default(),
         hold: HoldTracker::default(),
         pat_rng: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0x9E37_79B9_7F4A_7C15, |d| d.as_nanos() as u64) | 1}))
 }
@@ -163,6 +165,8 @@ pub unsafe extern "C" fn pet_import(core: *mut PetCore, path: *const c_char) -> 
 pub unsafe extern "C" fn pet_import_profile(core: *mut PetCore, skin_path: *const c_char,
     cape_path: *const c_char, name: *const c_char, model: *const c_char) -> bool {
     let (Some(c), Some(path)) = (core.as_mut(), string(skin_path)) else { return false; };
+    #[cfg(target_os = "macos")]
+    { c.frame.metal_mesh = None; }
     let result = (|| -> Result<(Skin, Option<Cape>, Settings), String> {
         let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
         let skin = Skin::load(&bytes)?;
@@ -218,6 +222,8 @@ pub unsafe extern "C" fn pet_import_profile(core: *mut PetCore, skin_path: *cons
 #[no_mangle]
 pub unsafe extern "C" fn pet_restore_skin(core: *mut PetCore) -> bool {
     let Some(c) = core.as_mut() else { return false; };
+    #[cfg(target_os = "macos")]
+    { c.frame.metal_mesh = None; }
     let mut next = c.settings.clone();
     next.skin_path.clear();
     next.detected_arm_model = None;
@@ -250,6 +256,8 @@ pub unsafe extern "C" fn pet_cape_png(index: u32, length: *mut usize) -> *const 
 #[no_mangle]
 pub unsafe extern "C" fn pet_select_cape(core: *mut PetCore, id: *const c_char) -> bool {
     let (Some(c),Some(id)) = (core.as_mut(),string(id)) else { return false; };
+    #[cfg(target_os = "macos")]
+    { c.frame.metal_mesh = None; }
     if id != "account" && id != "none" && !cape_catalog::ENTRIES.iter().any(|e| e.id == id) {
         return c.error("未知披风。".into());
     }
@@ -260,6 +268,8 @@ pub unsafe extern "C" fn pet_select_cape(core: *mut PetCore, id: *const c_char) 
 #[no_mangle]
 pub unsafe extern "C" fn pet_reset(core: *mut PetCore) -> bool {
     let Some(c) = core.as_mut() else { return false; };
+    #[cfg(target_os = "macos")]
+    { c.frame.metal_mesh = None; }
     c.settings = Settings::first_run_defaults();
     c.skin = Skin::load(render::DEFAULT_SKIN).unwrap();
     c.cape = None;
@@ -339,7 +349,7 @@ pub unsafe extern "C" fn pet_frame_demand(core: *mut PetCore, now: f32) -> u32 {
     let Some(c) = core.as_ref() else { return 0; };
     let blinking = c.settings.da_blink && c.skin.eyes.is_some()
         && (c.pose.blink_at(now) > 0.0001 || c.pose.eyelid < 0.9999);
-    if c.settings.wine || blinking || c.pose.interactive_frames(now) || c.pose.gesture_due(&c.settings, now)
+    if c.settings.wine || blinking || c.pose.interactive_frames(&c.settings, now) || c.pose.gesture_due(&c.settings, now)
         || (c.settings.da_dance && c.settings.posture == "standing")
         || (c.settings.music_notes && c.pose.music_playing) { return 2; }
     if c.settings.breathing_animation || c.pose.breathing_frames() { return 1; }
@@ -351,13 +361,13 @@ pub unsafe extern "C" fn pet_resize(core: *mut PetCore, width: u32, height: u32)
     let Some(c) = core.as_mut() else { return false; };
     if width < 1 || height < 1 || width > 2048 || height > 2048 { return false; }
     if c.frame.width != width as usize || c.frame.height != height as usize {
-        c.frame = Frame::new(width as usize, height as usize);
+        c.frame = Frame::deferred(width as usize, height as usize);
     }
     true
 }
 #[no_mangle]
 pub unsafe extern "C" fn pet_pixels(core: *mut PetCore) -> *const u8 {
-    core.as_ref().map_or(ptr::null(), |c| c.frame.pixels.as_ptr())
+    core.as_ref().filter(|c| !c.frame.pixels.is_empty()).map_or(ptr::null(), |c| c.frame.pixels.as_ptr())
 }
 #[no_mangle]
 pub unsafe extern "C" fn pet_set_glyphs(bytes: *const u8, length: usize) -> bool {
@@ -368,16 +378,54 @@ pub unsafe extern "C" fn pet_set_glyphs(bytes: *const u8, length: usize) -> bool
 pub unsafe extern "C" fn pet_render(core: *mut PetCore, x: f32, y: f32, width: f32, height: f32, shift: bool, now: f32, dt: f32) -> *const u8 {
     let Some(c) = core.as_mut() else { return ptr::null(); };
     c.pose.update(&c.settings, &c.skin, Vec2::new(x, y), width, height, shift, now, dt);
+    #[cfg(target_os = "macos")]
+    { c.frame.metal_mesh = None; }
     c.frame.draw_ext(&c.settings, &c.skin, c.cape.as_ref(), &c.pose);
     c.frame.pixels.as_ptr()
 }
+#[cfg(target_os = "macos")]
+#[no_mangle]
+pub unsafe extern "C" fn pet_release_raster(core: *mut PetCore) {
+    if let Some(c) = core.as_mut() { c.frame.release_raster(); }
+}
+/// False selects the software frame already rendered below.
+#[cfg(target_os = "macos")]
+#[no_mangle]
+pub unsafe extern "C" fn pet_metal_mesh(
+    core: *mut PetCore, x: f32, y: f32, width: f32, height: f32,
+    shift: bool, now: f32, dt: f32, out: *mut render::metal_test::MeshView,
+) -> bool {
+    use render::metal_test::Mesh;
+    let (Some(c), Some(out)) = (core.as_mut(), out.as_mut()) else { return false; };
+    c.pose.update(&c.settings, &c.skin, Vec2::new(x, y), width, height, shift, now, dt);
+    if c.pose.needs_software_overlays() {
+        c.frame.metal_mesh = None;
+        c.frame.draw_ext(&c.settings, &c.skin, c.cape.as_ref(), &c.pose);
+        return false;
+    }
+    c.frame.metal_mesh.get_or_insert_with(Mesh::default).clear();
+    c.frame.draw_ext(&c.settings, &c.skin, c.cape.as_ref(), &c.pose);
+    *out = c.frame.metal_mesh.as_ref().unwrap().view();
+    true
+}
+
+#[cfg(target_os = "macos")]
+#[no_mangle]
+pub unsafe extern "C" fn pet_shade_table() -> *const u8 {
+    render::metal_test::shade_table()
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn pet_hit(core: *mut PetCore, x: f32, y: f32) -> bool {
     let Some(c) = core.as_ref() else { return false; };
     if !x.is_finite() || !y.is_finite() || x < 0. || y < 0. || x >= 1. || y >= 1. { return false; }
     let xx = ((x * c.frame.width as f32) as usize).min(c.frame.width - 1);
     let yy = ((y * c.frame.height as f32) as usize).min(c.frame.height - 1);
-    c.frame.pixels[(yy * c.frame.width + xx) * 4 + 3] != 0
+    #[cfg(target_os = "macos")]
+    if let Some(mesh) = &c.frame.metal_mesh {
+        return mesh.hit(xx as f32 + 0.5, yy as f32 + 0.5);
+    }
+    c.frame.pixels.get((yy * c.frame.width + xx) * 4 + 3).is_some_and(|&a| a != 0)
 }
 
 #[cfg(test)]
@@ -396,6 +444,10 @@ mod ffi_tests {
             (*core).settings.music_notes = false;
             (*core).pose = Pose::new(&(*core).settings);
             assert_eq!(pet_frame_demand(core, 10.), 0);
+            (*core).settings.posture = if (*core).settings.is_sitting() { "standing" } else { "sitting" }.into();
+            assert_eq!(pet_frame_demand(core, 10.), 2, "posture changes wake a static pet");
+            for i in 0..60 { pet_render(core, 0., 0., 360., 420., false, 10. + i as f32 / 60., 1. / 60.); }
+            assert_eq!(pet_frame_demand(core, 11.), 0, "completed posture transitions go idle");
             (*core).settings.breathing_animation = true;
             assert_eq!(pet_frame_demand(core, 10.), 1);
             pet_render(core,0.,0.,360.,420.,false,10.,0.1);
@@ -427,6 +479,9 @@ mod ffi_tests {
             assert_eq!(pet_frame_demand(core, open), 2, "must draw the final open-eye frame");
             for (w,h) in [(293,341),(450,525),(810,945),(1,1)] {
                 assert!(pet_resize(core,w,h));
+                assert!(pet_pixels(core).is_null(), "no raster allocated on resize");
+                assert!(!pet_hit(core,0.5,0.5));
+                pet_render(core,0.,0.,w as f32,h as f32,false,0.,0.016);
                 assert_eq!((*core).frame.pixels.len(), (w*h*4) as usize);
                 let before = pet_pixels(core);
                 assert!(pet_resize(core,w,h));
@@ -438,6 +493,15 @@ mod ffi_tests {
                 assert!(!pet_hit(core,1.,0.5));
                 assert!(!pet_resize(core,0,10));
                 assert!(!pet_resize(core,4096,4096));
+                #[cfg(target_os = "macos")]
+                {
+                    pet_release_raster(core);
+                    assert_eq!(pet_pixels(core), before, "keep active software frame alive");
+                    (*core).frame.metal_mesh = Some(Default::default());
+                    pet_release_raster(core);
+                    assert!(pet_pixels(core).is_null());
+                    assert!(!pet_render(core,0.,0.,w as f32,h as f32,false,0.,0.016).is_null());
+                }
             }
             pet_destroy(core);
         }

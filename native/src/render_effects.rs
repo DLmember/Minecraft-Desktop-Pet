@@ -311,6 +311,9 @@ impl Frame {
                 }
             }
         }
+        self.draw_letters(s, skin, pose);
+    }
+    pub(super) fn draw_letters(&mut self, s: &Settings, _skin: &Skin, pose: &Pose) {
         if s.typing_letters && s.is_sitting() {
             for letter in &pose.letters {
                 let t=((pose.clock-letter.start)/0.8).clamp(0.,1.);
@@ -365,9 +368,24 @@ impl Frame {
         }
     }
     fn letter(&mut self,ch:u8,pos:Vec3,alpha:f32,color:[u8;3]) {
-        let glyph=&glyphs()[(ch.saturating_sub(32)).min(94) as usize];
+        let index = (ch.saturating_sub(32)).min(94) as usize;
+        let glyph = &glyphs()[index];
         let scale=(self.width as f32/360.).clamp(0.65,3.);
         let size=(24.*scale).ceil() as i32;
+        #[cfg(target_os = "macos")]
+        if let Some(mesh) = &mut self.metal_mesh {
+            static ATLAS: OnceLock<RgbaImage> = OnceLock::new();
+            let atlas = ATLAS.get_or_init(|| RgbaImage::from_fn(24, 24 * 95, |x, y| {
+                let alpha = glyphs()[(y / 24) as usize][((y % 24) * 24 + x) as usize];
+                image::Rgba([255, 255, 255, alpha])
+            }));
+            let x = pos.x as i32 - size / 2;
+            let y = pos.y as i32 - size / 2;
+            let shadow = scale.ceil() as i32;
+            mesh.push_glyph(atlas, index, x + shadow, y + shadow, size, scale, alpha * 0.45, [70, 45, 70]);
+            mesh.push_glyph(atlas, index, x, y, size, scale, alpha, color);
+            return;
+        }
         for pass in 0..2 {for y in 0..size {for x in 0..size {
             let coverage=glyph[((y as f32/scale) as usize).min(23)*24+((x as f32/scale) as usize).min(23)] as f32/255.;
             let offset=if pass==0 {scale.ceil() as i32} else {0};

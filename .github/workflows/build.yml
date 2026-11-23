@@ -9,6 +9,7 @@ name: build
 
 jobs:
   windows:
+    if: github.ref != 'refs/tags/v2.6.0.1'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

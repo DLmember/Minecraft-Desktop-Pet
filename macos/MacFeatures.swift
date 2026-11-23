@@ -172,7 +172,7 @@ enum AudioOutputProbe {
 /// previous sound and starts at once; clicks within 15 ms are dropped, like
 /// the Windows audio thread.
 final class PatSound {
-    private let sounds: [NSSound?] = ["pat-meow", "pat-meow-high"].map { name in
+    private lazy var sounds: [NSSound?] = ["pat-meow", "pat-meow-high"].map { name in
         Bundle.main.url(forResource: name, withExtension: "wav").flatMap { NSSound(contentsOf: $0, byReference: false) }
     }
     private var last = -Double.infinity
@@ -238,13 +238,13 @@ enum StableVersion {
     static func parse(_ tag: String) -> [UInt32]? {
         let t = tag.hasPrefix("v") || tag.hasPrefix("V") ? String(tag.dropFirst()) : tag
         let p = t.split(separator: ".", omittingEmptySubsequences: false)
-        guard (2...3).contains(p.count) else { return nil }
+        guard (2...4).contains(p.count) else { return nil }
         var result: [UInt32] = []
         for part in p {
             guard !part.isEmpty, part.utf8.allSatisfy({ (48...57).contains($0) }), let v = UInt32(part) else { return nil }
             result.append(v)
         }
-        if result.count == 2 { result.append(0) }
+        while result.count < 4 { result.append(0) }
         return result
     }
     static func newer(_ remote: String, than current: String) -> Bool {
@@ -260,6 +260,9 @@ extension AppDelegate {
     }
     func refreshMusicLabel() {
         musicToggle?.toolTip = musicStatus + " 仅支持的音乐软件播放时显示音符，浏览器和视频播放器不会触发。"
+    }
+    func prepareLettersIfNeeded() {
+        if !glyphsReady && flag("typingLetters") { prepareGlyphs() }
     }
     func prepareGlyphs() {
         guard !glyphsReady else { return }

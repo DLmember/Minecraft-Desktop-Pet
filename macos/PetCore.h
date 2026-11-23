@@ -36,6 +36,26 @@ bool pet_needs_frames(PetCore *core, float now);
 uint32_t pet_frame_demand(PetCore *core, float now);
 /// Bounds-checked resize; invalidates pet_pixels pointer only when dimensions change.
 bool pet_resize(PetCore *core, uint32_t width, uint32_t height);
+/// Releases unused software buffers in Metal mode and invalidates prior pixel pointers.
+void pet_release_raster(PetCore *core);
 const uint8_t *pet_pixels(PetCore *core);
 bool pet_set_glyphs(const uint8_t *bytes, size_t length);
+#ifdef __APPLE__
+typedef struct {
+    float x, y, z, u, v, base_u, base_v, width, depth;
+    uint32_t mode;
+} PetMetalVertex;
+typedef struct {
+    const uint8_t *pixels;
+    uint32_t width, height, start, count;
+    bool overlay;
+} PetMetalBatch;
+typedef struct {
+    const PetMetalVertex *vertices;
+    const PetMetalBatch *batches;
+    uint32_t vertex_count, batch_count;
+} PetMetalMesh;
+bool pet_metal_mesh(PetCore *, float, float, float, float, bool, float, float, PetMetalMesh *);
+const uint8_t *pet_shade_table(void);
+#endif
 #endif

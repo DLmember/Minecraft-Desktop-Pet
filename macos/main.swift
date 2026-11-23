@@ -38,30 +38,40 @@ final class PetView: NSView {
     private var dragOffset: NSPoint?
     private var didDrag = false
     override var isFlipped: Bool { true }
-    func updatePixels(_ pixels: UnsafePointer<UInt8>, width: Int, height: Int) {
+    @discardableResult
+    func updatePixels(_ pixels: UnsafePointer<UInt8>, width: Int, height: Int) -> Bool {
         let size = NSSize(width: width, height: height), bytes = width * height * 4
         if size != pixelSize {
-            // Old providers retain their own slots until the compositor releases them.
-            buffers = [PixelBuffer(bytes: bytes), PixelBuffer(bytes: bytes)]; pixelSize = size
+            // Allow the window server to retain the displayed and previous frames
+            // while the producer fills the next slot. The pool stays bounded.
+            buffers.removeAll(keepingCapacity: true)
+            pixelSize = size
         }
-        for i in buffers.indices where isKnownUniquelyReferenced(&buffers[i]) {
-            let buffer = buffers[i]
-            memcpy(buffer.pointer, pixels, bytes)
-            let retained = Unmanaged.passRetained(buffer).toOpaque()
-            guard let provider = CGDataProvider(dataInfo: retained, data: buffer.pointer, size: bytes,
-                releaseData: { info, _, _ in if let info { Unmanaged<PixelBuffer>.fromOpaque(info).release() } }) else {
-                Unmanaged<PixelBuffer>.fromOpaque(retained).release(); return
-            }
-            bitmap = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
-                bytesPerRow: width * 4, space: colorSpace,
-                bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue),
-                provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
-            needsDisplay = true; return
+        let free = buffers.indices.first { isKnownUniquelyReferenced(&buffers[$0]) }
+        if free == nil {
+            guard buffers.count < 3 else { return false }
+            buffers.append(PixelBuffer(bytes: bytes))
         }
+        let i = free ?? (buffers.count - 1)
+        let buffer = buffers[i]
+        memcpy(buffer.pointer, pixels, bytes)
+        let retained = Unmanaged.passRetained(buffer).toOpaque()
+        guard let provider = CGDataProvider(dataInfo: retained, data: buffer.pointer, size: bytes,
+            releaseData: { info, _, _ in if let info { Unmanaged<PixelBuffer>.fromOpaque(info).release() } }) else {
+            Unmanaged<PixelBuffer>.fromOpaque(retained).release(); return false
+        }
+        guard let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: width * 4, space: colorSpace,
+            bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return false }
+        bitmap = image; needsDisplay = true; return true
     }
+    func releaseSoftwareBuffers() { buffers.removeAll() }
     override func draw(_ dirtyRect: NSRect) {
-        guard let bitmap, let ctx = NSGraphicsContext.current?.cgContext else { return }
-        ctx.clear(bounds); ctx.saveGState(); ctx.interpolationQuality = .none
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        ctx.clear(bounds)
+        guard let bitmap else { return }
+        ctx.saveGState(); ctx.interpolationQuality = .none
         ctx.translateBy(x:0,y:bounds.height); ctx.scaleBy(x:1,y:-1)
         ctx.draw(bitmap,in:bounds); ctx.restoreGState()
     }
@@ -77,10 +87,10 @@ final class PetView: NSView {
         guard let offset = dragOffset, let window, let owner else { return }
         // While a press may still become a long-press pat, keep the window still.
         // Moving past the hold tolerance ends it, then the drag continues from here.
-        if owner.updateHold() { owner.wake(); return }
+        if owner.updateHold() { return }
         let cursor = NSEvent.mouseLocation
         window.setFrameOrigin(NSPoint(x: cursor.x-offset.x, y: cursor.y-offset.y))
-        didDrag = true; owner.wake()
+        didDrag = true
     }
     override func mouseUp(with event: NSEvent) {
         if didDrag { owner?.savePosition() }
@@ -120,10 +130,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     var updateInFlight = false
     var glyphsReady = false
     var renderedFrames = 0
-    var timerActive = true
+    var metalFrames = 0
+    var softwareFrames = 0
+    private var rasterCleanup: DispatchWorkItem?
+    var metal: MetalTestRenderer?
     var timerRate: Double = 0
-    var nextDraw: Float = 0
+    var drawRate: Double = 0
+    var nextDraw: Double = 0
+    var needsRedraw = true
+    var holdPending = false
     var benchmarkCursor: NSPoint?
+    var benchmarkProjectCPU: UInt64 = 0
+    var benchmarkSubmitCPU: UInt64 = 0
+    lazy var benchmarkBreakdown = cpuTest && CommandLine.arguments.contains("--metal-breakdown")
+    private(set) var displayHz = 60.0
+    private var displayClock: NSObject?
+    private var idleGlobalMove: Any?
+    private var idleLocalMove: Any?
+    private var pointerAwakeUntil = 0.0
+    private var displayTick = false
+    private var consecutiveGPUFailures = 0
     var renderSize = NSSize(width: 450, height: 525)
     var selectedConsolePage = 0
     var uiReady = false
@@ -166,15 +192,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     var lockDoubleClickBox: NSButton?
     var onlineStatus: NSTextField?
     var skinSummary: NSTextField?
-    var lastCursor = NSPoint(x: -9999, y: -9999)
+    var drawnGaze: NSPoint?
     var lastShift = false
-    var lastDraw: Float = 0
-    var awakeUntil: Float = 1
+    var lastDraw: Double = 0
+    var awakeUntil: Double = 0
     var hidden = false
     var menuOpen = false
     let patSound = PatSound()
     var lastTick = ProcessInfo.processInfo.systemUptime
     let start = ProcessInfo.processInfo.systemUptime
+    let cpuTest = CommandLine.arguments.contains("--cpu-test")
     let smoke = CommandLine.arguments.contains("--cpu-test") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--self-test-ui") || CommandLine.arguments.contains("--memory-test") || CommandLine.arguments.contains("--self-test-startup") || CommandLine.arguments.contains("--self-test-restart")
     let dataDir: URL = {
         if let i = CommandLine.arguments.firstIndex(of: "--data-dir"), CommandLine.arguments.count > i + 1 {
@@ -190,6 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard let ptr = pet_settings(core), let data = String(cString: ptr).data(using: .utf8),
               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         settings = dict
+        metal?.invalidateTextures()
     }
     func applicationWillFinishLaunching(_ notification: Notification) {
         // The open-application event is current only while launching.
@@ -214,12 +242,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
         pet = PetPanel(contentRect: NSRect(origin: origin, size: NSSize(width: width, height: height)),
                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        pet.acceptsMouseMovedEvents = true
+        pet.delegate = self
         pet.title = "Minecraft桌宠 \(appVersion) · macOS"
         pet.isOpaque = false; pet.backgroundColor = .clear; pet.hasShadow = false
         pet.hidesOnDeactivate = false; pet.isReleasedWhenClosed = false
         pet.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         view = PetView(frame: NSRect(origin: .zero, size: pet.frame.size)); view.owner = self
         view.autoresizingMask = [.width, .height]; pet.contentView = view
+        refreshDisplayRate()
+        let testMetal = CommandLine.arguments.contains("--metal-test")
+        if (!smoke || testMetal) && !CommandLine.arguments.contains("--software-renderer") {
+            do {
+                let args = CommandLine.arguments
+                #if arch(arm64)
+                let preferPool = !args.contains("--metal-drawable") && !args.contains("--metal-offscreen")
+                #else
+                let preferPool = false
+                #endif
+                let surface = args.contains("--metal-surface") || preferPool
+                installRenderer(try MetalTestRenderer(
+                    offscreen: args.contains("--metal-offscreen"),
+                    trackPresentations: cpuTest && !args.contains("--metal-no-present-counter"),
+                    useSurface: surface,
+                    poolSurfaces: args.contains("--metal-pool-surfaces") || (preferPool && !args.contains("--metal-surface"))
+                ))
+            } catch {
+                fputs("Metal initialization failed: \(error)\n", stderr)
+                if testMetal { exit(1) }
+            }
+        }
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = status.button {
             let icon = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
@@ -260,11 +312,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
         input.onKey = { [weak self] key, down in
             guard let self, self.core != nil else { return }
-            pet_key(self.core, key, down, self.now); self.wake()
+            if down { self.prepareLettersIfNeeded() }
+            pet_key(self.core, key, down, self.now); self.wake(interactive: true)
         }
         input.onReset = { [weak self] in
             guard let self, self.core != nil else { return }
-            pet_clear_keys(self.core); self.wake()
+            pet_clear_keys(self.core); self.wake(interactive: true)
         }
         input.onStateChange = { [weak self] in self?.updatePermission() }
         if !smoke {
@@ -285,8 +338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             self.musicStatus = message; self.refreshMusicLabel()
         }
         configureMusic()
-        if flag("typingLetters") { prepareGlyphs() }
-        applyWindow(); restartTimer(); wake(); tick(); pet.orderFrontRegardless()
+        applyWindow(); tick(); pet.orderFrontRegardless()
         if (!smoke || CommandLine.arguments.contains("--self-test-startup")) && LaunchMode.shouldShowSettings(arguments: launchArguments,
             keyboardEnabled: flag("keyboardEnabled"), keyboardRunning: input.running,
             quickChatEnabled: flag("hypQuickChat"), quickChatReady: input.quickChatReady) {
@@ -332,7 +384,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     // Menu-bar toggles change settings directly; an open console only mirrors them.
     @objc func toggleClickThrough() { settings["clickThrough"] = !flag("clickThrough"); changed(); refreshConsoleControls() }
     @objc func toggleTop() { settings["alwaysOnTop"] = !flag("alwaysOnTop"); changed(); refreshConsoleControls() }
-    @objc func toggleHidden() { hidden.toggle(); hidden ? pet.orderOut(nil) : pet.orderFrontRegardless(); wake() }
+    @objc func toggleHidden() {
+        hidden.toggle()
+        if hidden { pet.orderOut(nil) }
+        wake()
+        tick()
+        if !hidden { pet.orderFrontRegardless() }
+    }
     @objc func recenter() {
         let s = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         pet.setFrameOrigin(NSPoint(x: s.midX - pet.frame.width/2, y: s.midY - pet.frame.height/2))
@@ -340,12 +398,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     @objc func quit() { NSApp.terminate(nil) }
     func handleMousePress(_ event: NSEvent? = nil) {
-        guard !CommandLine.arguments.contains("--cpu-test") else { return }
+        guard !cpuTest else { return }
         guard core != nil, pet != nil, !hidden else { return }
         // Local console controls must not trigger pet interactions.
         if let window = event?.window, window !== pet { return }
         let cursor = NSEvent.mouseLocation, r = pet.frame
         let over = pet_hit(core, Float((cursor.x-r.minX)/r.width), Float((r.maxY-cursor.y)/r.height))
+        if over && (event?.buttonNumber ?? 0) == 0 { holdPending = true }
         mousePresses += 1
         let meow = pet_mouse(core, UInt32(clamping: event?.buttonNumber ?? 0), over, Float(cursor.x), Float(cursor.y), now)
         if meow >= 0 && !smoke { patSound.play(Int(meow), volume: number("patVolume") / 100) }
@@ -358,17 +417,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     /// Same thresholds as Windows: 0.5 s, 30 points; hidden pet or open menu cancels.
     @discardableResult
-    func updateHold() -> Bool {
-        guard core != nil else { return false }
-        if hidden || menuOpen { pet_hold_cancel(core, now); return false }
-        let cursor = NSEvent.mouseLocation
-        return pet_hold_update(core, NSEvent.pressedMouseButtons & 1 != 0, Float(cursor.x), Float(cursor.y), 30, now) != 0
+    func updateHold(cursor: NSPoint? = nil) -> Bool {
+        guard core != nil, holdPending else { return false }
+        if hidden || menuOpen {
+            pet_hold_cancel(core, now)
+            holdPending = false
+        } else {
+            let cursor = cursor ?? NSEvent.mouseLocation
+            holdPending = pet_hold_update(core, NSEvent.pressedMouseButtons & 1 != 0,
+                                          Float(cursor.x), Float(cursor.y), 30, now) != 0
+        }
+        return holdPending
     }
     @objc func feedApple() { guard core != nil else { return }; pet_feed(core, now); wake() }
-    func wake() {
-        awakeUntil = now + 0.85
-        nextDraw = 0
-        timerActive = true; restartTimer()
+    func wake(interactive: Bool = false) {
+        needsRedraw = true
+        if interactive { awakeUntil = ProcessInfo.processInfo.systemUptime + 0.35 }
+        guard !hidden else { return }
+        // Wake even when the static pet has no timer. Repeated events leave the frame deadline intact.
+        setTickRate(displayHz)
     }
     func applyWindow() {
         pet.ignoresMouseEvents = flag("clickThrough")
@@ -377,24 +444,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         pet.setContentSize(size)
         let pixels = RenderBudget.size(points: size)
         if pixels != renderSize && pet_resize(core, UInt32(pixels.width), UInt32(pixels.height)) {
-            renderSize = pixels; nextDraw = 0
+            renderSize = pixels; needsRedraw = true; nextDraw = 0
         }
     }
-    func restartTimer() {
-        let rate = hidden ? 2.0 : (timerActive ? max(30, number("fps")) : 30.0)
-        guard timer == nil || rate != timerRate else { return }
-        timer?.invalidate(); timerRate = rate
-        let t = Timer(timeInterval: 1.0 / rate, repeats: true) { [weak self] _ in autoreleasepool { self?.tick() } }
+    // An idle visible pet needs one movement notification to resume full refresh.
+    // During animation the display link samples the current location once per frame.
+    private func stopIdlePointerMonitor() {
+        if let token = idleLocalMove { NSEvent.removeMonitor(token); idleLocalMove = nil }
+        if let token = idleGlobalMove { NSEvent.removeMonitor(token); idleGlobalMove = nil }
+    }
+    func pointerMoved() {
+        guard !hidden else { return }
+        pointerAwakeUntil = ProcessInfo.processInfo.systemUptime + 0.18
+        if timerRate != displayHz { wake() }
+    }
+    private func armIdlePointerMonitor() -> Bool {
+        if smoke { return true } // Benchmark stimuli dispatch pointerMoved directly.
+        if idleGlobalMove != nil && idleLocalMove != nil { return true }
+        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+        idleGlobalMove = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] _ in self?.pointerMoved() }
+        idleLocalMove = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in self?.pointerMoved(); return event }
+        if idleGlobalMove != nil && idleLocalMove != nil { return true }
+        stopIdlePointerMonitor()
+        return false
+    }
+    private func refreshDisplayRate() {
+        let screen = pet.screen ?? NSScreen.main
+        displayHz = Double(max(1, screen?.maximumFramesPerSecond ?? 60))
+        if #unavailable(macOS 14), let id = screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+           let mode = CGDisplayCopyDisplayMode(id.uint32Value), mode.refreshRate > 0 {
+            displayHz = mode.refreshRate
+        }
+    }
+    func windowDidChangeScreen(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === pet else { return }
+        refreshDisplayRate()
+        if !startupPending { wake() }
+    }
+    @available(macOS 14.0, *)
+    @objc private func displayDidRefresh(_ link: CADisplayLink) {
+        displayTick = true
+        defer { displayTick = false }
+        autoreleasepool { tick() }
+    }
+    private func setTickRate(_ rate: Double) {
+        guard timerRate != rate else { return }
+        timer?.invalidate(); timer = nil; timerRate = rate
+        if #available(macOS 14.0, *) {
+            if let link = displayClock as? CADisplayLink { link.invalidate(); displayClock = nil }
+            if rate == displayHz && !hidden {
+                let link = view.displayLink(target: self, selector: #selector(displayDidRefresh(_:)))
+                let hz = Float(displayHz)
+                link.preferredFrameRateRange = CAFrameRateRange(minimum: hz, maximum: hz, preferred: hz)
+                displayClock = link
+                link.add(to: .main, forMode: .common)
+                return
+            }
+        }
+        guard rate > 0 else { return }
+        let t = Timer(timeInterval: 1 / rate, repeats: true) { [weak self] _ in autoreleasepool { self?.tick() } }
         t.tolerance = 0.001; RunLoop.main.add(t, forMode: .common); timer = t
     }
     func changed() {
         previewSettings()
-        applyWindow(); restartTimer(); wake()
+        applyWindow(); wake()
         saveStatus?.stringValue = "待保存…"
         saveTimer?.invalidate()
         saveTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in self?.save() }
     }
     func previewSettings() {
+        metal?.invalidateTextures()
         guard let data = try? JSONSerialization.data(withJSONObject: settings),
               let json = String(data: data, encoding: .utf8) else { return }
         if !json.withCString({ pet_preview(core, $0) }) { showCoreError() }
@@ -403,7 +522,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         saveTimer?.invalidate(); saveTimer = nil
         guard core != nil, let data = try? JSONSerialization.data(withJSONObject: settings),
               let json = String(data: data, encoding: .utf8) else { return }
-        if !json.withCString({ pet_apply(core, $0) }) { saveStatus?.stringValue = "保存失败"; showCoreError(); loadSettings(); applyWindow() }
+        if !json.withCString({ pet_apply(core, $0) }) { saveStatus?.stringValue = "保存失败"; showCoreError(); loadSettings(); applyWindow(); wake() }
         else { saveStatus?.stringValue = "已保存" }
     }
     func savePosition() {
@@ -413,43 +532,142 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func tick() {
         guard core != nil else { return }
         let clock = ProcessInfo.processInfo.systemUptime
-        let elapsed = min(0.1, max(0, clock-lastTick))
-        if clock - lastTick > 1 { input.resetState(); nextDraw = 0 }; lastTick = clock
+        let time = Float(clock - start)
+        let elapsed = min(0.1, max(0, clock - lastTick))
+        lastTick = clock
         if !smoke { input.recoverReleasedKeys() }
-        let cursor = benchmarkCursor ?? NSEvent.mouseLocation
-        let shift = !CommandLine.arguments.contains("--cpu-test") && CGEventSource.flagsState(.combinedSessionState).contains(.maskShift)
-        if cursor != lastCursor && flag("trackMouse") { awakeUntil = max(awakeUntil, now+0.05) }
-        if shift != lastShift && flag("keyboardEnabled") { wake() }
-        lastCursor = cursor; lastShift = shift
-        if updateHold() { awakeUntil = max(awakeUntil, now + 0.05) }
-        let demand = pet_frame_demand(core, now)
-        let interacting = now <= awakeUntil
-        let active = !hidden && (interacting || demand != 0)
-        let highRate = active && (interacting || demand == 2)
-        if highRate != timerActive {
-            timerActive = highRate; nextDraw = now; restartTimer()
+        if hidden {
+            updateHold()
+            stopIdlePointerMonitor()
+            setTickRate(2)
+            return
         }
-        restartTimer() // Also handles hidden/unhidden while already idle; no-op at the same rate.
-        let fps = RenderBudget.fps(demand: demand, interacting: interacting, requested: number("fps"))
-        if active && now >= nextDraw {
-            let r = pet.frame
-            let x = Float(cursor.x - r.minX), y = Float(r.maxY - cursor.y)
-            if let bytes = pet_render(core, x, y, Float(r.width), Float(r.height), shift, now, min(0.1, max(0.001, now-lastDraw))) {
-                view.updatePixels(bytes, width: Int(renderSize.width), height: Int(renderSize.height)); renderedFrames += 1
-                if captureWindow?.isVisible == true { captureView?.bitmap = view.bitmap }
-            }
-            lastDraw = now
-            // Advance a deadline, not now+period: timer jitter must not halve the FPS.
-            let period = Float(1 / fps)
-            nextDraw += period
-            if nextDraw <= now { nextDraw = now + period }
-        }
+
+        let tracksGaze = flag("trackMouse") && !flag("wine")
+        let fadesOnHover = flag("clickThrough")
+        let keyboardEnabled = flag("keyboardEnabled")
+        let tracksShift = keyboardEnabled && (settings["posture"] as? String) == "standing"
         let r = pet.frame
-        let over = pet_hit(core, Float((cursor.x-r.minX)/r.width), Float((r.maxY-cursor.y)/r.height))
-        let target: CGFloat = flag("clickThrough") && over ? 0.25 : 1
-        let delta = target - pet.alphaValue
-        if abs(delta) > 0.002 { pet.alphaValue += delta * min(1, elapsed / 0.045) }
-        else { pet.alphaValue = target }
+        let cursor = benchmarkCursor ?? ((tracksGaze || fadesOnHover || holdPending) ? NSEvent.mouseLocation : .zero)
+        let gaze = NSPoint(x: cursor.x - r.minX, y: r.maxY - cursor.y)
+        let gazeChanged = tracksGaze && gaze != drawnGaze
+        let shift = tracksShift && !cpuTest && CGEventSource.flagsState(.combinedSessionState).contains(.maskShift)
+        if shift != lastShift { wake(interactive: true) }
+        lastShift = shift
+        if holdPending { updateHold(cursor: cursor) }
+
+        let demand = pet_frame_demand(core, time)
+        let fps = RenderBudget.fps(demand: demand, interacting: clock < awakeUntil,
+                                   gazeChanged: gazeChanged, requested: displayHz)
+        let rate = needsRedraw ? displayHz : fps
+        if rate != drawRate {
+            // Admit a faster animation immediately. Preserve a slower frame deadline
+            // so a single mouse move cannot cause two back-to-back frames.
+            if drawRate == 0 || rate > drawRate { nextDraw = 0 }
+            drawRate = rate
+        }
+        if rate > 0 {
+            let period = 1 / rate
+            if displayTick || clock + min(0.001, period * 0.1) >= nextDraw {
+                let dt = Float(min(0.15, max(0.001, clock - lastDraw)))
+                if renderFrame(gaze: gaze, size: r.size, shift: shift, time: time, dt: dt) {
+                    renderedFrames += 1
+                    needsRedraw = false; drawnGaze = gaze
+                    if captureWindow?.isVisible == true { captureView?.bitmap = view.bitmap }
+                } else {
+                    needsRedraw = true // The compositor can temporarily retain every buffer.
+                }
+                lastDraw = clock
+                // Follow the timer's cadence without trying to replay missed frames.
+                nextDraw += period
+                if nextDraw <= clock { nextDraw = clock + period }
+            }
+        }
+
+        var fading = false
+        if fadesOnHover {
+            let over = pet_hit(core, Float(gaze.x / r.width), Float(gaze.y / r.height))
+            let target: CGFloat = over ? 0.25 : 1
+            let alpha = pet.alphaValue
+            let delta = target - alpha
+            fading = abs(delta) > 0.002
+            if fading { pet.alphaValue = alpha + delta * min(1, elapsed / 0.045) }
+            else if alpha != target { pet.alphaValue = target }
+        } else if pet.alphaValue != 1 {
+            pet.alphaValue = 1
+        }
+
+        // Sample pointer-dependent changes on the same display clock as the animation.
+        // A still pet with no pending behavior can let AppKit sleep until the next event.
+        let needsPointer = tracksGaze || fadesOnHover || holdPending
+        let idlePointer = needsPointer && !holdPending && !fading && rate == 0 && clock >= pointerAwakeUntil
+        let canSleep = idlePointer && armIdlePointerMonitor()
+        if !idlePointer { stopIdlePointerMonitor() }
+        let pointerRate = needsPointer && !canSleep ? displayHz : 0
+        let blinkRate = flag("daBlink") ? 30.0 : 0
+        let inputRate = tracksShift || input.hasKeysToRecover || flag("hypQuickChat") ? 20.0 : 0
+        let gestureRate = flag("occasionalStretch") || flag("occasionalTilt") || flag("occasionalSleepy") ? 5.0 : 0
+        setTickRate(max(fps, pointerRate, blinkRate, inputRate, gestureRate, needsRedraw ? rate : 0))
+    }
+    private func installRenderer(_ renderer: MetalTestRenderer) {
+        metal = renderer
+        view.wantsLayer = true
+        renderer.layer.frame = view.bounds
+        renderer.layer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        view.layer?.addSublayer(renderer.layer)
+    }
+    private func renderFrame(gaze: NSPoint, size: NSSize, shift: Bool, time: Float, dt: Float) -> Bool {
+        let x = Float(gaze.x), y = Float(gaze.y), w = Float(size.width), h = Float(size.height)
+        let bytes: UnsafePointer<UInt8>?
+        if let metal, captureWindow?.isVisible != true {
+            var mesh = PetMetalMesh()
+            let begin = benchmarkBreakdown ? clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) : 0
+            let ready = pet_metal_mesh(core, x, y, w, h, shift, time, dt, &mesh)
+            let projected = benchmarkBreakdown ? clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) : 0
+            if benchmarkBreakdown { benchmarkProjectCPU += projected - begin }
+            if ready {
+                let submitted = metal.draw(mesh, size: renderSize)
+                if benchmarkBreakdown { benchmarkSubmitCPU += clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - projected }
+                guard submitted else {
+                    consecutiveGPUFailures += 1
+                    if consecutiveGPUFailures >= 3 {
+                        metal.layer.removeFromSuperlayer()
+                        self.metal = nil
+                        consecutiveGPUFailures = 0
+                        if metal.usesSurfaces, let fallback = try? MetalTestRenderer(trackPresentations: cpuTest) {
+                            installRenderer(fallback)
+                        }
+                    }
+                    return false
+                }
+                consecutiveGPUFailures = 0
+                if metal.layer.isHidden { metal.layer.isHidden = false }
+                if view.bitmap != nil {
+                    // A transparent GPU frame must not reveal a stale software frame.
+                    view.bitmap = nil
+                    view.needsDisplay = true
+                    let cleanup = DispatchWorkItem { [weak self] in
+                        guard let self, self.core != nil, self.view.bitmap == nil else { return }
+                        self.view.releaseSoftwareBuffers()
+                        pet_release_raster(self.core)
+                        self.rasterCleanup = nil
+                    }
+                    rasterCleanup = cleanup
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: cleanup)
+                }
+                metalFrames += 1
+                return true
+            }
+            bytes = pet_pixels(core)
+            metal.hideForSoftware()
+        } else {
+            metal?.hideForSoftware()
+            bytes = pet_render(core, x, y, w, h, shift, time, dt)
+        }
+        rasterCleanup?.cancel(); rasterCleanup = nil
+        guard let bytes, view.updatePixels(bytes, width: Int(renderSize.width), height: Int(renderSize.height)) else { return false }
+        softwareFrames += 1
+        return true
     }
     func configureInput() {
         if !smoke { input.configure(keyboard: flag("keyboardEnabled"), quickChat: flag("hypQuickChat")) }
@@ -536,6 +754,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     func applicationWillTerminate(_ notification: Notification) {
         guard core != nil else { return }
+        stopIdlePointerMonitor()
+        if #available(macOS 14.0, *) { (displayClock as? CADisplayLink)?.invalidate() }
         closeCapture(); capePanel?.orderOut(nil); capePanel = nil
         if pet != nil && !startupPending { savePosition() }; input.stop(); music.stop(); timer?.invalidate(); permissionTimer?.invalidate()
         if let monitor = mouseMonitor { NSEvent.removeMonitor(monitor) }
@@ -630,7 +850,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             catch { alert(error.localizedDescription); return }
         }
         if !pet_reset(core) { showCoreError(); return }
-        loadSettings(); configureMusic(); applyWindow(); restartTimer(); configureInput(); recenter(); wake(); panel = closePanel(); showSettings()
+        loadSettings(); configureMusic(); applyWindow(); configureInput(); recenter(); wake(); panel = closePanel(); showSettings()
     }
     func writeSmokeReport() {
         guard let bitmap = view.bitmap else { return }
