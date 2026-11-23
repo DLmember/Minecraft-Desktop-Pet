@@ -125,6 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     var captureWindow: NSWindow?
     var captureView: CaptureView?
     var captureParked = false
+    var consoleWantsPermissionDetails = false
     var permissionPanel: NSWindow?
     var permissionTint: NSView?
     var guidePanel: NSPanel?
@@ -677,6 +678,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         updatePermission()
     }
     @objc func grantInput() {
+        if forwardConsole("grantInput") { return }
         NSApp.activate(ignoringOtherApps: true)
         _ = CGRequestListenEventAccess()
         configureInput()
@@ -684,14 +686,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if !paneSatisfied(.inputMonitoring) { showGuide(.inputMonitoring) }
     }
     @objc func grantAccessibility() {
+        if forwardConsole("grantAccessibility") { return }
         NSApp.activate(ignoringOtherApps: true)
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
         configureInput()
         if !input.accessibilityAllowed { showGuide(.accessibility) }
     }
-    @objc func refreshPermissions() { input.refresh(force: true); updatePermission() }
+    @objc func refreshPermissions() {
+        if forwardConsole("refreshPermissions") { return }
+        input.refresh(force: true); updatePermission()
+    }
     @objc func restartApplication() {
+        if forwardConsole("restart") { return }
         guard !restartPending else { return }
         restartPending = true
         savePosition()
@@ -731,19 +738,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let keyboard = !flag("keyboardEnabled") ? "键盘互动已关闭" : (input.running ? "键盘互动已连接" : ((listen || access) ? "键盘权限已获准，连接待恢复" : "键盘互动等待授权"))
         let chat = !flag("hypQuickChat") ? "快速聊天已关闭" : (input.quickChatReady ? "快速聊天已连接" : (access ? "聊天权限已获准，连接待恢复" : "快速聊天等待辅助功能权限"))
         let inputOK = paneSatisfied(.inputMonitoring)
-        consoleChannel?.send(["input":inputOK, "access":access])
         permissionSummary?.attributedStringValue = PermissionLook.summary(keyboardAuthorized: inputOK, chatAuthorized: access)
-        inputRequestButton?.title = inputOK ? "输入监控已授权" : (listen ? "重新授权输入监控" : "申请输入监控")
-        accessRequestButton?.title = access ? "辅助功能已授权" : "申请辅助功能"
         permissionLabel?.stringValue = "\(keyboard)。只用于角色动作，不保存或上传输入内容。"
-        let problem = PermissionLook.problem(listen: listen, access: access, inputOK: inputOK)
-        let level = PermissionLook.level(inputOK: inputOK, access: access)
-        accessLabel?.stringValue = (problem.map { "✕ \($0)" } ?? "✓ 权限正常")
-            + "\n输入监控：\(listen ? "已授权" : "待授权") · 辅助功能：\(access ? "已授权" : "待授权") · \(keyboard) · \(chat)"
-        inputHealthLabel?.stringValue = input.diagnosticSummary
-        // Whole window: green with both items, yellow with one, red with neither.
-        // A layer behind the controls: sheets draw their own material over backgroundColor.
-        permissionTint?.layer?.backgroundColor = PermissionLook.color(level).cgColor
+        var message: [String: Any] = ["input":inputOK, "access":access]
+        if permissionPanel != nil || consoleWantsPermissionDetails {
+            let problem = PermissionLook.problem(listen: listen, access: access, inputOK: inputOK)
+            let details = (problem.map { "✕ \($0)" } ?? "✓ 权限正常")
+                + "\n输入监控：\(listen ? "已授权" : "待授权") · 辅助功能：\(access ? "已授权" : "待授权") · \(keyboard) · \(chat)"
+            let health = input.diagnosticSummary
+            displayPermissionDetails(listen: listen, inputOK: inputOK, access: access, details: details, health: health)
+            message["listen"] = listen; message["details"] = details; message["health"] = health
+        }
+        consoleChannel?.send(message)
         refreshGuide()
         // Opt-in diagnostics contain counts and permissions, never key text/codes.
         if CommandLine.arguments.contains("--input-diagnostics"),

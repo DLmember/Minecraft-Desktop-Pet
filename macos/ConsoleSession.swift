@@ -49,10 +49,11 @@ extension AppDelegate {
         process.standardInput = inbound; process.standardOutput = outbound
         let channel = ConsoleChannel(input: outbound.fileHandleForReading, output: inbound.fileHandleForWriting)
         do { try process.run() } catch { alert(error.localizedDescription); return }
+        consoleWantsPermissionDetails = false
         consoleProcess = process; consoleChannel = channel
         channel.read { [weak self, weak process] message in
             guard let self, let process, self.consoleProcess === process else { return }
-            guard let message else { self.consoleProcess = nil; self.consoleChannel = nil; return }
+            guard let message else { self.consoleProcess = nil; self.consoleChannel = nil; self.consoleWantsPermissionDetails = false; return }
             self.receiveConsoleEdit(message)
         }
         channel.send(["open": settings, "page": selectedConsolePage, "input": paneSatisfied(.inputMonitoring), "access":input.accessibilityAllowed])
@@ -71,6 +72,9 @@ extension AppDelegate {
                 self.settings = prefs; self.consoleSent = prefs; self.refreshConsoleControls()
             }
             if let input = message["input"] as? Bool, let access = message["access"] as? Bool {
+                if let listen = message["listen"] as? Bool, let details = message["details"] as? String, let health = message["health"] as? String {
+                    self.displayPermissionDetails(listen: listen, inputOK: input, access: access, details: details, health: health)
+                }
                 self.permissionSummary?.attributedStringValue = PermissionLook.summary(keyboardAuthorized: input, chatAuthorized: access)
             }
             if let text = message["status"] as? String { self.saveStatus?.stringValue = text }
@@ -81,6 +85,18 @@ extension AppDelegate {
                 button.state = target ? .on : .off
                 self.toggleLockDoubleClick(button)
                 self.controlTabs?.selectTabViewItem(at: 1)
+            }
+            if CommandLine.arguments.contains("--console-roundtrip"), let open = message["testPermissions"] as? Bool {
+                if open {
+                    let button = self.panel?.contentView?.subviews.compactMap { $0 as? NSButton }.first { $0.action == #selector(self.showPermissions) }
+                    precondition(button != nil)
+                    button?.performClick(nil)
+                    precondition(self.permissionPanel != nil && self.panel?.attachedSheet === self.permissionPanel)
+                } else {
+                    precondition(self.accessLabel?.stringValue.isEmpty == false && self.inputHealthLabel?.stringValue.isEmpty == false)
+                    self.closePermissions()
+                    precondition(self.permissionPanel == nil)
+                }
             }
             if message["close"] != nil { self.panel?.close() }
         }
@@ -114,7 +130,12 @@ extension AppDelegate {
         case "restore": restoreBuiltinSkin()
         case "download": if let name = message["name"] as? String { fetchSkinForName(named: name) }
         case "capes": showCapes()
-        case "permissions": showPermissions()
+        case "permissionDetails": consoleWantsPermissionDetails = true; updatePermission()
+        case "endPermissionDetails": consoleWantsPermissionDetails = false
+        case "grantInput": grantInput()
+        case "grantAccessibility": grantAccessibility()
+        case "refreshPermissions": refreshPermissions()
+        case "restart": restartApplication()
         case "reset": resetSettings()
         case "capture": showCapture()
         case "placement": toggleCapturePlacement()

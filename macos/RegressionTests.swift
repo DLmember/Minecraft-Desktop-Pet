@@ -342,10 +342,14 @@ extension AppDelegate {
             let initial = flag("lockDoubleClick")
             at(8) { phase = "console"; self.showSettings() }
             if roundtrip {
-                at(12) { precondition(self.consoleProcess?.isRunning == true); self.consoleChannel?.send(["testToggle":!initial]) }
+                at(10) { self.consoleChannel?.send(["testPermissions":true]) }
+                at(11) { precondition(self.consoleWantsPermissionDetails); self.consoleChannel?.send(["testPermissions":false]) }
+                at(12) { precondition(!self.consoleWantsPermissionDetails); precondition(self.consoleProcess?.isRunning == true); self.consoleChannel?.send(["testToggle":!initial]) }
                 at(14) { precondition(self.flag("lockDoubleClick") != initial) }
                 at(19) { precondition(self.consoleProcess == nil && self.selectedConsolePage == 1); self.showSettings() }
-                at(22) { precondition(self.consoleProcess?.isRunning == true); self.consoleChannel?.send(["close":true]) }
+                at(20) { self.consoleChannel?.send(["testPermissions":true]) }
+                at(21) { precondition(self.consoleWantsPermissionDetails); self.consoleChannel?.send(["testPermissions":false]) }
+                at(22) { precondition(!self.consoleWantsPermissionDetails); precondition(self.consoleProcess?.isRunning == true); self.consoleChannel?.send(["close":true]) }
                 at(26) { precondition(self.consoleProcess == nil) }
             }
             at(16) { phase = "closed"; self.consoleChannel?.send(["close":true]) }

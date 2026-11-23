@@ -437,7 +437,6 @@ extension AppDelegate {
         if a.runModal() == .alertSecondButtonReturn { resetSettings() }
     }
     @objc func showPermissions() {
-        if forwardConsole("permissions") { return }
         guard permissionPanel == nil else { permissionPanel?.makeKeyAndOrderFront(nil); return }
         let w = NSPanel(contentRect: NSRect(x:0,y:0,width:580,height:270), styleMask:[.titled], backing:.buffered, defer:false)
         w.title = "输入权限与诊断"; let root = w.contentView!; permissionPanel = w
@@ -454,10 +453,18 @@ extension AppDelegate {
         action(root, "重启应用", #selector(restartApplication), 12, 24, 142)
         action(root, "设置文件夹", #selector(openDataFolder), 164, 24, 142)
         action(root, "完成", #selector(closePermissions), 438, 24, 120)
-        updatePermission()
+        if !forwardConsole("permissionDetails") { updatePermission() }
         if let panel { panel.beginSheet(w) } else { w.center(); w.makeKeyAndOrderFront(nil) }
     }
+    func displayPermissionDetails(listen: Bool, inputOK: Bool, access: Bool, details: String, health: String) {
+        inputRequestButton?.title = inputOK ? "输入监控已授权" : (listen ? "重新授权输入监控" : "申请输入监控")
+        accessRequestButton?.title = access ? "辅助功能已授权" : "申请辅助功能"
+        accessLabel?.stringValue = details
+        inputHealthLabel?.stringValue = health
+        permissionTint?.layer?.backgroundColor = PermissionLook.color(PermissionLook.level(inputOK: inputOK, access: access)).cgColor
+    }
     @objc func closePermissions() {
+        if consoleClient && permissionPanel != nil { _ = forwardConsole("endPermissionDetails") }
         if let w = permissionPanel { w.sheetParent?.endSheet(w); w.orderOut(nil) }
         permissionPanel = nil; permissionTint = nil; accessLabel = nil; inputRequestButton = nil; accessRequestButton = nil
         inputHealthLabel = nil; diagnosticsField = nil
