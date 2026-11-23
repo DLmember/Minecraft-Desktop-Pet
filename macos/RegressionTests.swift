@@ -309,7 +309,7 @@ extension AppDelegate {
             precondition(flag(key) == expected && box.state == (expected ? .on : .off), "Open console mirrors menu-bar toggle: \(key)")
         }
         settings = saved; changed(); save()
-        for _ in 0..<5 { panel?.close(); precondition(panel == nil && controlTabs == nil && bindings.isEmpty && pageButtons.isEmpty && consoleWindow?.contentView?.subviews.isEmpty == true); showSettings(); checkCompactConsole() }
+        for _ in 0..<5 { panel?.close(); precondition(panel == nil && controlTabs == nil && bindings.isEmpty && pageButtons.isEmpty); showSettings(); checkCompactConsole() }
         controlTabs?.selectTabViewItem(at:0)
         print("UI regression passed: Windows-aligned native layout, GitHub icon without credit, radio groups, display-synchronized FPS, three lazy native pages, v2.5 settings, isolated poses, input permissions, quick chat, click dispatch, window release")
     }
@@ -338,8 +338,17 @@ extension AppDelegate {
         }
         RunLoop.main.add(sampler,forMode:.common)
         if CommandLine.arguments.contains("--console-memory") {
+            let roundtrip = CommandLine.arguments.contains("--console-roundtrip")
+            let initial = flag("lockDoubleClick")
             at(8) { phase = "console"; self.showSettings() }
-            at(16) { phase = "closed"; self.panel?.close() }
+            if roundtrip {
+                at(12) { precondition(self.consoleProcess?.isRunning == true); self.consoleChannel?.send(["testToggle":!initial]) }
+                at(14) { precondition(self.flag("lockDoubleClick") != initial) }
+                at(19) { precondition(self.consoleProcess == nil && self.selectedConsolePage == 1); self.showSettings() }
+                at(22) { precondition(self.consoleProcess?.isRunning == true); self.consoleChannel?.send(["close":true]) }
+                at(26) { precondition(self.consoleProcess == nil) }
+            }
+            at(16) { phase = "closed"; self.consoleChannel?.send(["close":true]) }
         } else {
             at(8) {
                 phase = "animated"

@@ -4,6 +4,7 @@ struct CapeEntry: Decodable { let id: String; let name: String }
 
 extension AppDelegate {
     @objc func showCapes() {
+        if forwardConsole("capes") { return }
         if let capePanel { capePanel.makeKeyAndOrderFront(nil); return }
         guard let ptr = pet_cape_catalog(core), let data = String(cString: ptr).data(using: .utf8),
               let entries = try? JSONDecoder().decode([CapeEntry].self, from: data) else { return }

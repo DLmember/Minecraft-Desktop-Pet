@@ -109,6 +109,10 @@ final class Binding {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, NSTabViewDelegate {
+    let consoleClient = CommandLine.arguments.contains("--settings-window")
+    var consoleProcess: Process?
+    var consoleChannel: ConsoleChannel?
+    var consoleSent: [String: Any] = [:]
     var startupPending = true
     /// Launch arguments, with "--autostart" added for a System Settings login item.
     var launchArguments = CommandLine.arguments
@@ -166,10 +170,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     var view: PetView!
     var status: NSStatusItem!
     var panel: NSWindow?
-    /// Reuse the native console window after closing it. Rebuilding only its
-    /// content prevents AppKit from accumulating window and tab allocations
-    /// during repeated open/close cycles.
-    var consoleWindow: NSWindow?
     var timer: Timer?
     var saveTimer: Timer?
     let input = InputController()
@@ -217,6 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard let ptr = pet_settings(core), let data = String(cString: ptr).data(using: .utf8),
               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         settings = dict
+        consoleChannel?.send(["refresh": dict])
         metal?.invalidateTextures()
     }
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -228,6 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        if consoleClient { startConsoleClient(); return }
         do { try FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true) }
         catch { alert("无法创建设置目录：\(error.localizedDescription)"); NSApp.terminate(nil); return }
         core = dataDir.path.withCString { pet_create($0) }
@@ -506,6 +508,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         t.tolerance = 0.001; RunLoop.main.add(t, forMode: .common); timer = t
     }
     func changed() {
+        if consoleClient { sendEditedControls(); return }
         previewSettings()
         applyWindow(); wake()
         saveStatus?.stringValue = "待保存…"
@@ -523,7 +526,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard core != nil, let data = try? JSONSerialization.data(withJSONObject: settings),
               let json = String(data: data, encoding: .utf8) else { return }
         if !json.withCString({ pet_apply(core, $0) }) { saveStatus?.stringValue = "保存失败"; showCoreError(); loadSettings(); applyWindow(); wake() }
-        else { saveStatus?.stringValue = "已保存" }
+        else { saveStatus?.stringValue = "已保存"; consoleChannel?.send(["status":"已保存"]) }
     }
     func savePosition() {
         settings["position"] = ["x": pet.frame.origin.x, "y": pet.frame.origin.y]
@@ -728,6 +731,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let keyboard = !flag("keyboardEnabled") ? "键盘互动已关闭" : (input.running ? "键盘互动已连接" : ((listen || access) ? "键盘权限已获准，连接待恢复" : "键盘互动等待授权"))
         let chat = !flag("hypQuickChat") ? "快速聊天已关闭" : (input.quickChatReady ? "快速聊天已连接" : (access ? "聊天权限已获准，连接待恢复" : "快速聊天等待辅助功能权限"))
         let inputOK = paneSatisfied(.inputMonitoring)
+        consoleChannel?.send(["input":inputOK, "access":access])
         permissionSummary?.attributedStringValue = PermissionLook.summary(keyboardAuthorized: inputOK, chatAuthorized: access)
         inputRequestButton?.title = inputOK ? "输入监控已授权" : (listen ? "重新授权输入监控" : "申请输入监控")
         accessRequestButton?.title = access ? "辅助功能已授权" : "申请辅助功能"
@@ -753,6 +757,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         showSettings(); return true
     }
     func applicationWillTerminate(_ notification: Notification) {
+        if consoleClient { consoleChannel?.drain(); return }
+        if let process = consoleProcess, process.isRunning { process.terminate() }
         guard core != nil else { return }
         stopIdlePointerMonitor()
         if #available(macOS 14.0, *) { (displayClock as? CADisplayLink)?.invalidate() }
@@ -772,12 +778,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     var downloadID = UUID()
     @objc func downloadSkin() {
         guard let input = onlineField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), !input.isEmpty else { return }
+        if consoleClient { consoleChannel?.send(["action":"download", "name":input]); return }
+        fetchSkinForName(named: input)
+    }
+    func fetchSkinForName(named input: String) {
         let compact = input.replacingOccurrences(of: "-", with: "")
         let isUUID = compact.count == 32 && compact.allSatisfy { $0.isHexDigit }
         let isName = input.count <= 16 && input.unicodeScalars.allSatisfy { CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_").contains($0) }
         guard isUUID || isName else { alert("请输入有效的 Java 版用户名或 UUID。"); return }
         let requestID = UUID(); downloadID = requestID
-        onlineStatus?.stringValue = "正在连接官方皮肤服务…"
+        updateDownloadStatus("正在连接官方皮肤服务…")
         Task { @MainActor in
             do {
                 let uuid: String
@@ -817,9 +827,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 }
                 guard imported else { throw PetError(pet_error(core).map { String(cString: $0) } ?? "纹理无法识别。") }
                 loadSettings(); updateSkinSummary(); wake()
-                onlineStatus?.stringValue = "已载入：\(name) · \(capeBytes == nil ? "该账号未装备披风" : "皮肤与披风已保存")"
-            } catch { if requestID == downloadID { onlineStatus?.stringValue = "获取失败，保留原皮肤与披风：\(error.localizedDescription)" } }
+                updateDownloadStatus("已载入：\(name) · \(capeBytes == nil ? "该账号未装备披风" : "皮肤与披风已保存")")
+            } catch { if requestID == downloadID { updateDownloadStatus("获取失败，保留原皮肤与披风：\(error.localizedDescription)") } }
         }
+    }
+    func updateDownloadStatus(_ text: String) {
+        onlineStatus?.stringValue = text; consoleChannel?.send(["online":text])
     }
     func fetchData(_ address: String, limit: Int) async throws -> Data {
         var request = URLRequest(url: URL(string: address)!); request.timeoutInterval = 25
@@ -844,6 +857,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     @objc func openDataFolder() { NSWorkspace.shared.open(dataDir) }
     @objc func openProject() { NSWorkspace.shared.open(URL(string: "https://github.com/DLmember/Minecraft-Desktop-Pet")!) }
     @objc func resetSettings() {
+        if forwardConsole("reset") { return }
         downloadID = UUID(); saveTimer?.invalidate()
         if !smoke && flag("autostart") {
             do { try LoginStartup.setEnabled(false, app: Bundle.main.bundleURL, data: dataDir, directory: loginDirectory) }

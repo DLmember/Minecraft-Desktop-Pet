@@ -9,12 +9,14 @@ enum ConsoleSize {
 
 extension AppDelegate {
     @objc func showSettings() {
-        guard core != nil else { return }
+        if !consoleClient && (!smoke || CommandLine.arguments.contains("--console-memory")) {
+            openConsoleSession(); return
+        }
+        guard consoleClient || core != nil else { return }
         if startupPending { finishStartup() }
         if let panel { panel.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
-        let w = consoleWindow ?? NSWindow(contentRect: NSRect(origin: .zero, size: ConsoleSize.compact),
+        let w = NSWindow(contentRect: NSRect(origin: .zero, size: ConsoleSize.compact),
             styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        consoleWindow = w
         w.setContentSize(ConsoleSize.compact)
         w.contentView = NSView(frame: NSRect(origin: .zero, size: ConsoleSize.compact))
         w.title = "Minecraft桌宠 · v\(appVersion) · 控制台"
@@ -24,7 +26,8 @@ extension AppDelegate {
         root.setBoundsSize(ConsoleSize.design)
         for (index, title) in ["常规", "视线与角度", "其他设置"].enumerated() {
             let button = NSButton(title: title, target: self, action: #selector(selectConsolePage(_:)))
-            button.setButtonType(.pushOnPushOff); button.bezelStyle = .regularSquare
+            button.setButtonType(.pushOnPushOff)
+            button.bezelStyle = .rounded
             button.font = .systemFont(ofSize: 15, weight: .medium); button.tag = index
             button.frame = NSRect(x: CGFloat(24 + index * 246), y: ConsoleSize.design.height - 52, width: 220, height: 34)
             button.setAccessibilityLabel(title); root.addSubview(button); pageButtons.append(button)
@@ -50,9 +53,10 @@ extension AppDelegate {
         permissionSummary = label(root, "", 112, 43, 420)
         permissionSummary?.font = .systemFont(ofSize: 11); permissionSummary?.textColor = .secondaryLabelColor
         label(root, "拖动摆放 · 右键菜单 · 双击设置；关闭此窗口不会退出桌宠。", 24, 16, 712).textColor = .secondaryLabelColor
-        updatePermission(); w.center(); w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        if !consoleClient { updatePermission() }; w.center(); w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
     func refreshConsoleControls() {
+        if !consoleClient { consoleChannel?.send(["refresh":settings]) }
         guard panel != nil, controlTabs != nil else { return }
         lockDoubleClickBox?.state = flag("lockDoubleClick") ? .on : .off
         populatePage(selectedConsolePage)
@@ -68,16 +72,23 @@ extension AppDelegate {
     }
     func releaseConsole() {
         uiReady = false; bindings.removeAll(); pageButtons.removeAll(); saveStatus = nil
+        controlTabs?.delegate = nil
+        panel?.delegate = nil
+        panel?.contentView = nil
         controlTabs = nil; panel = nil
         permissionSummary = nil; lockDoubleClickBox = nil; skinSummary = nil; onlineField = nil; onlineStatus = nil; keyboardColorField = nil
         permissionLabel = nil; startupStatus = nil; musicToggle = nil
-        consoleWindow?.contentView = NSView(frame: NSRect(origin: .zero, size: ConsoleSize.compact))
+        DispatchQueue.main.async { malloc_zone_pressure_relief(nil, 0) }
     }
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         if window === guidePanel { closeGuide() }
         if window === capePanel { capePanel = nil; capeEntries.removeAll() }
         if window === captureWindow { closeCapture() }
+        if window === panel && consoleClient {
+            consoleChannel?.send(["page":selectedConsolePage, "action":"save"])
+            releaseConsole(); NSApp.terminate(nil); return
+        }
         if window === panel {
             closePermissions(); save(); selectedConsolePage = controlTabs?.indexOfTabViewItem(controlTabs!.selectedTabViewItem!) ?? 0
             releaseConsole()
@@ -261,7 +272,7 @@ extension AppDelegate {
                 }
             } else { settings[b.key] = c.state == .on }
         }
-        if b.key == "autostart" {
+        if !consoleClient && b.key == "autostart" {
             do { if !smoke { try syncLoginStartup() } }
             catch { loadSettings(); (sender as? NSButton)?.state = flag("autostart") ? .on : .off; alert(error.localizedDescription); return }
         }
@@ -269,6 +280,10 @@ extension AppDelegate {
         if let page = controlTabs?.selectedTabViewItem?.view { syncRadioStates(page) }
         // Floating-letter glyphs are initialized on the first actual keystroke.
         changed()
+        if consoleClient {
+            if b.key == "customBase" || b.key == "chibi" { populatePage(selectedConsolePage) }
+            return
+        }
         if b.key == "autostart" { save() }
         if b.key == "musicNotes" { configureMusic() }
         if b.key == "keyboardEnabled" || b.key == "hypQuickChat" {
@@ -389,6 +404,7 @@ extension AppDelegate {
     }
     func updateSkinSummary() { skinSummary?.stringValue = settings["skinName"] as? String ?? "内置" }
     @objc func importSkin() {
+        if forwardConsole("import") { return }
         let p = NSOpenPanel(); p.allowedContentTypes = [.png]; p.allowsMultipleSelection = false; p.canChooseDirectories = false
         NSApp.activate(ignoringOtherApps: true)
         if p.runModal() == .OK, let url = p.url {
@@ -398,6 +414,7 @@ extension AppDelegate {
         }
     }
     @objc func restoreBuiltinSkin() {
+        if forwardConsole("restore") { return }
         downloadID = UUID(); save()
         guard pet_restore_skin(core) else { showCoreError(); return }
         loadSettings(); updateSkinSummary(); wake()
@@ -420,6 +437,7 @@ extension AppDelegate {
         if a.runModal() == .alertSecondButtonReturn { resetSettings() }
     }
     @objc func showPermissions() {
+        if forwardConsole("permissions") { return }
         guard permissionPanel == nil else { permissionPanel?.makeKeyAndOrderFront(nil); return }
         let w = NSPanel(contentRect: NSRect(x:0,y:0,width:580,height:270), styleMask:[.titled], backing:.buffered, defer:false)
         w.title = "输入权限与诊断"; let root = w.contentView!; permissionPanel = w

@@ -10,7 +10,7 @@
 
 ## 下载
 
-[下载 macOS v2.6.0.1](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/tag/v2.6.0.1) · [下载 Windows v2.6](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/tag/v2.6)。本次 v2.6.0.1 仅发布 macOS 版。
+[下载 macOS v2.6.0.2](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/tag/v2.6.0.2) · [下载 Windows v2.6](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/tag/v2.6)。本次 v2.6.0.2 仅发布 macOS 版。
 
 支持 **Windows 10/11 x64、macOS（Apple Silicon 12+，Intel 13+）**。便携运行，不需要安装 Electron、Java 或额外运行环境。
 

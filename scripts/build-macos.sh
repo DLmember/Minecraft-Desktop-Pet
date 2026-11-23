@@ -14,7 +14,7 @@ for PAIR in 'aarch64-apple-darwin arm64 12.0' 'x86_64-apple-darwin x86_64 13.0';
     export MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS"
     cargo build --manifest-path "$ROOT/native/Cargo.toml" --locked --release --lib --target "$RUST_TARGET"
     swiftc -O -file-prefix-map "$HOME=/build-user" -swift-version 5 -target "$SWIFT_ARCH-apple-macosx$MIN_MACOS" \
-        -import-objc-header "$ROOT/macos/PetCore.h" "$ROOT/macos/main.swift" "$ROOT/macos/InputController.swift" "$ROOT/macos/PlatformSupport.swift" "$ROOT/macos/SelfTests.swift" "$ROOT/macos/Console.swift" "$ROOT/macos/MacFeatures.swift" "$ROOT/macos/RegressionTests.swift" "$ROOT/macos/PermissionGuide.swift" "$ROOT/macos/PetMenu.swift" "$ROOT/macos/CapePicker.swift" "$ROOT/macos/CaptureWindow.swift" "$ROOT/macos/MetalTest.swift" \
+        -import-objc-header "$ROOT/macos/PetCore.h" "$ROOT/macos/main.swift" "$ROOT/macos/InputController.swift" "$ROOT/macos/PlatformSupport.swift" "$ROOT/macos/SelfTests.swift" "$ROOT/macos/Console.swift" "$ROOT/macos/ConsoleSession.swift" "$ROOT/macos/MacFeatures.swift" "$ROOT/macos/RegressionTests.swift" "$ROOT/macos/PermissionGuide.swift" "$ROOT/macos/PetMenu.swift" "$ROOT/macos/CapePicker.swift" "$ROOT/macos/CaptureWindow.swift" "$ROOT/macos/MetalTest.swift" \
         "$ROOT/native/target/$RUST_TARGET/release/libpet_core.a" \
         -framework Metal -framework IOSurface -framework CoreAudio -framework Carbon -framework AppKit -framework ApplicationServices -framework Security -framework SystemConfiguration \
         -o "$ROOT/macos/build/MinecraftPet-$SWIFT_ARCH"
@@ -51,20 +51,13 @@ cp "$ROOT/macos/使用说明-macOS.md" "$DEST/使用说明-macOS.md"
 if [ -f "$ROOT/macos/更新与验证-$VERSION.md" ]; then
     cp "$ROOT/macos/更新与验证-$VERSION.md" "$DEST/更新与验证.md"
 fi
-ditto -c -k --sequesterRsrc --keepParent "$APP" "$DEST/Minecraft桌宠-${VERSION}-mac-universal.zip"
-# Single-chip packages keep the installed app under the 5 MB budget (CONTRIBUTING.md).
-# Same signed program as the universal app, thinned to one architecture and re-signed.
-for PAIR in 'arm64 AppleSilicon 12.0' 'x86_64 Intel 13.0'; do
-    read -r SWIFT_ARCH LABEL MIN_MACOS <<< "$PAIR"
-    THIN="$DEST/$LABEL/Minecraft桌宠.app"
-    rm -rf "$DEST/$LABEL"; mkdir -p "$DEST/$LABEL"
-    ditto "$APP" "$THIN"
-    lipo "$APP/Contents/MacOS/MinecraftPet" -thin "$SWIFT_ARCH" -output "$THIN/Contents/MacOS/MinecraftPet"
-    /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion $MIN_MACOS" \
-        -c "Delete :LSMinimumSystemVersionByArchitecture" "$THIN/Contents/Info.plist"
-    codesign --force --sign - "$THIN"
-    codesign --verify --deep --strict "$THIN"
-    ditto -c -k --sequesterRsrc --keepParent "$THIN" "$DEST/Minecraft桌宠-${VERSION}-mac-$LABEL.zip"
-done
+# A single installer contains both architectures. Mount and drag the signed app to Applications.
+STAGING="$(mktemp -d "${TMPDIR:-/tmp}/pet-dmg.XXXXXX")"
+trap 'rm -rf "$STAGING"' EXIT
+ditto "$APP" "$STAGING/Minecraft桌宠.app"
+ln -s /Applications "$STAGING/Applications"
+DMG="$DEST/Minecraft-Desktop-Pet-${VERSION}-macOS-Universal.dmg"
+hdiutil create -ov -fs HFS+ -format UDZO -volname "Minecraft桌宠 $VERSION" -srcfolder "$STAGING" "$DMG"
+hdiutil verify "$DMG"
 echo "Built: $APP"
-echo "Built: $DEST/AppleSilicon/Minecraft桌宠.app, $DEST/Intel/Minecraft桌宠.app"
+echo "Built: $DMG"

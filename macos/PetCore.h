@@ -1,3 +1,4 @@
+#include <malloc/malloc.h>
 #ifndef PET_CORE_H
 #define PET_CORE_H
 #include <stdbool.h>

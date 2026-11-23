@@ -2,6 +2,11 @@
 
 本文根据 [GitHub Releases](https://github.com/DLmember/Minecraft-Desktop-Pet/releases) 整理，按版本倒序记录。各平台下载、校验文件及补充说明请以对应发布页为准。
 
+## [v2.6.0.2](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/tag/v2.6.0.2) · macOS
+
+- 关闭控制台时退出临时设置进程，释放控件及其缓存。三个分区使用系统原生圆角按钮。
+- 本版以一个 Universal DMG 分发，兼容 Apple Silicon 与 Intel。包含下列 v2.6.0.1 更新。
+
 ## [v2.6.0.1](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/tag/v2.6.0.1) · macOS
 
 - 本次发布不提供 Windows 版。Windows 用户可继续下载 v2.6。

@@ -25,6 +25,7 @@ final class CaptureView: NSView {
 
 extension AppDelegate {
     @objc func showCapture() {
+        if forwardConsole("capture") { return }
         if let w = captureWindow { w.makeKeyAndOrderFront(nil); captureParked = false; return }
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 450, height: 560),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -38,6 +39,7 @@ extension AppDelegate {
         w.center(); w.makeKeyAndOrderFront(nil); wake()
     }
     @objc func toggleCapturePlacement() {
+        if forwardConsole("placement") { return }
         if captureWindow == nil { showCapture() }
         guard let w = captureWindow else { return }
         captureParked.toggle()

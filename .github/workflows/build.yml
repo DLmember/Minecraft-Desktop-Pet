@@ -9,7 +9,7 @@ name: build
 
 jobs:
   windows:
-    if: github.ref != 'refs/tags/v2.6.0.1'
+    if: github.ref != 'refs/tags/v2.6.0.1' && github.ref != 'refs/tags/v2.6.0.2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,4 +55,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: ${{ runner.temp }}/out/*.zip
+          path: ${{ runner.temp }}/out/*.dmg
