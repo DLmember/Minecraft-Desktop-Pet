@@ -31,7 +31,7 @@ impl Frame {
         let mut cube=|center:Vec3,size:Vec3,color:[u8;4]| {
             let (image,colors)=materials().iter().find(|(image,_)|image.get_pixel(0,0).0==color).unwrap();
             let part=BoxPart{size,uv:Vec2::ZERO,uv_size:None,transform:parent*Mat4::from_translation(center),
-                inflate:0.,mirror:false,keyboard:false,cape:false,faces:None,eyes:None,eyelid:1.,pupil:Vec2::ZERO};
+                inflate:0.,mirror:false,keyboard:false,color:None,cape:false,faces:None,eyes:None,eyelid:1.,pupil:Vec2::ZERO};
             self.draw_box(&part,Tex::of(image,colors));
         };
         match s.decoration.as_str() {

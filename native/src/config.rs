@@ -218,7 +218,7 @@ impl Settings {
         }
     }
     pub fn clean(&mut self) {
-        if !["simple", "detailed"].contains(&self.keyboard_style.as_str()) { self.keyboard_style = "simple".into(); }
+        if !["simple", "detailed", "mechanical"].contains(&self.keyboard_style.as_str()) { self.keyboard_style = "simple".into(); }
         self.keyboard_color = normalize_keyboard_color(&self.keyboard_color).unwrap_or_else(|| "#83878A".into());
         self.chibi_body_scale = if self.chibi_body_scale.is_finite() { self.chibi_body_scale.clamp(50., 180.) } else { 100. };
         if self.posture != "sitting" && self.posture != "custom" {
