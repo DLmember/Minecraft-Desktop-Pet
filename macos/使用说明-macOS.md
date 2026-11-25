@@ -1,6 +1,6 @@
-# Minecraft桌宠 v2.6.0.2 · macOS
+# Minecraft桌宠 v2.6.1 · macOS
 
-与 Windows v2.6 主版本同步的 macOS 版，Apple Silicon / Intel 通用架构：Apple Silicon 需 macOS 12 及以上，Intel 需 macOS 13 及以上。此版本属于主线普通版，不含 Blockbench 兼容版。
+macOS 版提供 Apple Silicon / Intel 通用构建：Apple Silicon 需 macOS 12 及以上，Intel 需 macOS 13 及以上。此版本属于主线普通版，不含 Blockbench 兼容版。
 
 ## 启动与权限
 

@@ -6,9 +6,9 @@
 <key>CFBundleIdentifier</key><string>com.dlmember.minecraft-desktop-pet.macos</string>
 <key>CFBundleExecutable</key><string>MinecraftPet</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>MinecraftPetReleaseVersion</key><string>2.6.0.2</string>
-<key>CFBundleShortVersionString</key><string>2.6.0</string>
-<key>CFBundleVersion</key><string>2.6.2</string>
+<key>MinecraftPetReleaseVersion</key><string>2.6.1</string>
+<key>CFBundleShortVersionString</key><string>2.6.1</string>
+<key>CFBundleVersion</key><string>2.6.3</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>12.0</string>
 <key>LSMinimumSystemVersionByArchitecture</key><dict><key>arm64</key><string>12.0</string><key>x86_64</key><string>13.0</string></dict>
