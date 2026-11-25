@@ -286,8 +286,9 @@ impl App {
             self.radio(label,150+i as i32*97,449,96,190+i as i32);
         }
         self.control("STATIC", "键盘样式", 0, 24, 526, 110, 24, 0);
-        self.radio("简洁", 150, 522, 110, 184);
-        self.radio("细节", 280, 522, 110, 185);
+        self.radio("简洁", 150, 522, 72, 184);
+        self.radio("细节", 226, 522, 72, 185);
+        self.radio("立体74键", 302, 522, 102, 196);
         self.control("STATIC", "键盘色号", 0, 410, 526, 80, 24, 0);
         let color = self.control("EDIT", &self.settings.keyboard_color.clone(), WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32, 510, 522, 116, 28, 334);
         SendMessageW(color, EM_SETLIMITTEXT, 7, 0);
@@ -506,6 +507,7 @@ impl App {
     pub(super) unsafe fn refresh_panel(&mut self) {
         SendMessageW(self.ctrl(184), BM_SETCHECK, if self.settings.keyboard_style == "simple" { BST_CHECKED as usize } else { BST_UNCHECKED as usize }, 0);
         SendMessageW(self.ctrl(185), BM_SETCHECK, if self.settings.keyboard_style == "detailed" { BST_CHECKED as usize } else { BST_UNCHECKED as usize }, 0);
+        SendMessageW(self.ctrl(196), BM_SETCHECK, if self.settings.keyboard_style == "mechanical" { BST_CHECKED as usize } else { BST_UNCHECKED as usize }, 0);
         if self.panel.is_null() {
             return;
         }
@@ -793,9 +795,13 @@ pub(super) unsafe fn panel_proc(
     match msg {
         WM_COMMAND => {
             let id = (w & 0xffff) as u32;
-            if id == 184 || id == 185 {
+            if id == 184 || id == 185 || id == 196 {
                 if ((w >> 16) & 0xffff) as u32 == BN_CLICKED {
-                    a.settings.keyboard_style = if id == 185 { "detailed" } else { "simple" }.into();
+                    a.settings.keyboard_style = match id {
+                        185 => "detailed",
+                        196 => "mechanical",
+                        _ => "simple",
+                    }.into();
                     a.changed();
                 }
             } else { a.command(id); }

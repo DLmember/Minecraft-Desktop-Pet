@@ -24,7 +24,7 @@ fn load(geometry:&str,texture:&[u8])->Model {
             assert!(uv.is_array(),"decorations currently use the original box UV layout");
             parts.push(BoxPart{size,uv:Vec2::new(uv[0].as_f64().unwrap() as f32,uv[1].as_f64().unwrap() as f32),uv_size:None,
                 transform:conversion*transform*pivot_rotation(cube)*Mat4::from_translation(center)*conversion,
-                inflate:0.,mirror:cube["mirror"].as_bool().unwrap_or(false),keyboard:false,cape:false,faces:None,
+                inflate:0.,mirror:cube["mirror"].as_bool().unwrap_or(false),keyboard:false,color:None,cape:false,faces:None,
                 eyes:None,eyelid:1.,pupil:Vec2::ZERO});
         }}
     }

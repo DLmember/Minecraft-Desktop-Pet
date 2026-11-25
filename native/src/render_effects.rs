@@ -339,7 +339,7 @@ impl Frame {
             } else {(7.5,7.5)};
             // Face UVs are expressed in 16-unit space; rasterizer converts to 64 units.
             let uv=FaceUv {u0:x as f32+0.1,v0:y as f32+0.1,u1:x as f32+0.9,v1:y as f32+0.9,rotation:0};
-            let part=BoxPart {size:Vec3::splat(size),uv:Vec2::ZERO,uv_size:None,transform:tr*Mat4::from_translation(Vec3::new((x as f32-ox)*size,(oy-y as f32)*size,0.)),inflate:0.,mirror:false,keyboard:false,cape:false,faces:Some([uv;6]),eyes:None,eyelid:1.,pupil:Vec2::ZERO};
+            let part=BoxPart {size:Vec3::splat(size),uv:Vec2::ZERO,uv_size:None,transform:tr*Mat4::from_translation(Vec3::new((x as f32-ox)*size,(oy-y as f32)*size,0.)),inflate:0.,mirror:false,keyboard:false,color:None,cape:false,faces:Some([uv;6]),eyes:None,eyelid:1.,pupil:Vec2::ZERO};
             self.draw_box(&part,Tex::of(&tex.image,&tex.colors));
         }
     }
@@ -398,7 +398,7 @@ pub(crate) fn install_glyphs(bytes: &[u8]) -> bool {
     if bytes.len() != 95 * 576 { return false; }
     GLYPHS.set(bytes.chunks_exact(576).map(|c| c.try_into().unwrap()).collect()).is_ok()
 }
-fn glyphs()-> &'static Vec<[u8;576]> {
+pub(super) fn glyphs()-> &'static Vec<[u8;576]> {
     GLYPHS.get_or_init(|| {
         let mut result=vec![[0;576];95];
         #[cfg(windows)] unsafe {

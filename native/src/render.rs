@@ -2,6 +2,8 @@
 #[path = "render_metal_test.rs"]
 pub(crate) mod metal_test;
 pub(crate) use effects::install_glyphs;
+#[path = "render_keyboard.rs"]
+mod keyboard_model;
 #[path = "render_effects.rs"]
 mod effects;
 #[path = "render_decorations.rs"]
@@ -318,8 +320,8 @@ impl Skin {
         })
     }
 }
-pub fn key_position(vk: u32) -> Option<Vec2> {
-    let rows: Vec<Vec<(u32, f32)>> = vec![
+fn keyboard_rows() -> Vec<Vec<(u32, f32)>> {
+    vec![
         std::iter::once((27, 1.5))
             .chain((112..124).map(|v| (v, 1.08)))
             .collect(),
@@ -349,8 +351,10 @@ pub fn key_position(vk: u32) -> Option<Vec2> {
             (93, 1.25),
             (163, 1.25),
         ],
-    ];
-    for (r, row) in rows.iter().enumerate() {
+    ]
+}
+pub fn key_position(vk: u32) -> Option<Vec2> {
+    for (r, row) in keyboard_rows().iter().enumerate() {
         let total: f32 = row.iter().map(|p| p.1).sum();
         let mut x = -9.1;
         for &(code, width) in row {
@@ -1272,6 +1276,7 @@ struct BoxPart {
     inflate: f32,
     mirror: bool,
     keyboard: bool,
+    color: Option<[u8; 3]>,
     cape: bool,
     /// Q 版模式：六个面各自独立的 UV，顺序同 `draw_box` 的 face 0..5
     /// （+x 左 / -x 右 / +y 顶 / -y 底 / +z 前 / -z 后）。`None` 表示用标准
@@ -1329,6 +1334,7 @@ fn parts_with_cape(
             inflate: 0.,
             mirror,
             keyboard: false,
+            color: None,
             cape: false,
             faces: None,
             eyes: if eyes && s.da_blink { skin.eyes } else { None },
@@ -1344,6 +1350,7 @@ fn parts_with_cape(
                 inflate: if hat { 1. } else { 0.5 },
                 mirror,
                 keyboard: false,
+                color: None,
                 cape: false,
                 faces: None,
                 // 外层帽子是叠加在头部上的一层，眼皮由内层负责。
@@ -1455,6 +1462,7 @@ fn parts_with_cape(
             inflate: 0.,
             mirror: false,
             keyboard: false,
+            color: None,
             cape: true,
             faces: None,
             eyes: None,
@@ -1468,22 +1476,29 @@ fn parts_with_cape(
         part.transform = Mat4::from_translation(Vec3::Y * pose.gesture_jump + pose.gesture_shake) * squash * part.transform;
     }
     if pose.sit > 0.4 {
-        v.push(BoxPart {
-            size: Vec3::new(19.6, 0.65, 7.8),
-            uv: Vec2::ZERO,
-            uv_size: None,
-            transform: Mat4::from_translation(Vec3::new(0., 10.2, 9.4))
-                * Mat4::from_scale(Vec3::splat(pose.sit))
-                * Mat4::from_translation(Vec3::new(0., -0.3, 0.)),
-            inflate: 0.,
-            mirror: false,
-            keyboard: true,
-            cape: false,
-            faces: None,
-            eyes: None,
-            eyelid: 1.,
-            pupil: Vec2::ZERO,
-        });
+        if s.keyboard_style == "mechanical" {
+            let base = Mat4::from_translation(Vec3::new(0., 10.2, 9.4))
+                * Mat4::from_scale(Vec3::splat(pose.sit));
+            v.extend(keyboard_model::parts(pose, base));
+        } else {
+            v.push(BoxPart {
+                size: Vec3::new(19.6, 0.65, 7.8),
+                uv: Vec2::ZERO,
+                uv_size: None,
+                transform: Mat4::from_translation(Vec3::new(0., 10.2, 9.4))
+                    * Mat4::from_scale(Vec3::splat(pose.sit))
+                    * Mat4::from_translation(Vec3::new(0., -0.3, 0.)),
+                inflate: 0.,
+                mirror: false,
+                keyboard: true,
+                color: None,
+                cape: false,
+                faces: None,
+                eyes: None,
+                eyelid: 1.,
+                pupil: Vec2::ZERO,
+            });
+        }
     }
     let limb_layers = if s.outer_layer && !skin.legacy { 2 } else { 1 };
     let head_layers = if s.outer_layer { 2 } else { 1 };
@@ -1578,6 +1593,7 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose, cape: Option<&Cape>) -> V
             inflate,
             mirror,
             keyboard: false,
+            color: None,
             cape: false,
             faces: if standard_unwrap { None } else { Some(cb.faces) },
             eyes: if eyes && s.da_blink { skin.eyes } else { None },
@@ -1710,7 +1726,7 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose, cape: Option<&Cape>) -> V
                 * Mat4::from_translation(Vec3::new(0., 3.6 * (3.7 / 12.), -2.9 * (2.5 / 4.)))
                 * Mat4::from_scale(Vec3::new(3.5 / 8., 3.7 / 12., 2.5 / 4.))
                 * Mat4::from_rotation_x(0.14),
-            inflate: 0., mirror: false, keyboard: false, cape: true,
+            inflate: 0., mirror: false, keyboard: false, color: None, cape: true,
             faces: None, eyes: None, eyelid: 1., pupil: Vec2::ZERO,
         });
     }
@@ -1731,22 +1747,31 @@ fn parts_chibi(s: &Settings, skin: &Skin, pose: &Pose, cape: Option<&Cape>) -> V
     }
     // 坐姿打字键盘：和标准人形同一套尺寸/渐入，放在 Q 版坐姿身体前方。
     if pose.sit > 0.4 {
-        v.push(BoxPart {
-            size: Vec3::new(9., 0.4, 2.4),
-            uv: Vec2::ZERO,
-            uv_size: None,
-            transform: chibi_scale * body_scale_mat * Mat4::from_translation(Vec3::new(0., 3.2, 2.8))
-                * Mat4::from_scale(Vec3::splat(pose.sit))
-                ,
-            inflate: 0.,
-            mirror: false,
-            keyboard: true,
-            cape: false,
-            faces: None,
-            eyes: None,
-            eyelid: 1.,
-            pupil: Vec2::ZERO,
-        });
+        if s.keyboard_style == "mechanical" {
+            let base = chibi_scale
+                * body_scale_mat
+                * Mat4::from_translation(Vec3::new(0., 3.2, 2.8))
+                * Mat4::from_scale(Vec3::new(9. / 20., 0.4 / 0.65, 2.4 / 8.25) * pose.sit);
+            v.extend(keyboard_model::parts(pose, base));
+        } else {
+            v.push(BoxPart {
+                size: Vec3::new(9., 0.4, 2.4),
+                uv: Vec2::ZERO,
+                uv_size: None,
+                transform: chibi_scale * body_scale_mat * Mat4::from_translation(Vec3::new(0., 3.2, 2.8))
+                    * Mat4::from_scale(Vec3::splat(pose.sit))
+                    ,
+                inflate: 0.,
+                mirror: false,
+                keyboard: true,
+                color: None,
+                cape: false,
+                faces: None,
+                eyes: None,
+                eyelid: 1.,
+                pupil: Vec2::ZERO,
+            });
+        }
     }
     cover_cheeks(&mut v, head_count - 1, head_count * 2, head_count, pose.cheek_cover);
     let global = wine_transform(s,pose) * model_transform(s);
@@ -2129,15 +2154,26 @@ impl Frame {
         let tex_width = skin.image.width();
         let tex_height = skin.image.height();
         let texscale = tex_width as f32 / 64.;
-        #[cfg(not(target_os = "macos"))]
         let shades = [0.80f32, 0.80, 1., 0.62, 0.94, 0.86];
         #[cfg(target_os = "macos")]
-        let gray = self.keyboard_shades[face];
+        let gray = if let Some(rgb) = b.color {
+            rgb.map(|c| {
+                let l = (((c as f32 / 255. + 0.055) / 1.055).powf(2.4) * shades[face]).max(0.);
+                ((1.055 * l.powf(1. / 2.4) - 0.055) * 255. + 0.5) as u8
+            })
+        } else {
+            self.keyboard_shades[face]
+        };
         #[cfg(not(target_os = "macos"))]
-        let gray = self.keyboard_color.map(|c| {
+        let gray = b.color.unwrap_or(self.keyboard_color).map(|c| {
             let l = (((c as f32 / 255. + 0.055) / 1.055).powf(2.4) * shades[face]).max(0.);
             ((1.055 * l.powf(1. / 2.4) - 0.055) * 255. + 0.5) as u8
         });
+        let legend = if b.keyboard && b.color.is_some() && face == 2 {
+            keyboard_model::legend(b.uv.x as u32)
+        } else {
+            ""
+        };
         // Flat top-face markings, using the same surface/depth as the keyboard.
         // No extra boxes, textures or height; dimensions follow either body type.
         let key_gray = gray.map(|channel| (channel as f32 * 0.78).round() as u8);
@@ -2210,22 +2246,33 @@ impl Frame {
                     continue;
                 }
                 let (color, alpha) = if b.keyboard {
-                    // Side faces and the simple keyboard have uniform color.
-                    let is_key = if detailed_keys {
-                        let top = uv[1] + (uv[0] - uv[1]) * a + (uv[2] - uv[1]) * c;
-                        let local = top - b.uv - Vec2::new(b.size.z, 0.);
-                        let row = ((local.y / b.size.z - 0.2) / 0.3).round();
-                        let stagger = if row == 1. { 0.025 } else { -0.025 };
-                        let col = (local.x / b.size.x * 6. - stagger * 6.).round();
-                        let center = Vec2::new((col / 6. + stagger) * b.size.x,
-                            (0.2 + row * 0.3) * b.size.z);
-                        let distance = (local - center).abs();
-                        let half_side = b.size.z * 0.11;
-                        (0. ..=2.).contains(&row)
-                            && (1. ..=5.).contains(&col)
-                            && distance.x <= half_side && distance.y <= half_side
-                    } else { false };
-                    (if is_key { key_gray } else { gray }, 255)
+                    if b.color.is_some() {
+                        let tx = (tex[1].x + ta.x * a + tc.x * c) / texscale;
+                        let ty = (tex[1].y + ta.y * a + tc.y * c) / texscale;
+                        let ink = keyboard_model::legend_alpha(
+                            legend,
+                            (tx - b.uv.x - b.size.z) / b.size.x,
+                            (ty - b.uv.y) / b.size.z,
+                        );
+                        (gray.map(|channel| (channel as f32 * (1. - ink) + 40. * ink) as u8), 255)
+                    } else {
+                        // Side faces and the simple keyboard have uniform color.
+                        let is_key = if detailed_keys {
+                            let top = uv[1] + (uv[0] - uv[1]) * a + (uv[2] - uv[1]) * c;
+                            let local = top - b.uv - Vec2::new(b.size.z, 0.);
+                            let row = ((local.y / b.size.z - 0.2) / 0.3).round();
+                            let stagger = if row == 1. { 0.025 } else { -0.025 };
+                            let col = (local.x / b.size.x * 6. - stagger * 6.).round();
+                            let center = Vec2::new((col / 6. + stagger) * b.size.x,
+                                (0.2 + row * 0.3) * b.size.z);
+                            let distance = (local - center).abs();
+                            let half_side = b.size.z * 0.11;
+                            (0. ..=2.).contains(&row)
+                                && (1. ..=5.).contains(&col)
+                                && distance.x <= half_side && distance.y <= half_side
+                        } else { false };
+                        (if is_key { key_gray } else { gray }, 255)
+                    }
                 } else {
                     let tx = tex[1].x + ta.x * a + tc.x * c;
                     let ty = tex[1].y + ta.y * a + tc.y * c;
@@ -2935,6 +2982,7 @@ mod tests {
             inflate: 1.,
             mirror: false,
             keyboard: false,
+            color: None,
             cape: false,
             faces: None,
             eyes: None,
@@ -3139,6 +3187,7 @@ mod tests {
                             inflate: 0.,
                             mirror,
                             keyboard: false,
+                            color: None,
                             cape: false,
                             faces: None,
                             eyes: None,
