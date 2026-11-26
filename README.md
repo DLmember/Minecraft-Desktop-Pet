@@ -1,6 +1,6 @@
 # Minecraft 桌宠
 
-[![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D6)](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/tag/v2.6) [![macOS Apple Silicon 12+ | Intel 13+](https://img.shields.io/badge/macOS-Apple%20Silicon%2012%2B%20%7C%20Intel%2013%2B-000000?logo=apple)](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest) [![Release](https://img.shields.io/github/v/release/DLmember/Minecraft-Desktop-Pet)](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest) [![License: MIT](https://img.shields.io/github/license/DLmember/Minecraft-Desktop-Pet)](LICENSE)
+[![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D6)](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/tag/v2.6.1) [![macOS Apple Silicon 12+ | Intel 13+](https://img.shields.io/badge/macOS-Apple%20Silicon%2012%2B%20%7C%20Intel%2013%2B-000000?logo=apple)](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/tag/v2.6.0.2) [![Release](https://img.shields.io/github/v/release/DLmember/Minecraft-Desktop-Pet)](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/latest) [![License: MIT](https://img.shields.io/github/license/DLmember/Minecraft-Desktop-Pet)](LICENSE)
 
 让一个 Minecraft 风格的小人待在桌面上，跟着鼠标转头，陪你敲键盘。
 
@@ -10,7 +10,8 @@
 
 ## 下载
 
-[下载 macOS v2.6.0.2](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/tag/v2.6.0.2) · [下载 Windows v2.6](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/tag/v2.6)。本次 v2.6.0.2 仅发布 macOS 版。
+- **Windows v2.6.1** · [独立 EXE（直接运行）](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/download/v2.6.1/Minecraft-Desktop-Pet-2.6.1-Windows-x64.exe) · [便携 ZIP](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/download/v2.6.1/Minecraft-Desktop-Pet-2.6.1-Windows-x64.zip) · [更新说明](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/tag/v2.6.1)
+- **macOS v2.6.0.2** · [通用 DMG（Apple Silicon / Intel）](https://github.com/DLmember/Minecraft-Desktop-Pet/releases/download/v2.6.0.2/Minecraft-Desktop-Pet-2.6.0.2-macOS-Universal.dmg)。macOS v2.6.1 稍后提供。
 
 支持 **Windows 10/11 x64、macOS（Apple Silicon 12+，Intel 13+）**。便携运行，不需要安装 Electron、Java 或额外运行环境。
 
