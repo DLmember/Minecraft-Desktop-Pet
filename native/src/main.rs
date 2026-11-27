@@ -14,6 +14,7 @@ mod window_order;
 mod menu_clock;
 mod capture;
 mod capes;
+mod status_bubble;
 use config::{Position, Settings, Store};
 use glam::Vec2;
 use render::{Cape, Frame, Pose, Skin};
@@ -287,6 +288,7 @@ pub struct App {
     update_check: Option<std::sync::mpsc::Receiver<Result<String,String>>>,
     diagnostic: bool,
     input_trace: Vec<serde_json::Value>,
+    status_bubble: Option<status_bubble::Bubble>,
 }
 impl App {
     fn new(dir: PathBuf, diagnostic: bool) -> Self {
@@ -379,6 +381,7 @@ impl App {
             update_check: None,
             diagnostic,
             input_trace: Vec::new(),
+            status_bubble: None,
         }
     }
     fn save(&mut self) {
@@ -748,6 +751,9 @@ impl App {
         }
         if !self.hidden {
             self.update_hover_opacity();
+        }
+        if let Some(bubble) = &mut self.status_bubble {
+            bubble.update(self.hwnd, clock, self.hidden, self.opacity);
         }
     }
     unsafe fn trace_key(&mut self, vk: u32, down: bool, source: &str) {
@@ -1548,6 +1554,11 @@ fn main() {
     let diag = args.iter().any(|a| a == "--diagnostic");
     let first = !dir.join("settings.json").exists();
     let mut app = Box::new(App::new(dir.clone(), diag));
+    app.status_bubble = args.iter().find_map(|arg| {
+        arg.strip_prefix("--status-bubble-file=")
+            .filter(|path| !path.is_empty())
+            .map(|path| status_bubble::Bubble::new(PathBuf::from(path)))
+    });
     if let Some(e) = &app.store.read_error {
         report_error(e);
         return;
